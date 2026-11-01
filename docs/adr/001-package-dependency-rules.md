@@ -16,9 +16,15 @@ The dependency graph flows **strictly downward**:
 apps/api  ─┬─→ creator-service ──→ creator-domain
             └─→ creator-provider ──→ creator-domain
 
-apps/worker ─┬─→ creator-service ──→ creator-domain
+apps/worker-orchestrator ─┬─→ creator-service ──→ creator-domain
              └─→ creator-provider ──→ creator-domain
 ```
+
+The [canonical static import graph](../architecture/SYSTEM_TOPOLOGY.md#static-import-dependencies)
+labels every arrow as an import, separate from runtime requests and queue traffic.
+The application paths above are composition roots, not packages scanned by the
+package-only AST gate. Its policy is reused by the diagram checker for package
+edges; application diagram edges follow the accepted rules below.
 
 ### Rules
 

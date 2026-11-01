@@ -52,16 +52,17 @@ compose config --quiet || fail "docker compose config invalid"
 pass "docker compose config valid"
 
 # --- CPU core services are defined and NOT gpu-profile-gated ---
-CORE_SERVICES="$(compose config --services)"
+CORE_SERVICES="$(compose config --services)" || fail "docker compose core service listing failed"
+# Here-strings avoid a producer receiving SIGPIPE when grep exits after a match.
 for svc in postgres redis api worker studio-web; do
-  echo "$CORE_SERVICES" | grep -qx "$svc" || fail "CPU core service '${svc}' not defined"
+  grep -qx "$svc" <<< "$CORE_SERVICES" || fail "CPU core service '${svc}' not defined"
 done
 pass "CPU core services defined"
 
 # ollama (local LLM) must be gpu-gated so the default `up` is CPU-only.
-GPU_SERVICES="$(compose --profile gpu config --services)"
-echo "$GPU_SERVICES" | grep -qx "ollama" || fail "ollama should exist under the gpu profile"
-echo "$CORE_SERVICES" | grep -qx "ollama" && fail "ollama must NOT start without --profile gpu"
+GPU_SERVICES="$(compose --profile gpu config --services)" || fail "docker compose gpu service listing failed"
+grep -qx "ollama" <<< "$GPU_SERVICES" || fail "ollama should exist under the gpu profile"
+grep -qx "ollama" <<< "$CORE_SERVICES" && fail "ollama must NOT start without --profile gpu"
 pass "gpu services gated behind the gpu profile"
 
 # --- every published port binds to 127.0.0.1 only (loopback) ---

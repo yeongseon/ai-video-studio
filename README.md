@@ -51,88 +51,135 @@ The project is a monorepo with these main components:
 
 ### System Architecture
 
+**Configured base Compose, not verified live hosting.** The concise execution
+view and node source map below are separate from the static imports. Solid arrows
+are control/API/queue traffic; dotted arrows are persisted data/media I/O.
+Media goes through authorized API routes, **not a raw nginx artifact mount**.
+See [System Topology](docs/architecture/SYSTEM_TOPOLOGY.md) for the detailed
+execution view, optional GPU/monitoring services and local/cloud model choices.
+
+<!-- diagram: runtime-compose -->
 ```mermaid
-graph TB
-    subgraph Frontend
-        WEB[Studio Web<br/>React + TypeScript]
-    end
-
-    subgraph Backend
-        API[API Server<br/>FastAPI]
-        WORKER[Worker<br/>Celery]
-    end
-
-    subgraph Packages
-        DOMAIN[creator-domain<br/>Entities & Value Objects]
-        SERVICE[creator-service<br/>Use Cases & Storage]
-        PROVIDER[creator-provider<br/>LLM / Image / TTS / STT]
-    end
-
-    subgraph Infrastructure
-        PG[(PostgreSQL)]
-        REDIS[(Redis)]
-        S3[Artifact Storage<br/>Local / S3 / Azure Blob]
-    end
-
-    subgraph AI Services [AI Services - Optional GPU]
-        OLLAMA[Ollama<br/>LLM]
-        SD[Stable Diffusion<br/>Image Gen]
-        TTS[Qwen TTS<br/>Speech]
-        STT[Whisper<br/>Subtitles]
-    end
-
-    WEB -- REST --> API
-    API -- task queue --> REDIS
-    REDIS -- consume --> WORKER
-    API --> SERVICE
-    WORKER --> SERVICE
-    SERVICE --> DOMAIN
-    SERVICE --> PROVIDER
-    PROVIDER --> OLLAMA
-    PROVIDER --> SD
-    PROVIDER --> TTS
-    PROVIDER --> STT
-    SERVICE --> PG
-    SERVICE --> S3
+flowchart LR
+    browser["Browser: React SPA"]
+    web["studio-web nginx: SPA and API proxy"]
+    api["api: authorization and dispatch"]
+    redis["redis: broker and results"]
+    worker["worker: Celery execution"]
+    beat["beat: singleton scheduler"]
+    postgres["postgres: durable state and ownership"]
+    storage["Shared artifacts: local volume or S3 or Azure Blob"]
+    browser -->|"same-origin HTTP"| web
+    web -->|"server-side authenticated proxy"| api
+    api -->|"task submission"| redis
+    beat -->|"maintenance tasks"| redis
+    redis -->|"task delivery"| worker
+    worker -->|"acknowledgements and results"| redis
+    api -.->|"owned run and review state"| postgres
+    worker -.->|"task and artifact state"| postgres
+    worker -.->|"read inputs and write outputs"| storage
+    api -.->|"authorized content or download URL"| storage
+    api -.->|"owned local media response"| web
+    web -.->|"local media bytes"| browser
 ```
+
+| ID | Repository-relative source | Definition |
+|---|---|---|
+| browser | apps/studio-web/src | React client |
+| web | docker-compose.yml#studio-web | nginx SPA/API proxy |
+| api | docker-compose.yml#api | FastAPI composition root |
+| redis | docker-compose.yml#redis | Celery broker/results |
+| worker | docker-compose.yml#worker | Celery executor |
+| beat | docker-compose.yml#beat | Maintenance scheduler |
+| postgres | docker-compose.yml#postgres | Durable metadata |
+| storage | packages/creator-service/creator_service/object_storage.py | Configured local/S3/Azure Blob adapter |
+
+This base view does not apply unchanged to every mode: development uses Vite,
+lightweight runs task functions inside the API when REDIS_URL is absent, and
+the scaled-workers overlay retains a separate singleton Beat. See the
+[mode table and protected hosted contract](docs/architecture/SYSTEM_TOPOLOGY.md#modes-and-hosted-contract).
 
 ### Pipeline Flow
 
+These are separate entry flows, not a generated-to-approved-Timeline conversion.
+Each named review needs explicit human approval. `PUBLISHED` is an internal
+completed-run state, **not a social-platform upload**. Delivery remains authenticated.
+
+<!-- diagram: flow-generated -->
 ```mermaid
 flowchart LR
-    A[Idea / Script] --> B[Script Generation<br/>LLM]
-    B --> C{Human Review}
-    C -- approve --> D[Visual Plan<br/>LLM]
-    D --> E{Human Review}
-    E -- approve --> F[Image Generation<br/>SD / DALL-E]
-    F --> G{Human Review}
-    G -- approve --> H[TTS Audio<br/>Qwen / ElevenLabs]
-    H --> I[Subtitles<br/>Whisper]
-    I --> J[Video Render<br/>FFmpeg]
-    J --> K{Final Review}
-    K -- approve --> L[Published]
-    C -- restart --> B
-    E -- restart --> D
-    G -- restart --> F
-    K -- restart --> J
+    idea["Idea or script: generated entry"]
+    SCRIPT_REVIEW["SCRIPT_REVIEW: approve script"]
+    plan["Visual plan: generate scene plan"]
+    VISUAL_PLAN_REVIEW["VISUAL_PLAN_REVIEW: approve plan"]
+    images["Images: generate assets"]
+    VISUAL_ASSET_REVIEW["VISUAL_ASSET_REVIEW: approve assets"]
+    audio["Audio and subtitles: TTS and STT"]
+    legacy["Legacy render: FFmpeg pipeline inputs"]
+    FINAL_REVIEW["FINAL_REVIEW: approve video"]
+    PUBLISHED["PUBLISHED: internal completion"]
+    idea --> SCRIPT_REVIEW
+    SCRIPT_REVIEW -->|"approve-script"| plan
+    plan --> VISUAL_PLAN_REVIEW
+    VISUAL_PLAN_REVIEW -->|"approve-visual-plan"| images
+    images --> VISUAL_ASSET_REVIEW
+    VISUAL_ASSET_REVIEW -->|"approve-visual-assets"| audio
+    audio --> legacy
+    legacy --> FINAL_REVIEW
+    FINAL_REVIEW -->|"approve-final"| PUBLISHED
+```
+
+<!-- diagram: flow-timeline -->
+```mermaid
+flowchart LR
+    saved["Saved Timeline R: pre-authored entry"]
+    preview["Preview and compile: inspect revision R"]
+    TIMELINE_REVIEW["TIMELINE_REVIEW: approve revision"]
+    approve["approve-timeline-render: expected_revision=R"]
+    persisted["Persisted review: approval bound to R"]
+    dispatch["Render dispatch: binds R"]
+    reload["Worker reload: SAME R and persisted approval check"]
+    ffmpeg["FFmpeg: encode approved revision"]
+    FINAL_REVIEW["FINAL_REVIEW: approve video"]
+    delivery["Internal PUBLISHED and authenticated delivery"]
+    revision_rejection["Revision mismatch: reject and re-preview"]
+    saved --> preview
+    preview --> TIMELINE_REVIEW
+    TIMELINE_REVIEW --> approve
+    approve -->|"matching R"| persisted
+    approve -->|"revision conflict"| revision_rejection
+    persisted --> dispatch
+    dispatch --> reload
+    reload -->|"same R and approved"| ffmpeg
+    reload -->|"revision or approval conflict"| revision_rejection
+    revision_rejection --> preview
+    ffmpeg --> FINAL_REVIEW
+    FINAL_REVIEW -->|"approve-final"| delivery
 ```
 
 ### Package Dependencies
 
+Each arrow is a **static IMPORT dependency**, per
+[ADR-001](docs/adr/001-package-dependency-rules.md). Service and provider are
+independent; apps compose both. Domain owns shared models/ports and is the leaf.
+Service owns use cases/storage; provider owns model adapters.
+
+<!-- diagram: static-imports -->
 ```mermaid
 graph BT
-    DOMAIN[creator-domain<br/>Entities, Value Objects, Ports]
-    SERVICE[creator-service<br/>Use Cases, Storage Adapters]
-    PROVIDER[creator-provider<br/>LLM, Image, TTS, STT Adapters]
-    API[apps/api<br/>REST Routes]
-    WORKER[apps/worker-orchestrator<br/>Celery Tasks]
-
-    SERVICE --> DOMAIN
-    PROVIDER --> DOMAIN
-    API --> SERVICE
-    API --> PROVIDER
-    WORKER --> SERVICE
-    WORKER --> PROVIDER
+    DOMAIN["creator-domain"]
+    SERVICE["creator-service"]
+    PROVIDER["creator-provider"]
+    API["apps/api"]
+    WORKER["apps/worker-orchestrator"]
+    SERVICE -->|"IMPORT"| DOMAIN
+    PROVIDER -->|"IMPORT"| DOMAIN
+    API -->|"IMPORT"| DOMAIN
+    API -->|"IMPORT"| SERVICE
+    API -->|"IMPORT"| PROVIDER
+    WORKER -->|"IMPORT"| DOMAIN
+    WORKER -->|"IMPORT"| SERVICE
+    WORKER -->|"IMPORT"| PROVIDER
 ```
 
 ## Pipeline Stages
@@ -388,6 +435,7 @@ See [`docs/LIGHTWEIGHT.md`](docs/LIGHTWEIGHT.md) for setup and tradeoffs.
 
 ## Documentation
 
+- [System Topology](docs/architecture/SYSTEM_TOPOLOGY.md) -- Configured runtime, static imports, approval flows and hosted contract
 - [First Short Walkthrough](docs/FIRST_SHORT_WALKTHROUGH.md) -- Offline demo, explicit Timeline approval, render and download
 - [Quick Start](docs/QUICKSTART.md) -- Local bootstrap and server-side authentication wiring
 - [Product Direction](docs/PRODUCT_DIRECTION.md) -- Short-first scope and target user experience
