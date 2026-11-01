@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .render_profile import RenderProfile
+from .media_integrity import MediaExpectation, validate_media
 
 logger = logging.getLogger(__name__)
 
@@ -175,36 +176,6 @@ class FFmpegService:
         cmd.append(str(output_path))
         return cmd
 
-    # Minimum output file size to consider valid (10KB — any real video exceeds this)
-    _MIN_VALID_SIZE = 10 * 1024
-
-    def _probe_output_valid(self, output_path: Path) -> bool:
-        """Validate output file with ffprobe. Returns True if it's a playable video."""
-        try:
-            probe_cmd = [
-                "ffprobe",
-                "-v",
-                "error",
-                "-show_entries",
-                "format=duration",
-                "-of",
-                "default=noprint_wrappers=1:nokey=1",
-                str(output_path),
-            ]
-            probe = subprocess.run(probe_cmd, capture_output=True, text=True, timeout=15)
-            if probe.returncode != 0:
-                logger.warning("ffprobe failed on %s: %s", output_path, probe.stderr[:200])
-                return False
-            duration = float(probe.stdout.strip())
-            if duration <= 0:
-                logger.warning("ffprobe reports zero/negative duration for %s", output_path)
-                return False
-            logger.info("ffprobe validated %s: duration=%.2fs", output_path, duration)
-            return True
-        except (ValueError, subprocess.TimeoutExpired) as exc:
-            logger.warning("ffprobe validation error for %s: %s", output_path, exc)
-            return False
-
     def _render_segment(self, image_path: Path, duration: float, output_path: Path, transition_override: str | None = None) -> None:
         """Render a single scene image into a video segment (.ts).
 
@@ -292,7 +263,7 @@ class FFmpegService:
             "-i",
             str(image_path),
             "-vf",
-            vf,
+            f"{vf},fps={self.profile.fps},trim=duration={duration},setpts=PTS-STARTPTS",
             "-c:v",
             self.profile.video_codec.value,
             "-crf",
@@ -326,8 +297,7 @@ class FFmpegService:
         'Error reinitializing filters!' in FFmpeg 7.x under Celery workers.
 
         Renders to a unique temporary file, then atomically renames on success.
-        If FFmpeg exits with a non-zero code but the temp file is a valid video
-        (verified by ffprobe), we accept the result.
+        Every accepted output passes integrity validation; nonzero exits fail.
         """
         import gc
         import shutil
@@ -346,6 +316,7 @@ class FFmpegService:
         # Create temp directory for intermediate segments
         tmp_dir = output_path.parent / f".render_tmp_{os.getpid()}_{os.urandom(4).hex()}"
         tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_output: Path | None = None
 
         try:
             # --- Pass 1: Render each scene as individual .ts segment ---
@@ -435,7 +406,7 @@ class FFmpegService:
             else:
                 cmd.extend(["-map", "0:v"])
 
-            cmd.append(str(tmp_output))
+            cmd.extend(["-t", str(sum(input_data.scene_durations)), str(tmp_output)])
             logger.debug("FFmpeg concat command: %s", " ".join(str(c) for c in cmd))
 
             gc.collect()
@@ -447,21 +418,6 @@ class FFmpegService:
                 raise
 
             if result.returncode != 0:
-                # Check if temp output is a valid video despite non-zero exit
-                try:
-                    file_size = tmp_output.stat().st_size
-                except FileNotFoundError:
-                    file_size = 0
-                if file_size >= self._MIN_VALID_SIZE and self._probe_output_valid(tmp_output):
-                    logger.warning(
-                        "FFmpeg concat returned %d but output is valid (%d bytes), accepting",
-                        result.returncode,
-                        file_size,
-                    )
-                    if result.stderr:
-                        logger.debug("FFmpeg stderr (accepted): %s", result.stderr[-500:])
-                    tmp_output.rename(output_path)
-                    return output_path
                 # Truly failed — clean up temp file
                 if tmp_output.exists():
                     tmp_output.unlink()
@@ -473,11 +429,17 @@ class FFmpegService:
                     f"FFmpeg render failed (rc={result.returncode}): {result.stderr}"
                 )
 
+            validate_media(tmp_output, MediaExpectation(
+                self.profile, sum(input_data.scene_durations), input_data.audio_path is not None,
+                len(input_data.scene_durations),
+            ))
             # Success — atomic rename from temp to final
             tmp_output.rename(output_path)
             return output_path
 
         finally:
+            if tmp_output is not None:
+                tmp_output.unlink(missing_ok=True)
             # Clean up intermediate segments
             if tmp_dir.exists():
                 shutil.rmtree(tmp_dir, ignore_errors=True)
