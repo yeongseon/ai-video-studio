@@ -110,11 +110,16 @@ dry-run output and backups before setting `MEDIA_RETENTION_DRY_RUN=false`.
 
 ## Project settings (slice A of #882)
 
-`creator_projects.settings` is nullable JSONB (JSON on SQLite), with no default
-or backfill. NULL preserves historical rendering; effective API resolution is
+`creator_project_settings` stores explicit settings as required JSONB (JSON on
+SQLite), with project_id primary key/cascading FK, workspace scope, schema_version
+and timestamps. No row preserves historical rendering; there is no backfill.
+`creator_projects` gains no columns: old SELECT-star/forbid-extra readers continue
+to work after migration and app-only rollback. Effective API resolution is
 read-only and does not write defaults. Both project adapters persist explicit
 typed settings and atomically replace them under workspace scope plus the
-authorized row's `updated_at` compare-and-swap, preserving status/source/title.
+authorized project row's `updated_at` compare-and-swap, preserving status/source/title.
+PostgreSQL advances that row and upserts settings in one transaction; failed CAS
+writes neither. Project deletion cascades settings; memory deletion mirrors it.
 See [the API contract](PROJECT_SETTINGS_API.md) and
 [ADR-008](adr/008-typed-project-settings.md) for the three-slice delivery.
 Approval snapshots/digests and worker consumption are slice B, not implemented

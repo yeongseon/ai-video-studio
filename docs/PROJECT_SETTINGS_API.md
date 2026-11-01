@@ -7,7 +7,7 @@ authentication returns 401. Workspace IDs are server-owned, never settings input
 ## Creation and reads
 
 `POST /api/creator/projects` accepts optional `settings` alongside existing fields.
-Omitted/null settings store SQL NULL, with no backfill. Creation, GET detail/list,
+Omitted/null settings create no settings row, with no backfill. Creation, GET detail/list,
 PATCH title and PUT settings responses add effective `settings` and
 `settings_source` (`explicit` or `legacy_default`) while retaining existing fields.
 

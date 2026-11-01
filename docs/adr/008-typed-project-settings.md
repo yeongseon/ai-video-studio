@@ -18,7 +18,8 @@ legacy defaults; persisting choices alone must not silently change rendering.
    Preset resolution delegates geometry to `OutputSpec.preset` and encoding to
    `EncodingProfile.by_name`. Duration is optional, strictly numeric, finite and
    positive, with no hard maximum (180 seconds is product guidance, not a cap).
-   Migration 051 adds nullable JSON/JSONB without default or backfill. Memory and
+   Migration 051 creates `creator_project_settings` with required JSON/JSONB and
+   a project-cascading foreign key, without backfill. No row means legacy. Memory and
    PostgreSQL preserve the same scoped replacement and timestamp CAS contract.
    See [project API](../PROJECT_SETTINGS_API.md).
 2. **B: approval snapshot and worker output (after A and #901).** Preview resolves
@@ -40,7 +41,7 @@ legacy defaults; persisting choices alone must not silently change rendering.
 
 ## Legacy compatibility
 
-NULL means historical behavior, not an explicit standard preset. Pure resolution
+No settings row means historical behavior, not an explicit standard preset. Pure resolution
 returns settings plus `source=legacy_default`; explicit stored settings return
 `source=explicit`. Legacy output is 1080x1920 at 30 fps, H264/AAC, CRF 18, `fast`.
 `standard` is CRF 23/`fast`; `high_quality` is CRF 18/`slow`. Neither equals legacy.
@@ -61,9 +62,20 @@ new preview/approval. Historical stored profiles are not rewritten or relabeled.
 Unknown versions/fields are rejected rather than truncated. Future versions need
 explicit parsers/upgraders and deployment ordering: migrate schema first, deploy
 readers that understand the version, then enable writers. Old binaries must not be
-asked to read future settings. Downgrade removes settings only; export explicit
+asked to read future settings. Downgrade drops the settings table only; export explicit
 choices before rollback if operators need to restore them later. Rolling back to
 an old application loses the settings API, but not legacy render compatibility.
+
+### Rollback compatibility lesson
+
+The first candidate added a nullable column to `creator_projects` and failed the
+real release-N app-only rollback gate: old readers select `*`/`p.*` into a
+forbid-extra Project model. Even NULL new columns break those binaries. Additive
+tables, not new columns on those rows, preserve this contract. Settings are read
+separately and composed by the service; raw project rows retain exactly the
+pre-051 column set. A real PostgreSQL regression loads the previous release's
+actual model and proves both legacy and explicitly configured project reads work.
+No CI fixture or rollback assertion was weakened to accommodate the migration.
 
 Settings contain no secrets, URLs, ownership IDs, codec parameters or approval
 state. Project access is authenticated and workspace scoped; foreign/missing IDs
