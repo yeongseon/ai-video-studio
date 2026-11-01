@@ -95,7 +95,10 @@ async def _prepare_media(reader: ObjectReader, request: Request, mime: str) -> R
         headers["Content-Range"] = f"bytes {start}-{end - 1}/{info.size}"
     headers["Content-Length"] = str(end - start)
     if request.method == "HEAD" or start == end:
-        await _io.run(reader.verify)
+        try:
+            await _io.run(reader.verify)
+        except (StorageObjectMissing, StorageReadError) as error:
+            raise _failure(error) from None
         return Response(media_type=mime, headers=headers)
 
     async def read(offset: int) -> bytes:
