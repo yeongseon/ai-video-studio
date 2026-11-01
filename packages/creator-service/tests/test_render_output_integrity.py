@@ -12,6 +12,8 @@ import pytest
 
 from creator_service.ffmpeg_service import FFmpegService, RenderInput
 from creator_service.render_profile import RenderProfile
+from creator_service.render_segments import render_plan
+from creator_domain.models import EncodingProfile, OutputSpec, RenderPlan, RenderSegment, RenderSegmentKind
 
 
 def make_media(path: Path, *, duration: float = 5, size: str = "128x128", fps: int = 30,
@@ -125,4 +127,23 @@ def test_rejects_complete_output_on_nonzero_exit(tmp_path: Path, service: FFmpeg
     # When / Then
     with pytest.raises(RuntimeError):
         copy_render(service, fixture, output, rc=-12)
+    assert list(output.parent.iterdir()) == []
+
+
+def test_plan_rejects_partial_final_output(tmp_path: Path) -> None:
+    # Given: the alternative public renderer returns final media, not intermediates.
+    fixture = make_media(tmp_path / "partial.mp4", duration=1)
+    plan = RenderPlan(segments=[RenderSegment(kind=RenderSegmentKind.IMAGE,
+        source=str(fixture), timeline_start_seconds=0, duration_seconds=5)],
+        output_spec=OutputSpec(width=128, height=128, fps=30),
+        encoding_profile=EncodingProfile.from_render_profile(RenderProfile()))
+    output = tmp_path / "output" / "video.mp4"
+
+    def encode(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        shutil.copyfile(fixture, cmd[-1])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    # When / Then
+    with patch("creator_service.render_segments._run_ffmpeg", side_effect=encode), pytest.raises(RuntimeError):
+        render_plan(plan, output)
     assert list(output.parent.iterdir()) == []
