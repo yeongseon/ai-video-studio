@@ -5,6 +5,13 @@ import TimelinePreview from "../components/creator/TimelinePreview";
 afterEach(() => { vi.restoreAllMocks(); });
 
 beforeEach(() => {
+  const times = new WeakMap<HTMLMediaElement, number>();
+  vi.spyOn(HTMLMediaElement.prototype, "currentTime", "get").mockImplementation(function (this: HTMLMediaElement) {
+    return times.get(this) ?? 0;
+  });
+  vi.spyOn(HTMLMediaElement.prototype, "currentTime", "set").mockImplementation(function (this: HTMLMediaElement, value) {
+    times.set(this, value);
+  });
   vi.spyOn(HTMLMediaElement.prototype, "play").mockResolvedValue();
   vi.spyOn(HTMLMediaElement.prototype, "pause").mockImplementation(() => {});
 });
@@ -27,7 +34,10 @@ it.each(["image", "video"] as const)("uses the served %s URL and signals its rev
   expect(media).toHaveAttribute("src", "/api/creator/projects/72/assets/9/content");
   expect(onReady).not.toHaveBeenCalled();
   if (kind === "image") fireEvent.load(media);
-  else fireEvent.loadedData(media);
+  else {
+    if (!(media instanceof HTMLVideoElement)) throw new Error("Expected video");
+    decoded(media);
+  }
   expect(onReady).toHaveBeenCalledWith(17);
 });
 
@@ -87,6 +97,7 @@ it("withholds first-video readiness until the trimmed target frame is decoded", 
   const video = videoElement();
   fireEvent.loadedData(video);
   expect(onReady).not.toHaveBeenCalled();
+  Object.defineProperty(video, "readyState", { configurable: true, value: 1 });
   fireEvent.loadedMetadata(video);
   expect(video.currentTime).toBe(2);
   expect(onReady).not.toHaveBeenCalled();
@@ -202,6 +213,24 @@ it("discloses the unpreviewed audio, captions, transitions and framing differenc
   await screen.findByTestId("preview-media");
   expect(screen.getByTestId("preview-fidelity")).toHaveTextContent(/audio.*captions.*transitions/i);
   expect(screen.getByTestId("preview-fidelity")).toHaveTextContent(/framing/i);
+});
+
+it("keeps gap boundaries half-open during playback", async () => {
+  vi.spyOn(globalThis, "fetch").mockResolvedValue(new Response(JSON.stringify({
+    segments: [{ kind: "image", source: "/a.png", timeline_start_seconds: 0, duration_seconds: 1 },
+      { kind: "image", source: "/b.png", timeline_start_seconds: 2, duration_seconds: 1 }],
+    output_spec: { width: 1080, height: 1920 },
+  })));
+  render(<TimelinePreview projectId={72} />);
+  await screen.findByTestId("preview-media");
+  let frame: FrameRequestCallback = () => {};
+  vi.spyOn(globalThis, "requestAnimationFrame").mockImplementation((callback) => { frame = callback; return 1; });
+  seek(1);
+  expect(screen.getByTestId("preview-empty")).toBeInTheDocument();
+  fireEvent.click(screen.getByTestId("preview-play-toggle"));
+  act(() => { frame(0); frame(2000); });
+  expect(screen.getByTestId("preview-media")).toHaveAttribute("src", "/b.png");
+  expect(screen.getByTestId("preview-seek")).toHaveValue("2");
 });
 
 it.each(["image", "video"] as const)("shows a recoverable error when the %s cannot load", async (kind) => {
