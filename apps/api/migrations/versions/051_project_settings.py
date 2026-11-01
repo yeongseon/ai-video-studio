@@ -16,7 +16,6 @@ def upgrade() -> None:
     op.create_table(
         "creator_project_settings",
         sa.Column("project_id", sa.Integer(), sa.ForeignKey("creator_projects.id", ondelete="CASCADE"), primary_key=True),
-        sa.Column("workspace_id", sa.BigInteger(), sa.ForeignKey("workspaces.id", ondelete="CASCADE"), nullable=True),
         sa.Column("settings", sa.JSON().with_variant(postgresql.JSONB(), "postgresql"), nullable=False),
         sa.Column("schema_version", sa.Integer(), nullable=False, server_default="1"),
         sa.Column("created_at", sa.DateTime(timezone=True), nullable=False, server_default=sa.func.now()),

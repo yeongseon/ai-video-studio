@@ -14,6 +14,8 @@ async def test_previous_release_reads_when_settings_schema_is_upgraded() -> None
     # Given the previous release's actual model and a disposable pre-051 schema.
     url = os.getenv("FIRST_SHORT_TEST_DATABASE_URL")
     if not url:
+        if os.getenv("GITHUB_ACTIONS") == "true":
+            raise RuntimeError("FIRST_SHORT_TEST_DATABASE_URL is required for settings runtime tests in CI")
         pytest.skip("FIRST_SHORT_TEST_DATABASE_URL must name a disposable database")
     root = Path(__file__).resolve().parents[3]
     model_source = subprocess.run(
@@ -41,8 +43,8 @@ async def test_previous_release_reads_when_settings_schema_is_upgraded() -> None
                 assert after is not None
                 assert set(after.keys()) == set(before.keys())
                 await pool.execute("""
-                    INSERT INTO creator_project_settings (project_id, workspace_id, settings)
-                    VALUES (2, NULL, '{"schema_version":1,"output_preset":"short_square"}'::jsonb)
+                    INSERT INTO creator_project_settings (project_id, settings)
+                    VALUES (2, '{"schema_version":1,"output_preset":"short_square"}'::jsonb)
                 """)
                 for project_id in (1, 2):
                     row = await pool.fetchrow("SELECT * FROM creator_projects WHERE id = $1", project_id)

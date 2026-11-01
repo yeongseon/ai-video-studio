@@ -11,7 +11,7 @@ async def fetch_settings(project_id: int, workspace_id: int | None) -> ProjectSe
     row = await fetch_one("""
         SELECT s.settings FROM creator_project_settings s
         JOIN creator_projects p ON p.id = s.project_id
-        WHERE p.id = $1 AND ($2::bigint IS NULL OR (p.workspace_id = $2 AND s.workspace_id = $2))
+        WHERE p.id = $1 AND ($2::bigint IS NULL OR p.workspace_id = $2)
     """, project_id, workspace_id)
     return ProjectSettings.model_validate_json(row["settings"]) if row is not None else None
 
@@ -28,9 +28,9 @@ async def insert_with_settings(payload: dict[str, Any]) -> dict[str, Any]:
         if row is None:
             raise RuntimeError("Project insert returned no row")
         await connection.execute("""
-            INSERT INTO creator_project_settings (project_id, workspace_id, settings)
-            VALUES ($1,$2,$3::jsonb)
-        """, row["id"], row["workspace_id"], json.dumps(payload["settings"]))
+            INSERT INTO creator_project_settings (project_id, settings)
+            VALUES ($1,$2::jsonb)
+        """, row["id"], json.dumps(payload["settings"]))
         return dict(row)
 
 
@@ -44,9 +44,9 @@ async def replace_settings(project_id: int, settings: ProjectSettings, *,
         if row is None:
             return None
         await connection.execute("""
-            INSERT INTO creator_project_settings (project_id, workspace_id, settings)
-            VALUES ($1,$2,$3::jsonb)
+            INSERT INTO creator_project_settings (project_id, settings)
+            VALUES ($1,$2::jsonb)
             ON CONFLICT (project_id) DO UPDATE SET settings=EXCLUDED.settings,
-                workspace_id=EXCLUDED.workspace_id, updated_at=NOW()
-        """, project_id, workspace_id, settings.model_dump_json())
+                updated_at=NOW()
+        """, project_id, settings.model_dump_json())
         return dict(row)

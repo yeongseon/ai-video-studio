@@ -21,6 +21,8 @@ async def settings_storage(request: pytest.FixtureRequest, monkeypatch: pytest.M
         return
     url = os.getenv("FIRST_SHORT_TEST_DATABASE_URL")
     if not url:
+        if os.getenv("GITHUB_ACTIONS") == "true":
+            raise RuntimeError("FIRST_SHORT_TEST_DATABASE_URL is required for settings runtime tests in CI")
         pytest.skip("FIRST_SHORT_TEST_DATABASE_URL must name a disposable database")
     schema = f"settings_{uuid.uuid4().hex}"
     root = Path(__file__).resolve().parents[3]
@@ -136,6 +138,9 @@ async def test_settings_reads_when_two_workspaces(settings_storage: ProjectServi
     assert await settings_storage.db.fetch_settings(first.id, 1) == square
     assert await settings_storage.db.fetch_settings(second.id, 2) == landscape
     assert await settings_storage.db.fetch_settings(first.id, None) == square
+    unowned = await settings_storage.create_project("Unowned", "idea", idea_brief="U", workspace_id=None, settings=landscape)
+    assert await settings_storage.db.fetch_settings(unowned.id, None) == landscape
+    assert await settings_storage.db.fetch_settings(unowned.id, 1) is None
     assert await settings_storage.db.fetch_settings(legacy.id, None) is None
     from creator_domain.models.project_settings import resolve_effective_settings
     assert resolve_effective_settings(await settings_storage.db.fetch_settings(legacy.id, None)).source == "legacy_default"
