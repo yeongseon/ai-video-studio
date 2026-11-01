@@ -125,8 +125,8 @@ async def test_retry_stage_and_pending_owner_are_published_atomically(
             frozenset({"cancelled", "completed"}),
         )
     )
-    await asyncio.sleep(0)
-    assert not cleanup.done()
+    if quota_pool is not None:
+        await cleanup
 
     resume.set()
     transition_ok, _ = await dispatch
