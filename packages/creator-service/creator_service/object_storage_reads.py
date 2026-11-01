@@ -6,7 +6,7 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from collections.abc import Callable, Iterator
-from typing import Final, Protocol, TypedDict
+from typing import Final, NotRequired, Protocol, TypedDict
 from .storage_sdk_logging import private_sdk_operation
 
 READ_CHUNK_SIZE: Final = 64 * 1024
@@ -15,6 +15,8 @@ READ_CHUNK_SIZE: Final = 64 * 1024
 @dataclass(frozen=True, slots=True)
 class ObjectInfo:
     size: int
+    etag: str | None = None
+    version_id: str | None = None
 
 
 class StorageObjectMissing(RuntimeError):
@@ -38,6 +40,7 @@ def validate_range(offset: int, length: int) -> None:
 
 
 def validate_key(key: str) -> list[str]:
+    """Reject traversal, not prove ownership of literal legacy non-workspace keys."""
     path = PurePosixPath(key)
     if not key or path.is_absolute() or ".." in path.parts or "\\" in key or "\x00" in key:
         raise StorageObjectMissing()
@@ -93,6 +96,8 @@ class S3Body(Protocol):
 
 class S3Head(TypedDict):
     ContentLength: int
+    ETag: NotRequired[str]
+    VersionId: NotRequired[str]
 
 
 class S3Object(TypedDict):
@@ -104,7 +109,8 @@ def s3_stat(operation: Callable[[], S3Head]) -> ObjectInfo:
 
     try:
         with private_sdk_operation():
-            return ObjectInfo(operation()["ContentLength"])
+            result = operation()
+            return ObjectInfo(result["ContentLength"], result.get("ETag"), result.get("VersionId"))
     except ClientError as error:
         if error.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
             raise StorageObjectMissing() from None
@@ -141,13 +147,17 @@ class BlobProperties(Protocol):
     @property
     def size(self) -> int: ...
 
+    @property
+    def etag(self) -> str: ...
+
 
 def azure_stat(operation: Callable[[], BlobProperties]) -> ObjectInfo:
     from azure.core.exceptions import AzureError, ResourceNotFoundError
 
     try:
         with private_sdk_operation():
-            return ObjectInfo(operation().size)
+            result = operation()
+            return ObjectInfo(result.size, result.etag)
     except ResourceNotFoundError:
         raise StorageObjectMissing() from None
     except TimeoutError:

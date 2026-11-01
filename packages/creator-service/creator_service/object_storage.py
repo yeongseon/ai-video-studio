@@ -23,6 +23,7 @@ from .object_storage_reads import (
     StorageReadError as StorageReadError,
     azure_read, azure_stat, local_read, local_stat, s3_read, s3_stat, validate_key,
 )
+from .storage_read_session import LocalReader, ObjectReader, RemoteReader
 
 logger = logging.getLogger(__name__)
 _STREAM_CHUNK_SIZE = 64 * 1024
@@ -118,6 +119,10 @@ class ArtifactStorageBackend(Protocol):
         """Read 1..65536 bytes, releasing the response before returning."""
         ...
 
+    def open_read(self, key: str) -> ObjectReader:
+        """Acquire metadata and an owned generation-consistent read session."""
+        ...
+
 
 class LocalStorageBackend:
     """Local filesystem storage. Default for development."""
@@ -203,6 +208,14 @@ class LocalStorageBackend:
 
     def read_range(self, key: str, offset: int, length: int) -> bytes:
         return local_read(self._root, key, offset, length)
+
+    def open_read(self, key: str) -> ObjectReader:
+        from .object_storage_reads import local_descriptor
+
+        try:
+            return LocalReader(local_descriptor(self._root, key))
+        except OSError:
+            raise StorageObjectMissing() from None
 
 
 class S3StorageBackend:
@@ -315,6 +328,22 @@ class S3StorageBackend:
         return s3_read(lambda byte_range: self._client.get_object(
             Bucket=self._bucket, Key=self._full_key(key), Range=byte_range,
         ), offset, length)
+
+    def open_read(self, key: str) -> ObjectReader:
+        info = self.stat(key)
+        if not info.etag:
+            raise StorageReadError()
+
+        def read(offset: int, length: int) -> bytes:
+            def operation(byte_range: str):
+                parameters = {"Bucket": self._bucket, "Key": self._full_key(key),
+                              "Range": byte_range, "IfMatch": info.etag}
+                if info.version_id is not None:
+                    parameters["VersionId"] = info.version_id
+                return self._client.get_object(**parameters)
+            return s3_read(operation, offset, length)
+
+        return RemoteReader(info, read)
 
 
 class AzureBlobStorageBackend:
@@ -466,6 +495,21 @@ class AzureBlobStorageBackend:
         return azure_read(lambda start, count: self._container_client.get_blob_client(self._full_key(key)).download_blob(
             offset=start, length=count, max_concurrency=1,
         ).readall(), offset, length)
+
+    def open_read(self, key: str) -> ObjectReader:
+        from azure.core import MatchConditions
+
+        info = self.stat(key)
+        if not info.etag:
+            raise StorageReadError()
+
+        def read(offset: int, length: int) -> bytes:
+            return azure_read(lambda start, count: self._container_client.get_blob_client(self._full_key(key)).download_blob(
+                offset=start, length=count, max_concurrency=1, etag=info.etag,
+                match_condition=MatchConditions.IfNotModified, logging_enable=False,
+            ).readall(), offset, length)
+
+        return RemoteReader(info, read)
 
 
 class GCSStorageBackend:

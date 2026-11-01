@@ -15,7 +15,7 @@ class BlobFake:
     def get_blob_properties(self):
         if self.failure is not None:
             raise self.failure
-        return SimpleNamespace(size=10)
+        return SimpleNamespace(size=10, etag='"generation-a"')
 
     def download_blob(self, **kwargs: int):
         self.requests.append(kwargs)
