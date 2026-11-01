@@ -17,6 +17,7 @@ from creator_domain.models import RenderPlan, RenderSegment, RenderSegmentKind
 from creator_service.ffmpeg_service import RenderInput, _run_ffmpeg
 from creator_service.render_profile import AudioCodec, Codec, RenderProfile
 from creator_service.media_integrity import MediaExpectation, validate_media
+from creator_service.render_frame_budget import allocate_frames
 
 _PROBE_TIMEOUT_SECONDS = 30
 _RENDER_TIMEOUT_SECONDS = 180
@@ -176,6 +177,7 @@ def render_video_segment(
     output_path: Path,
     *,
     profile: RenderProfile,
+    frame_budget: int | None = None,
 ) -> Path:
     """Render a source-video segment to a self-contained ``.ts`` clip.
 
@@ -219,7 +221,7 @@ def render_video_segment(
         str(source),
         "-an",
         "-vf",
-        f"{vf},fps={profile.fps}",
+        f"{vf},fps={profile.fps},tpad=stop_mode=clone:stop_duration={1 / profile.fps},setpts=PTS-STARTPTS",
         "-c:v",
         profile.video_codec.value,
         "-crf",
@@ -232,7 +234,8 @@ def render_video_segment(
         str(profile.fps),
         "-force_key_frames",
         "expr:eq(n,0)",
-        str(output_path),
+        "-frames:v", str(frame_budget if frame_budget is not None else round(segment.duration_seconds * profile.fps)),
+        "-f", "mp4", str(output_path),
     ]
     result = _run_ffmpeg(cmd, timeout=_RENDER_TIMEOUT_SECONDS)
     if result.returncode != 0:
@@ -247,6 +250,7 @@ def render_image_segment(
     output_path: Path,
     *,
     profile: RenderProfile,
+    frame_budget: int | None = None,
 ) -> Path:
     """Render an image segment to a self-contained ``.ts`` clip.
 
@@ -267,8 +271,6 @@ def render_image_segment(
         "-nostdin",
         "-loop",
         "1",
-        "-t",
-        f"{segment.duration_seconds:.3f}",
         "-i",
         str(source),
         "-vf",
@@ -285,7 +287,8 @@ def render_image_segment(
         str(profile.fps),
         "-force_key_frames",
         "expr:eq(n,0)",
-        str(output_path),
+        "-frames:v", str(frame_budget if frame_budget is not None else round(segment.duration_seconds * profile.fps)),
+        "-f", "mp4", str(output_path),
     ]
     result = _run_ffmpeg(cmd, timeout=_RENDER_TIMEOUT_SECONDS)
     if result.returncode != 0:
@@ -314,12 +317,13 @@ def render_plan(plan: RenderPlan, output_path: Path) -> Path:
     tmp_output = output_path.with_suffix(f".tmp.{os.getpid()}.{os.urandom(4).hex()}.mp4")
     try:
         segment_paths: list[Path] = []
+        budgets = allocate_frames([segment.duration_seconds for segment in plan.segments], profile.fps)
         for index, segment in enumerate(plan.segments):
             seg_path = tmp_dir / f"seg_{index:04d}.ts"
             if segment.kind is RenderSegmentKind.IMAGE:
-                render_image_segment(segment, seg_path, profile=profile)
+                render_image_segment(segment, seg_path, profile=profile, frame_budget=budgets[index])
             elif segment.kind is RenderSegmentKind.VIDEO:
-                render_video_segment(segment, seg_path, profile=profile)
+                render_video_segment(segment, seg_path, profile=profile, frame_budget=budgets[index])
             else:
                 raise UnsupportedSegmentKindError(
                     f"unsupported segment kind: {segment.kind.value!r}"
@@ -327,7 +331,8 @@ def render_plan(plan: RenderPlan, output_path: Path) -> Path:
             segment_paths.append(seg_path)
 
         concat_list = tmp_dir / "concat.txt"
-        concat_list.write_text("".join(f"file '{p.name}'\n" for p in segment_paths))
+        concat_list.write_text("".join(f"file '{p.name}'\nduration {budget / profile.fps:.12f}\n"
+            for p, budget in zip(segment_paths, budgets, strict=True)))
 
         cmd = [
             "ffmpeg",

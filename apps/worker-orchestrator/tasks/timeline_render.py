@@ -80,7 +80,8 @@ class TimelineFFmpegService(FFmpegService):
             case RenderSegmentKind.IMAGE:
                 super()._render_segment(image_path, duration, output_path, transition_override)
             case RenderSegmentKind.VIDEO:
-                render_video_segment(segment, output_path, profile=self.profile)
+                render_video_segment(segment, output_path, profile=self.profile,
+                                     frame_budget=round(duration * self.profile.fps))
             case unreachable:
                 assert_never(unreachable)
 

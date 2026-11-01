@@ -8,6 +8,7 @@ from pathlib import Path
 
 from .render_profile import RenderProfile
 from .media_integrity import MediaExpectation, validate_media
+from .render_frame_budget import allocate_frames
 
 logger = logging.getLogger(__name__)
 
@@ -277,7 +278,8 @@ class FFmpegService:
             # Force keyframe at start for clean concat
             "-force_key_frames",
             "expr:eq(n,0)",
-            str(output_path),
+            "-frames:v", str(round(duration * self.profile.fps)),
+            "-f", "mp4", str(output_path),
         ]
         result = _run_ffmpeg(cmd, timeout=180)  # zoompan needs more time
         if result.returncode != 0:
@@ -323,6 +325,7 @@ class FFmpegService:
             segment_paths: list[Path] = []
             gc.collect()
 
+            frame_budgets = allocate_frames(input_data.scene_durations, self.profile.fps)
             for i, (img, dur) in enumerate(
                 zip(input_data.image_paths, input_data.scene_durations, strict=False),
             ):
@@ -331,13 +334,13 @@ class FFmpegService:
                 trans_override = None
                 if input_data.scene_transitions and i < len(input_data.scene_transitions):
                     trans_override = input_data.scene_transitions[i]
-                self._render_segment(img, dur, seg_path, transition_override=trans_override)
+                self._render_segment(img, frame_budgets[i] / self.profile.fps, seg_path, transition_override=trans_override)
                 segment_paths.append(seg_path)
             # --- Pass 2: Concatenate segments + audio + subtitles ---
             concat_list_path = tmp_dir / "concat.txt"
             with open(concat_list_path, "w") as f:
-                for seg in segment_paths:
-                    f.write(f"file '{seg.name}'\n")
+                for seg, budget in zip(segment_paths, frame_budgets, strict=True):
+                    f.write(f"file '{seg.name}'\nduration {budget / self.profile.fps:.12f}\n")
 
             unique_suffix = f".tmp.{os.getpid()}.{os.urandom(4).hex()}.mp4"
             tmp_output = output_path.with_suffix(unique_suffix)
