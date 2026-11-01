@@ -16,12 +16,15 @@ Approval, ownership, revision and cancellation fences remain upstream and unchan
   rational FPS, and positive file size must parse from bounded ffprobe JSON.
 - Dimensions equal the profile; codec families map `libx264` to `h264`, `libx265`
   to `hevc`, and `libmp3lame` to `mp3` (AAC is `aac`).
-- Nominal FPS differs by at most 0.01 FPS. Average-rate drift times video duration
-  is at most segment count plus one frame, absorbing container endpoint rounding
-  without allowing a proportional loss of samples on longer shorts.
+- Nominal FPS differs by at most 0.01 FPS. Cheap `nb_frames` metadata (fallback:
+  rounded stream duration × average FPS) must match rounded plan duration × FPS
+  within max(two frames, ceiling(timing tolerance × FPS)). Independently, samples
+  must match nominal FPS × stream duration within two endpoint frames and average
+  FPS × stream duration within one frame. No allowance grows with segment count;
+  sparse timestamp-preserving media cannot conceal missing samples at the endpoint.
 - Format, video and required audio durations must each match expected plan duration
   within **max(0.100 seconds, 2 / profile FPS)**, plus 1 microsecond for decimal
-  representation. This aggregate ceiling never grows with segment count.
+  representation and 1 nanosecond of machine-precision comparison slack. This aggregate ceiling never grows with segment count.
   Independently rounded plans that exceed it fail closed rather than licensing
   truncation; exact-CFR tiny segments concatenate without cumulative loss. Legacy durations
   derive from narration; Timeline narration is padded to the approved plan.
@@ -39,7 +42,11 @@ Approval, ownership, revision and cancellation fences remain upstream and unchan
 Both validation subprocesses have 15-second timeouts and isolated sessions;
 stdout is limited to 1 MiB and stderr to 64 KiB, drained in 8 KiB reads. Overflow
 rejects output. Every exit terminates the group (SIGTERM, 200 ms grace, SIGKILL)
-and waits for the direct child. KeyboardInterrupt and soft-limit exceptions
+and waits for the direct child. Exit observation uses Linux/POSIX `waitid(WNOWAIT)`
+without reaping, anchoring PGID to the unreaped leader through the final signal.
+SIGKILL and the bounded one-second reap run in nested finally blocks even when
+the grace wait is interrupted. No Popen context-manager unbounded wait is used.
+KeyboardInterrupt and soft-limit exceptions
 propagate unchanged after cleanup, not as ordinary media failures.
 timeout/unavailable binaries reject output. ffprobe selects only required fields,
 not full packet/frame scans. Temporary output and segment directories are cleaned
@@ -83,6 +90,24 @@ After byte-bounded draining, measured validation on the loaded local host:
 30 seconds **633.93 / 443.40 / 376.34 ms**; 90 seconds
 **412.59 / 546.01 / 445.81 ms**. This exceeds the earlier ~200 ms target but
 remains subsecond and independent of short duration; no full-media scan added.
+
+## Oracle round-2 cumulative frame correction
+
+Each segment receives `round(cumulative_end × FPS) - round(cumulative_start × FPS)`
+frames, using accurately summed cumulative boundaries. FFmpeg output `-frames:v`
+enforces that budget after CFR conversion/zoompan; concat duration directives are
+budget/FPS, not independently rounded source milliseconds. Timeline video segments
+receive the same budget. Segments occupying zero output frames fail explicitly.
+Tiny intermediates are explicitly muxed MP4 (internal `.ts` filenames remain for
+compatibility), avoiding ambiguous tiny-MPEG-TS probing. Video endpoints receive
+at most one cloned endpoint frame before the exact output cap. No tolerance widened.
+
+The real matrix covers 225 image/mixed/Ken-Burns cases at 15/24/25/30/60 FPS,
+durations 0.1/0.2/1/one-sixth/2.4 seconds, counts 1/5/30. Total frames equal rounded
+aggregate plan duration × FPS; alternating 30 × 0.1 seconds at 60 FPS yields
+180 frames, not 195. Sparse 120/150-frame fixtures reject at every segment count.
+Idle validation (4.4.2, same 540×960 H264/AAC fixtures): 30 seconds
+**210.42 / 235.80 / 235.94 ms**; 90 seconds **213.43 / 223.26 / 207.12 ms**.
 
 The shipped worker-image topology is verified by CI's `worker-topology-runtime`
 job (Dockerfile runtime target, pinned Celery, solo and scaled prefork scenarios).
