@@ -130,7 +130,7 @@ def _production_environment(origin: str) -> dict[str, str]:
 
 @contextmanager
 def open_studio_proxy(
-    root: Path, needs: Prerequisites, *, environment: str = "development",
+    root: Path, needs: Prerequisites, *, environment: str = "development", remote_provider: str | None = None,
 ) -> Iterator[StudioProxyRuntime]:
     nginx, database_url, studio_dist = needs.nginx, needs.database_url, needs.studio_dist
     schema = f"studio_proxy_{uuid4().hex}"
@@ -150,11 +150,12 @@ def open_studio_proxy(
         **os.environ,
         "DATABASE_URL": f"{database_url}{'&' if '?' in database_url else '?'}search_path={schema}",
         "ARTIFACT_ROOT": str(artifact_root),
-        "STORAGE_BACKEND": "local",
+        "STORAGE_BACKEND": remote_provider or "local",
         "ENVIRONMENT": environment,
         "TMPDIR": str(root),
         "PYTHONPATH": os.pathsep.join(str(ROOT / path) for path in (
             "packages/creator-domain", "packages/creator-service", "packages/creator-provider", "apps/api/src",
+            "tests/integration",
         )),
         **(_production_environment(origin) if environment == "production" else {}),
     }
@@ -173,7 +174,9 @@ def open_studio_proxy(
         workspace_id = anyio.run(_provision_identity, database_url, schema, token)
         foreign_workspace_id = anyio.run(_provision_identity, database_url, schema, foreign_token)
         api = subprocess.Popen(
-            [sys.executable, "-m", "uvicorn", "shorts_api.main:app", "--host", "127.0.0.1", "--port", str(api_port)],
+            [sys.executable, "-m", "uvicorn",
+             "remote_preview_runtime_app:app" if remote_provider else "shorts_api.main:app",
+             "--host", "127.0.0.1", "--port", str(api_port)],
             cwd=ROOT / "apps/api",
             env=env,
             stdout=api_log,

@@ -418,3 +418,67 @@ def test_production_disables_raw_artifact_path_routes(media: Seeded) -> None:
 
     # Then production never serves raw paths as a shortcut.
     assert (through_nginx.status_code, api_files.status_code, api_legacy.status_code) == (404, 404, 404)
+
+
+async def _remote_project_rows(runtime: StudioProxyRuntime, provider: str) -> tuple[int, int, int]:
+    connection = await asyncpg.connect(runtime.database_url, server_settings={"search_path": runtime.schema})
+    try:
+        project = int(await connection.fetchval(
+            "INSERT INTO creator_projects (title, workspace_id) VALUES ('Remote preview', $1) RETURNING id",
+            runtime.workspace_id,
+        ))
+        ids = []
+        for mime, kind, key in (("image/png", "IMAGE", "remote.png"), ("video/mp4", "VIDEO", "remote.mp4")):
+            ids.append(int(await connection.fetchval(
+                "INSERT INTO creator_media_assets "
+                "(workspace_id, project_id, media_type, origin, storage_key, mime_type, metadata) "
+                "VALUES ($1, $2, $3, 'GENERATED', $4, $5, jsonb_build_object('storage_provider', $6::text)) RETURNING id",
+                runtime.workspace_id, project, kind, key, mime, provider,
+            )))
+        return project, ids[0], ids[1]
+    finally:
+        await connection.close()
+
+
+@pytest.mark.parametrize("environment", MODES)
+@pytest.mark.parametrize("provider", ["s3", "azure_blob"])
+def test_remote_project_media_and_ranges_through_real_nginx(
+    tmp_path: Path, environment: str, provider: str,
+) -> None:
+    # Given separate remote and colliding local bytes behind the shipped proxy.
+    needs = prerequisites_or_skip(required_in_ci=True)
+    remote = tmp_path / "remote-objects"
+    remote.mkdir()
+    blobs = {"remote.png": (_png((22, 33, 44)), "image/png"),
+             "remote.mp4": (_mp4(tmp_path, "yellow", 0.2), "video/mp4")}
+    for key, (data, _) in blobs.items():
+        (remote / key).write_bytes(data)
+    with open_studio_proxy(tmp_path, needs, environment=environment, remote_provider=provider) as runtime:
+        project, image, video = anyio.run(_remote_project_rows, runtime, provider)
+        for asset, (key, (data, mime)) in zip((image, video), blobs.items(), strict=True):
+            (runtime.artifact_root / key).write_bytes(b"wrong-local-fallback")
+            url = _project_asset_url(project, asset)
+            # When full, partial, and HEAD requests traverse real nginx and API auth.
+            with httpx.Client(base_url=runtime.origin, timeout=30) as client:
+                full = client.get(url)
+                partial = client.get(url, headers={"Range": "bytes=2-9"})
+                head = client.head(url)
+                missing = client.get(_project_asset_url(project, ABSENT))
+            direct = _get(runtime.api_origin, url, runtime.token)
+            foreign = _get(runtime.api_origin, url, runtime.foreign_token)
+            anonymous = _get(runtime.api_origin, url)
+            # Then only authorized remote bytes and safe seek headers reach Studio.
+            assert full.status_code == 200, full.text[:200]
+            assert full.content == data
+            assert full.headers["content-type"] == mime
+            assert direct.headers["x-content-type-options"] == "nosniff"
+            assert direct.headers["cache-control"] == "private, no-store"
+            assert "location" not in full.headers
+            assert partial.status_code == 206
+            assert partial.content == data[2:10]
+            assert partial.headers["content-range"] == f"bytes 2-9/{len(data)}"
+            assert partial.headers["accept-ranges"] == "bytes"
+            assert head.status_code == 200 and head.content == b""
+            assert head.headers["content-length"] == str(len(data))
+            assert (foreign.status_code, missing.status_code, anonymous.status_code) == (404, 404, 401)
+            assert data not in foreign.content + missing.content
