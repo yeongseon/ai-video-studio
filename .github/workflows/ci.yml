@@ -29,6 +29,19 @@ jobs:
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: python3 scripts/ci_impact.py "$BASE_SHA" "$HEAD_SHA"
 
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate changed-file whitespace
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git diff --check "$BASE_SHA" "$HEAD_SHA"
+
   restore-drill:
     needs: impact
     if: ${{ github.event_name != 'pull_request' || needs.impact.outputs.restore == 'true' }}
