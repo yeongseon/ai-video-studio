@@ -10,19 +10,35 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def diagram(kind: str, body: str) -> str:
-    return f'<!-- diagram: {kind} -->\n```mermaid\nflowchart LR\n{body}\n```\n'
+    return f"<!-- diagram: {kind} -->\n```mermaid\nflowchart LR\n{body}\n```\n"
 
 
 @pytest.mark.parametrize(
     ("body", "error"),
     [
-        ('SERVICE["creator-service"]\nPROVIDER["creator-provider"]\nSERVICE -->|"IMPORT"| PROVIDER', "forbidden-dependency"),
-        ('DOMAIN["creator-domain"]\nSERVICE["creator-service"]\nDOMAIN -->|"IMPORT"| SERVICE', "forbidden-dependency"),
-        ('SERVICE["creator-service"]\nAPI["apps/api"]\nSERVICE -->|"IMPORT"| API', "forbidden-dependency"),
+        (
+            'SERVICE["creator-service"]\nPROVIDER["creator-provider"]\nSERVICE -->|"IMPORT"| PROVIDER',
+            "forbidden-dependency",
+        ),
+        (
+            'DOMAIN["creator-domain"]\nSERVICE["creator-service"]\nDOMAIN -->|"IMPORT"| SERVICE',
+            "forbidden-dependency",
+        ),
+        (
+            'SERVICE["creator-service"]\nAPI["apps/api"]\nSERVICE -->|"IMPORT"| API',
+            "forbidden-dependency",
+        ),
         ('SERVICE["creator-service"]\nSERVICE -->|"IMPORT"| MISSING', "unknown node"),
         ('SERVICE["creator-service"]\nSERVICE["creator-service"]', "duplicate node"),
-        ('SERVICE["creator-service"]\nDOMAIN["creator-domain"]\nSERVICE --> DOMAIN', "IMPORT label"),
+        (
+            'SERVICE["creator-service"]\nDOMAIN["creator-domain"]\nSERVICE --> DOMAIN',
+            "IMPORT label",
+        ),
         ('SERVICE["creator-service"', "syntax"),
+        (
+            'SERVICE["creator-service"]\nUNKNOWN["Not a package"]\nSERVICE -->|"IMPORT"| UNKNOWN',
+            "unknown",
+        ),
     ],
 )
 def test_rejects_static_diagram_when_dependency_or_syntax_is_invalid(
@@ -41,7 +57,10 @@ def test_accepts_static_diagram_when_apps_compose_independent_packages(tmp_path:
     # Given legal app composition and a downward package import.
     from scripts.check_architecture_diagrams import check_document
 
-    text = diagram("static-imports", 'API["apps/api"]\nSERVICE["creator-service"]\nDOMAIN["creator-domain"]\nAPI -->|"IMPORT"| SERVICE\nSERVICE -->|"IMPORT"| DOMAIN')
+    text = diagram(
+        "static-imports",
+        'API["apps/api"]\nSERVICE["creator-service"]\nDOMAIN["creator-domain"]\nAPI -->|"IMPORT"| SERVICE\nSERVICE -->|"IMPORT"| DOMAIN',
+    )
     # When the graph is checked using the package policy.
     issues = check_document(text, tmp_path / "doc.md", tmp_path)
     # Then allowed composition is not mistaken for a lateral dependency.
@@ -50,7 +69,13 @@ def test_accepts_static_diagram_when_apps_compose_independent_packages(tmp_path:
 
 @pytest.mark.parametrize(
     ("mutation", "error"),
-    [("beat", "mandatory"), ("gpu", "optional"), ("chunk", "planned"), ("path", "source path"), ("service", "Compose service")],
+    [
+        ("beat", "mandatory"),
+        ("gpu", "optional"),
+        ("chunk", "planned"),
+        ("path", "source path"),
+        ("service", "Compose service"),
+    ],
 )
 def test_rejects_runtime_when_configuration_contract_is_mutated(
     mutation: str, error: str, tmp_path: Path
@@ -60,12 +85,19 @@ def test_rejects_runtime_when_configuration_contract_is_mutated(
 
     services = ("api", "worker", "beat", "postgres", "redis", "studio-web")
     (tmp_path / "docker-compose.yml").write_text(
-        "services:\n" + "".join(f"  {name}:\n    image: example\n" for name in services)
-        + '  ollama:\n    profiles: ["gpu"]\n', encoding="utf-8"
+        "services:\n"
+        + "".join(f"  {name}:\n    image: example\n" for name in services)
+        + '  ollama:\n    profiles: ["gpu"]\n',
+        encoding="utf-8",
     )
     ids = tuple(name.replace("-", "_") for name in services)
-    body = "\n".join(f'{node}["{node}"]' for node in ids if not (mutation == "beat" and node == "beat"))
-    table = "\n".join(f"| {node} | docker-compose.yml#{service} | Component |" for node, service in zip(ids, services, strict=True))
+    body = "\n".join(
+        f'{node}["{node}"]' for node in ids if not (mutation == "beat" and node == "beat")
+    )
+    table = "\n".join(
+        f"| {node} | docker-compose.yml#{service} | Component |"
+        for node, service in zip(ids, services, strict=True)
+    )
     if mutation == "gpu":
         body += '\nmodel["Ollama mandatory"]'
         table += "\n| model | docker-compose.yml#ollama | Model |"
@@ -93,8 +125,18 @@ def test_rejects_link_when_relative_file_or_anchor_is_missing(target: str, tmp_p
     assert any("broken relative link" in issue for issue in issues)
 
 
-@pytest.mark.parametrize("text", ['```mermaid\n```', diagram("planned", ""), diagram("planned", 'A["unbalanced]'), '<!-- diagram: planned -->\n```mermaid\nunknownDiagram\n```'])
-def test_rejects_fence_when_annotation_header_or_content_is_invalid(text: str, tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "text",
+    [
+        "```mermaid\n```",
+        diagram("planned", ""),
+        diagram("planned", 'A["unbalanced]'),
+        "<!-- diagram: planned -->\n```mermaid\nunknownDiagram\n```",
+    ],
+)
+def test_rejects_fence_when_annotation_header_or_content_is_invalid(
+    text: str, tmp_path: Path
+) -> None:
     # Given malformed Mermaid content.
     from scripts.check_architecture_diagrams import check_document
 
@@ -115,9 +157,54 @@ def test_rejects_flow_when_final_review_is_missing(kind: str, tmp_path: Path) ->
     assert any("FINAL_REVIEW" in issue for issue in issues)
 
 
+def test_rejects_flow_when_external_publication_is_claimed(tmp_path: Path) -> None:
+    # Given a flow that invents an external publication step.
+    from scripts.check_architecture_diagrams import check_document
+
+    text = diagram("flow-generated", 'FINAL_REVIEW["FINAL_REVIEW"]\nexternal["external publish"]')
+    # When the current flow is checked.
+    issues = check_document(text, tmp_path / "doc.md", tmp_path)
+    # Then internal completion cannot masquerade as a social upload.
+    assert any("external publish" in issue for issue in issues)
+
+
+def test_accepts_link_when_heading_contains_markdown_formatting(tmp_path: Path) -> None:
+    # Given GitHub's heading slug excludes formatting delimiters and link URLs.
+    from scripts.check_architecture_diagrams import check_document
+
+    (tmp_path / "target.md").write_text("# [Release](release.md) and **CI**\n", encoding="utf-8")
+    # When its relative anchor is checked.
+    issues = check_document("[release](target.md#release-and-ci)", tmp_path / "doc.md", tmp_path)
+    # Then the valid rendered heading is accepted.
+    assert issues == ()
+
+
+def test_accepts_runtime_when_unrelated_markdown_tables_repeat_labels() -> None:
+    # Given a valid runtime map alongside unrelated provider tables.
+    from scripts.check_architecture_diagrams import check_runtime
+
+    services = ("api", "worker", "beat", "postgres", "redis", "studio-web")
+    body = "\n".join(f'{service.replace("-", "_")}["{service}"]' for service in services)
+    text = "\n".join(
+        f"| {service.replace('-', '_')} | docker-compose.yml#{service} | Component |"
+        for service in services
+    )
+    text += "\n| Category | Provider |\n| Category | Provider |"
+    # When source maps are checked.
+    issues = check_runtime(body, text, ROOT)
+    # Then tables outside the diagram's node namespace do not cause false duplicates.
+    assert issues == ()
+
+
 def test_cli_checks_repository_when_invoked_outside_checkout(tmp_path: Path) -> None:
     # Given the real document set and a different working directory.
     # When the stdlib-only CLI validates the checked-in diagrams and links.
-    result = subprocess.run([sys.executable, str(ROOT / "scripts/check_architecture_diagrams.py")], cwd=tmp_path, capture_output=True, text=True, check=False)
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/check_architecture_diagrams.py")],
+        cwd=tmp_path,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
     # Then the repository's canonical sources pass through the actual CLI surface.
     assert result.returncode == 0, result.stdout + result.stderr
