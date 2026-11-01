@@ -6,7 +6,8 @@ from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from collections.abc import Callable, Iterator
-from typing import Final, NotRequired, Protocol, TypedDict
+from typing import Final, Protocol, TypedDict
+from typing_extensions import NotRequired
 from .storage_sdk_logging import private_sdk_operation
 
 READ_CHUNK_SIZE: Final = 64 * 1024

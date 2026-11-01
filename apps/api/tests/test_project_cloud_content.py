@@ -12,6 +12,19 @@ from shorts_api.main import app
 pytestmark = pytest.mark.asyncio
 
 
+@pytest.mark.parametrize("key", ["legacy/object.mp4", "WORKSPACES/8/object.mp4", "encoded/%2e%2e.mp4", "unicode/．．.mp4"])
+async def test_authorized_literal_legacy_keys_are_not_namespace_normalized(
+    client: AsyncClient, preview: PreviewFixture, key: str,
+) -> None:
+    # Given an authorized legacy row with a literal, unusual but non-traversing key.
+    asset = await preview.asset(key=key)
+    # When requesting its canonical project identity.
+    response = await client.get(content_url(asset))
+    # Then literal compatibility is retained, not mistaken for universal key ownership.
+    assert response.status_code == 200
+    assert response.content == preview.backend.data
+
+
 async def test_real_project_dependency_rejects_revoked_membership_before_storage(
     client: AsyncClient, preview: PreviewFixture, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
