@@ -147,3 +147,21 @@ def test_plan_rejects_partial_final_output(tmp_path: Path) -> None:
     with patch("creator_service.render_segments._run_ffmpeg", side_effect=encode), pytest.raises(RuntimeError):
         render_plan(plan, output)
     assert list(output.parent.iterdir()) == []
+
+
+def test_image_segment_encodes_actual_profile_cadence(tmp_path: Path) -> None:
+    from PIL import Image
+    from creator_service.render_segments import render_image_segment
+    # Given: still-image demuxing defaults to 25 fps, profile requires 30.
+    image = tmp_path / "image.png"
+    Image.new("RGB", (128, 128), "red").save(image)
+    segment = RenderSegment(kind=RenderSegmentKind.IMAGE, source=str(image),
+                            timeline_start_seconds=0, duration_seconds=2)
+    # When
+    output = render_image_segment(segment, tmp_path / "segment.ts",
+                                  profile=RenderProfile(width=128, height=128, fps=30))
+    # Then: count decoded frames, not just the nominal r_frame_rate label.
+    probe = subprocess.run(["ffprobe", "-v", "error", "-count_frames", "-show_entries",
+                            "stream=nb_read_frames", "-of", "json", str(output)],
+                           capture_output=True, text=True, check=True, timeout=15)
+    assert int(json.loads(probe.stdout)["streams"][0]["nb_read_frames"]) == 60
