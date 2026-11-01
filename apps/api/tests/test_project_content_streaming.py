@@ -74,3 +74,34 @@ async def test_slow_preview_storage_does_not_block_health(
             assert health.status_code == 200
         finally:
             release.set()
+
+
+async def test_asgi_disconnect_stops_bounded_reads(preview: PreviewFixture) -> None:
+    # Given a large representation and the real StreamingResponse ASGI surface.
+    from shorts_api.routes.creator_timeline import get_project_asset_content
+
+    preview.backend.size = 500 * 1024 * 1024
+    asset = await preview.asset()
+    now = datetime.now(timezone.utc)
+    access = (CurrentUser(user_id=1, workspace_id=7), Project(
+        id=42, workspace_id=7, created_at=now, updated_at=now,
+    ))
+    scope = {"type": "http", "method": "GET", "headers": [], "asgi": {"spec_version": "2.3"}}
+    response = await get_project_asset_content(42, asset, request=Request(scope), access=access)
+    sent = anyio.Event()
+
+    async def send(message):
+        if message["type"] == "http.response.body" and message.get("body"):
+            sent.set()
+            await anyio.sleep_forever()
+
+    async def receive():
+        await sent.wait()
+        return {"type": "http.disconnect"}
+
+    # When the ASGI client disconnects while its first body chunk is sent.
+    with anyio.fail_after(2):
+        await response(scope, receive, send)
+    # Then cancellation completes with no later fetch or live provider response.
+    assert preview.backend.reads == [(0, 65536)]
+    assert preview.backend.active == 0

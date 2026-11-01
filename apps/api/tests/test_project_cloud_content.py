@@ -59,6 +59,19 @@ async def test_project_preview_requires_authentication(client: AsyncClient, prev
     assert preview.backend.calls == 0
 
 
+@pytest.mark.parametrize("key", ["workspaces/8/assets/private.mp4", "../private.mp4", "/private.mp4", "a\\private.mp4"])
+async def test_remote_keys_cannot_select_foreign_namespace(
+    client: AsyncClient, preview: PreviewFixture, key: str,
+) -> None:
+    # Given an owned row with a foreign or unsafe storage key.
+    asset = await preview.asset(key=key)
+    # When its project identity is requested.
+    response = await client.get(content_url(asset))
+    # Then namespace confusion never reaches storage.
+    assert response.status_code == 404
+    assert preview.backend.calls == 0
+
+
 async def test_provider_mismatch_is_409_without_storage(client: AsyncClient, preview: PreviewFixture) -> None:
     # Given historical metadata that differs from the configured singleton.
     asset = await preview.asset(provider="azure_blob")
@@ -67,6 +80,41 @@ async def test_provider_mismatch_is_409_without_storage(client: AsyncClient, pre
     # Then it cannot accidentally serve a colliding key from another provider.
     assert response.status_code == 409
     assert preview.backend.calls == 0
+
+
+async def test_singleton_provider_mismatch_does_not_read(
+    client: AsyncClient, preview: PreviewFixture,
+) -> None:
+    # Given environment changed after a singleton was initialized for another provider.
+    asset = await preview.asset()
+    preview.backend.provider = "azure_blob"
+    # When requesting an s3 asset under s3 configuration.
+    response = await client.get(content_url(asset))
+    # Then the actual backend identity is checked, not merely current environment.
+    assert response.status_code == 409
+    assert preview.backend.calls == 0
+
+
+async def test_backend_initialization_failure_is_generic(
+    client: AsyncClient, preview: PreviewFixture, monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from botocore.exceptions import NoCredentialsError
+    from shorts_api.routes import creator_timeline
+
+    # Given credentials unavailable during lazy SDK initialization.
+    asset = await preview.asset()
+
+    def fail():
+        raise NoCredentialsError()
+
+    monkeypatch.setattr(creator_timeline, "get_storage_backend", fail)
+    # When the authenticated route initializes storage.
+    response = await client.get(content_url(asset))
+    # Then deployment errors fail closed without leaking SDK diagnostics.
+    assert response.status_code == 502
+    assert "credentials" not in response.text.lower()
+    assert "private.mp4" not in caplog.text
 
 
 @pytest.mark.parametrize("mime", ["text/html", "image/svg+xml", "audio/wav"])
@@ -93,6 +141,9 @@ async def test_local_preview_confines_keys(
     (tmp_path / "escape.mp4").symlink_to(outside)
     monkeypatch.setenv("STORAGE_BACKEND", "local")
     preview.backend.provider = "local"
+    from creator_service.object_storage import LocalStorageBackend
+
+    monkeypatch.setattr("creator_service.object_storage._storage_backend", LocalStorageBackend(str(tmp_path)))
     asset = await preview.asset(provider="local", key=key)
     # When requested through the owned identity.
     response = await client.get(content_url(asset))
