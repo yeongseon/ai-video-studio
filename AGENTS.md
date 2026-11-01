@@ -16,48 +16,56 @@ the passing baseline; new or changed behavior still requires a failing test firs
 Documentation-only changes use content/link checks rather than artificial tests.
 The additional security and production-hardening gates below still apply.
 
-## TDD + Oracle Review Workflow
+## Small, Independently Verifiable Issues and PRs
 
-All security-critical and production-hardening changes MUST follow this workflow:
+Default to **S-sized** delivery. Size is an estimate of the *behavioral change*,
+not an absolute file-count or line-count limit:
 
-### 1. Write Tests First (TDD)
-- Write failing security boundary tests BEFORE implementing fixes
-- Tests must cover: access control, IDOR prevention, anti-enumeration (404 not 403), auth bypass attempts
-- Run tests to confirm they fail for the right reason
+- **S:** one narrow outcome and one focused regression check (typically 1–3 production files).
+- **M:** a cohesive change across a few components (typically 4–6 production files).
+- **L/XL:** planning/tracking only; split into S/M implementation issues **before coding**.
+- **Tracking issues:** describe dependencies, outcomes and child issue links; do not
+  implement every child in one PR.
 
-### 2. Implement Fixes
-- Fix the minimum code needed to make tests pass
-- Follow existing codebase patterns (dependency injection, access control via `require_run_access`/`require_project_access`)
-- Never suppress type errors
+Before coding, inspect the issue for duplicated or already implemented work.
+Each S/M implementation issue must state **one outcome**, relevant paths, acceptance
+criteria, focused test command(s), and upstream dependencies. Prefer a single
+small PR per issue. Do not split inseparable safety invariants into unsafe partial
+deployments or create artificial issue/PR chains for trivial file edits.
+If an implementation reveals a new cross-cutting dependency, stop and split or
+re-scope instead of silently expanding the PR.
 
-### 3. Verify All Tests Pass
-- Run full test suite: `cd apps/api && python3 -m pytest tests/ -v`
-- Zero failures required before proceeding
+## Risk-Based Development Gates
 
-### 4. Oracle Review
-- Submit code for Oracle review with detailed criteria
-- Score must reach **100/100** before merge
-- Scoring breakdown (10 sections, 10 points each):
-  - IDOR Protection, Auth Completeness, Error Handling, Signal Handling
-  - Input Validation, Type Safety, Test Coverage, Code Quality
-  - Race Conditions, Defense in Depth
-- Deductions: Critical (-20), Major (-10), Minor (-2), Advisory (0)
+Keep TDD and authorization/data-integrity guarantees. Gate *proportionally*:
 
-### 5. Fix and Re-review
-- Address all Critical and Major findings
-- Re-run Oracle review until 100/100
-- Minor findings: fix if straightforward, document if intentional
+| Change tier | Iteration gate | Merge gate |
+| --- | --- | --- |
+| Documentation/config wording only | Content, link and diff hygiene checks | Lightweight docs checks; no irrelevant media/runtime jobs |
+| Standard isolated feature, UI, or bug | Focused Red/Green test, relevant lint/typecheck | Green applicable PR CI at **final head SHA**; review proportionate to impact |
+| High-risk: auth, identity/IDOR, secret handling, DB/migrations, artifact access/deletion, workspace quotas, concurrency, queue recovery, media output integrity, public ingress, release/rollback | Focused security/regression tests and relevant integration/runtime suites | Security boundary review, all triggered high-risk CI checks green on final SHA, critical/major findings fixed |
+| Release / deployment to a real environment | Validated manifest and environment-specific smoke | **Complete CI on the same SHA**, explicit deployment approval, rollback readiness |
 
-### 6. Merge
-- Only merge after Oracle 100/100 AND full test suite green
-- Required CI must also be green on the exact final head SHA (see **CI Failure Handling** below)
-- Squash merge preferred for clean history
+- During development run focused tests and relevant static checks; do not repeatedly
+  run the entire repository suite after each small edit.
+- A single review of the final change with actionable findings is the default.
+  Oracle or another scoring tool may assist but **no arbitrary 100/100 score or
+  repeated full re-review is a universal merge requirement**.
+- For high-risk changes, document the relevant boundary threat/negative test
+  (including 404 anti-enumeration), ownership/fencing expectations and a reviewer
+  sign-off. Re-run checks that a follow-up modification could invalidate.
+- Do not downgrade a security-sensitive change to standard because a diff is small.
+  If scope/classification is uncertain, require the higher gate; paths used to
+  skip expensive PR jobs are deliberately conservative.
+- On `main` the entire existing CI matrix remains required as a release candidate
+  signal; a green PR selection alone does not certify production readiness.
+- No skip/xfail, weaker assertions, weakened coverage thresholds or bypassed
+  authorization may be introduced just to make a build green.
 
 ## CI Failure Handling
 
-This section follows the TDD workflows above and does not relax any of their gates
-(full API suite, Oracle 100/100, 404 anti-enumeration). It applies whenever CI fails on a
-pull request or during implementation work.
+This section applies whenever an applicable CI job fails on a pull request or during
+implementation. High-risk security boundaries and 404 anti-enumeration must not be weakened.
 
 ### Classify the cause first
 
@@ -74,8 +82,8 @@ Read the failing job log and reproduce the failure locally when possible. Then l
 
 - Fix them in the same PR. Add or strengthen a regression test that fails for the intended reason
   first (Red), then passes (Green).
-- Re-run the focused tests, then every required CI check.
-- Flow: implement → CI fails → reproduce → regression test → fix → focused tests → full required CI →
+- Re-run focused tests, then every CI check applicable to the changed risk boundaries.
+- Flow: implement → reproduce → regression test → fix → focused tests → applicable CI →
   exact final head SHA green → review → merge.
 
 ### Newly discovered defects (issue-first)
@@ -116,12 +124,15 @@ version check, keep the render test, and re-run the full CI. Do not skip the tes
 
 ### Merge gate
 
-- Merge only when every required check (lint, tests, docker/runtime, security, review gates, and
-  anything else the repository requires) is green on the **exact final head SHA** of the PR.
-- A green result from an earlier SHA is not evidence for the final head. After every push, wait for
-  the checks on the new head.
-- Documentation-only changes are verified with content and consistency checks (diff hygiene, links,
-  referenced paths and commands) instead of artificial tests.
+- Merge only after the **applicable PR CI checks** are green on the exact final
+  head SHA. Changes that touch protected boundaries must include their dedicated
+  negative/regression tests and triggered runtime gates.
+- A green result from an earlier SHA is not evidence for the final head. After each push,
+  re-run the checks relevant to changes made since the last green verification.
+- Documentation-only changes use content and consistency checks (diff hygiene, links,
+  referenced paths and commands), rather than unrelated Python/FFmpeg/Docker gates.
+- Full end-to-end, container, recovery and release checks remain mandatory on
+  `main` and before any release; never deploy based solely on a fast PR gate.
 
 This is a working rule, not automation: it does not add a CI auto-repair bot or unlimited retries.
 
