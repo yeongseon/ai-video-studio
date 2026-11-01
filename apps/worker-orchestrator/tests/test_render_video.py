@@ -551,12 +551,17 @@ def test_render_video_ffmpeg_failure_marks_failed(monkeypatch: pytest.MonkeyPatc
 
 
 @pytest.mark.parametrize("expected_duration", [5.0, 5.429])
+@pytest.mark.parametrize("classifier_poison", [False, True])
 def test_render_video_partial_output_never_published(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pacing_split: None,
     expected_duration: float,
+    classifier_poison: bool,
 ) -> None:
     # Given: real same-profile 1s output for a 5s worker plan.
     fixture = tmp_path / "partial.mp4"
+    if classifier_poison:
+        from creator_service.media_integrity import MediaIntegrityError
+        monkeypatch.setattr(MediaIntegrityError, "__str__", lambda self: "429 rate limit")
     subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
                     "testsrc2=size=128x128:rate=30:duration=1", "-c:v", "libx264",
                     "-threads", "1", "-preset", "ultrafast", str(fixture)],

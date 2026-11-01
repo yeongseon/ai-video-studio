@@ -1,6 +1,6 @@
 """Bounded final-media acceptance, shared by renderers and future chunk callers.
 
-Timing tolerance is 100 ms plus one frame per independently rounded segment.
+Timing tolerance is max(100 ms, two frames), independent of segment count.
 Nominal FPS tolerance is 0.01; average-rate drift allows one rounded frame per
 segment plus one container endpoint frame, not a percentage of total duration.
 The plan remains authoritative even with -shortest: short narration must not
@@ -20,6 +20,7 @@ from typing import Final, assert_never
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from .render_profile import AudioCodec, Codec, RenderProfile
+from .media_validation_process import ValidationProcessError, run_validation
 
 PROBE_TIMEOUT: Final = 15
 TAIL_TIMEOUT: Final = 15
@@ -29,8 +30,10 @@ MIN_SIZE_BYTES: Final = 1024
 class MediaIntegrityError(RuntimeError):
     """Render failure (not upload rejection); retains existing worker mapping."""
 
-    def __init__(self, rule: str) -> None:
+    def __init__(self, rule: str, *, durations: tuple[float, ...] = (), expected: float | None = None) -> None:
         self.rule = rule
+        self.durations = durations
+        self.expected = expected
         super().__init__(f"FFmpeg output integrity failed: {rule}")
 
 
@@ -43,7 +46,7 @@ class MediaExpectation:
 
     @property
     def duration_tolerance(self) -> float:
-        return 0.1 + self.segment_count / self.profile.fps
+        return max(0.1, 2 / self.profile.fps)
 
 
 class ProbeStream(BaseModel):
@@ -91,10 +94,11 @@ def _audio_codec(codec: AudioCodec) -> str:
 
 def _run(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
     try:
-        return subprocess.run(cmd, stdin=subprocess.DEVNULL, capture_output=True,
-                              text=True, timeout=timeout, start_new_session=True)
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise MediaIntegrityError("validation process unavailable or timed out") from exc
+        return run_validation(cmd, timeout)
+    except ValidationProcessError as exc:
+        raise MediaIntegrityError(exc.rule) from exc
+    except OSError as exc:
+        raise MediaIntegrityError("validation_unavailable") from exc
 
 
 def validate_media(output: Path, expected: MediaExpectation) -> None:
@@ -151,8 +155,8 @@ def validate_media(output: Path, expected: MediaExpectation) -> None:
     durations = [document.format.duration, stream.duration]
     if expected.audio_required:
         durations.append(audio[0].duration)
-    if any(abs(duration - expected.duration_seconds) > expected.duration_tolerance for duration in durations):
-        raise MediaIntegrityError(f"duration completeness (expected={expected.duration_seconds}, observed={durations})")
+    if any(abs(duration - expected.duration_seconds) > expected.duration_tolerance + 1e-6 for duration in durations):
+        raise MediaIntegrityError("duration completeness", durations=tuple(durations), expected=expected.duration_seconds)
     if document.format.size != size:
         raise MediaIntegrityError("output size metadata")
     tail = _run([

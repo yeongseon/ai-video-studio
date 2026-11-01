@@ -12,6 +12,7 @@ from creator_provider.exceptions import ProviderError, ProviderTimeoutError, Rat
 from creator_service.audio_service import audio_service as _audio_service
 from creator_service.cost_config import COST_RENDER_VIDEO
 from creator_service.ffmpeg_service import FFmpegService
+from creator_service.media_integrity import MediaIntegrityError
 from creator_service.render_segments import render_input_from_plan
 from creator_service.render_service import render_service as _render_service
 from creator_service.script_service import script_service as _script_service
@@ -53,9 +54,12 @@ async def execute_render(ctx: TaskContext, render_profile: str = "shorts_default
         ):
             raise ProviderError("Provider attempt exceeds approved spend")
         ctx.mark_provider_started()
-        scene_count = await render_saved_timeline(
-            ctx, _resolve_profile(render_profile), output, layers=RenderLayers(audio, subtitles),
-        )
+        try:
+            scene_count = await render_saved_timeline(
+                ctx, _resolve_profile(render_profile), output, layers=RenderLayers(audio, subtitles),
+            )
+        except MediaIntegrityError as exc:
+            raise ProviderError(f"Provider failed video render for run {ctx.run_id}") from exc
     else:
         inputs = await prepare_legacy_render(request, LegacyServices(
             render=_render_service, visuals=_visual_asset_service, audio=_audio_service,
@@ -75,6 +79,8 @@ async def execute_render(ctx: TaskContext, render_profile: str = "shorts_default
             raise ProviderTimeoutError(f"Provider timed out during video render for run {ctx.run_id}") from exc
         except SoftTimeLimitExceeded:
             raise
+        except MediaIntegrityError as exc:
+            raise ProviderError(f"Provider failed video render for run {ctx.run_id}") from exc
         except Exception as exc:
             logger.error("FFmpeg render exception for run %d: %s", ctx.run_id, type(exc).__name__)
             if "429" in str(exc).lower() or "rate limit" in str(exc).lower():

@@ -2,7 +2,6 @@
 import json
 import subprocess
 from pathlib import Path
-from unittest.mock import patch
 
 import pytest
 from PIL import Image
@@ -24,6 +23,17 @@ def test_many_segments_do_not_license_one_second_truncation(tmp_path: Path) -> N
     media(path, duration=4)
     with pytest.raises(MediaIntegrityError):
         validate_media(path, MediaExpectation(RenderProfile(width=128, height=128), 5, False, 30))
+
+
+def test_numeric_diagnostics_do_not_change_rule_message(tmp_path: Path) -> None:
+    # Given / When / Then: numeric render diagnostics are attributes, never classifier input.
+    path = tmp_path / "four.mp4"
+    media(path, duration=4)
+    with pytest.raises(MediaIntegrityError) as error:
+        validate_media(path, MediaExpectation(RenderProfile(width=128, height=128), 5.429, False))
+    assert str(error.value) == "FFmpeg output integrity failed: duration completeness"
+    assert error.value.expected == 5.429
+    assert error.value.durations == (4.0, 4.0)
 
 
 @pytest.mark.parametrize("fps", [15, 24, 25, 30, 60])
