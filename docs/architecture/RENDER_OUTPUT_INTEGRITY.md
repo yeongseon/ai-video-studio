@@ -73,6 +73,17 @@ workers classify this typed error as terminal ProviderError before string-based
 rate-limit heuristics. Quota settlement still uses the existing terminal/unknown
 provider-outcome path.
 
+Oracle r1 remediation measurements (FFmpeg 4.4.2): 30 exact-CFR image segments
+totaling 5 seconds with AAC produced 150 frames at 30 FPS and 300 at 60 FPS;
+video duration 5.000011, format 5.001000, AAC duration 4.969002 seconds. Worst
+observed rounding was 31 ms, below the 100 ms floor. Segment count does not
+license larger aggregate error; non-frame-aligned plans exceeding the ceiling
+fail closed. Boundary pairs cover 15/24/25/30/60 FPS and 1/5/30 segments.
+After byte-bounded draining, measured validation on the loaded local host:
+30 seconds **633.93 / 443.40 / 376.34 ms**; 90 seconds
+**412.59 / 546.01 / 445.81 ms**. This exceeds the earlier ~200 ms target but
+remains subsecond and independent of short duration; no full-media scan added.
+
 The shipped worker-image topology is verified by CI's `worker-topology-runtime`
 job (Dockerfile runtime target, pinned Celery, solo and scaled prefork scenarios).
 Local process topology tests run with the prepared Python 3.12 venv; image topology
