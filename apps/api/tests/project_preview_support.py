@@ -52,6 +52,11 @@ class CountedStorage(LocalStorageBackend):
     def download_bytes(self, key: str) -> bytes:
         raise AssertionError("preview must not use whole-object download")
 
+    def open_read(self, key: str):
+        from creator_service.storage_read_session import RemoteReader
+
+        return RemoteReader(self.stat(key), lambda offset, length: self.read_range(key, offset, length))
+
 
 class PreviewFixture:
     """Mutable fixture owns asset setup and dependency cleanup."""

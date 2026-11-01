@@ -9,6 +9,7 @@ import anyio
 from creator_service.blocking_io import BlockingIO
 from creator_service.object_storage import ArtifactStorageBackend, StorageObjectMissing, StorageReadError
 from creator_service.object_storage_reads import READ_CHUNK_SIZE
+from creator_service.storage_read_session import ObjectReader
 from fastapi import HTTPException, Request
 from starlette.responses import Response, StreamingResponse
 
@@ -43,8 +44,40 @@ def _failure(error: StorageObjectMissing | StorageReadError) -> HTTPException:
 
 
 async def stream_media(backend: ArtifactStorageBackend, key: str, request: Request, mime: str) -> Response:
+    reader = None
+    transferred = False
     try:
-        info = await _io.run(partial(backend.stat, key))
+        try:
+            with anyio.CancelScope(shield=True):
+                reader = await _io.run(partial(backend.open_read, key))
+        except (StorageObjectMissing, StorageReadError) as error:
+            raise _failure(error) from None
+        await anyio.lowlevel.checkpoint()
+        response = await _prepare_media(reader, request, mime)
+        transferred = isinstance(response, OwnedMediaResponse)
+        return response
+    finally:
+        if reader is not None and not transferred:
+            with anyio.CancelScope(shield=True):
+                await _io.run(reader.close)
+
+
+class OwnedMediaResponse(StreamingResponse):
+    def __init__(self, content: AsyncIterator[bytes], reader: ObjectReader, **kwargs) -> None:
+        super().__init__(content, **kwargs)
+        self._reader = reader
+
+    async def __call__(self, scope, receive, send) -> None:
+        try:
+            await super().__call__(scope, receive, send)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await _io.run(self._reader.close)
+
+
+async def _prepare_media(reader: ObjectReader, request: Request, mime: str) -> Response:
+    try:
+        info = reader.info
         if info.size < 0:
             raise StorageReadError()
     except (StorageObjectMissing, StorageReadError) as error:
@@ -62,13 +95,15 @@ async def stream_media(backend: ArtifactStorageBackend, key: str, request: Reque
         headers["Content-Range"] = f"bytes {start}-{end - 1}/{info.size}"
     headers["Content-Length"] = str(end - start)
     if request.method == "HEAD" or start == end:
+        await _io.run(reader.verify)
         return Response(media_type=mime, headers=headers)
 
     async def read(offset: int) -> bytes:
         length = min(READ_CHUNK_SIZE, end - offset)
-        block = await _io.run(partial(backend.read_range, key, offset, length))
+        block = await _io.run(partial(reader.read_range, offset, length))
         if len(block) != length:
             raise StorageReadError()
+        await _io.run(reader.verify)
         return block
 
     # Prefetch only one bounded block so initial provider failures retain HTTP
@@ -79,17 +114,20 @@ async def stream_media(backend: ArtifactStorageBackend, key: str, request: Reque
         raise _failure(error) from None
 
     async def content() -> AsyncIterator[bytes]:
-        yield first
-        offset = start + len(first)
-        while offset < end:
-            await anyio.lowlevel.checkpoint()
-            try:
-                block = await read(offset)
-            except (StorageObjectMissing, StorageReadError) as error:
-                # Headers are committed: terminate, never append an error body
-                # to media. Content-Length makes truncation detectable to clients.
-                raise _failure(error) from None
-            yield block
-            offset += len(block)
+        try:
+            yield first
+            offset = start + len(first)
+            while offset < end:
+                await anyio.lowlevel.checkpoint()
+                try:
+                    block = await read(offset)
+                except (StorageObjectMissing, StorageReadError) as error:
+                    _failure(error)
+                    raise StorageReadError() from None
+                yield block
+                offset += len(block)
+        finally:
+            with anyio.CancelScope(shield=True):
+                await _io.run(reader.close)
 
-    return StreamingResponse(content(), status_code=status, media_type=mime, headers=headers)
+    return OwnedMediaResponse(content(), reader, status_code=status, media_type=mime, headers=headers)
