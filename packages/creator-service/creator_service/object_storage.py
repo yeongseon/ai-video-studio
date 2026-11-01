@@ -308,11 +308,13 @@ class S3StorageBackend:
 
     def stat(self, key: str) -> ObjectInfo:
         validate_key(key)
-        return s3_stat(self._client, self._bucket, self._full_key(key))
+        return s3_stat(lambda: self._client.head_object(Bucket=self._bucket, Key=self._full_key(key)))
 
     def read_range(self, key: str, offset: int, length: int) -> bytes:
         validate_key(key)
-        return s3_read(self._client, self._bucket, self._full_key(key), offset, length)
+        return s3_read(lambda byte_range: self._client.get_object(
+            Bucket=self._bucket, Key=self._full_key(key), Range=byte_range,
+        ), offset, length)
 
 
 class AzureBlobStorageBackend:
@@ -456,11 +458,13 @@ class AzureBlobStorageBackend:
 
     def stat(self, key: str) -> ObjectInfo:
         validate_key(key)
-        return azure_stat(self._container_client.get_blob_client(self._full_key(key)))
+        return azure_stat(lambda: self._container_client.get_blob_client(self._full_key(key)).get_blob_properties())
 
     def read_range(self, key: str, offset: int, length: int) -> bytes:
         validate_key(key)
-        return azure_read(self._container_client.get_blob_client(self._full_key(key)), offset, length)
+        return azure_read(lambda start, count: self._container_client.get_blob_client(self._full_key(key)).download_blob(
+            offset=start, length=count, max_concurrency=1,
+        ).readall(), offset, length)
 
 
 class GCSStorageBackend:

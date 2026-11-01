@@ -6,8 +6,45 @@ from httpx import AsyncClient
 import pytest
 
 from tests.project_preview_support import PreviewFixture, content_url, preview as preview
+from shorts_api.auth import require_current_user, require_project_access, CurrentUser
+from shorts_api.main import app
 
 pytestmark = pytest.mark.asyncio
+
+
+async def test_real_project_dependency_rejects_revoked_membership_before_storage(
+    client: AsyncClient, preview: PreviewFixture, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from creator_service.project_service import project_service
+    from shorts_api.auth import workspace_service
+    from creator_domain.models import Project
+    from datetime import datetime, timezone
+
+    # Given an authenticated identity whose project membership is revoked.
+    asset = await preview.asset()
+    now = datetime.now(timezone.utc)
+
+    async def project(*args, **kwargs):
+        return Project(id=42, workspace_id=7, created_at=now, updated_at=now)
+
+    async def denied(*args):
+        return False
+
+    async def user():
+        return CurrentUser(user_id=1, workspace_id=7)
+
+    monkeypatch.setattr(project_service, "get_project", project)
+    monkeypatch.setattr(workspace_service, "check_access", denied)
+    app.dependency_overrides.pop(require_project_access, None)
+    app.dependency_overrides[require_current_user] = user
+    try:
+        # When the real project access dependency runs.
+        response = await client.get(content_url(asset))
+        # Then access revocation is enforced before storage despite valid asset association.
+        assert response.status_code == 404
+        assert preview.backend.calls == 0
+    finally:
+        app.dependency_overrides.pop(require_current_user, None)
 
 
 @pytest.mark.parametrize("provider", ["s3", "azure_blob"])
