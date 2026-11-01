@@ -57,7 +57,8 @@ until the lease expires and registration has been checked by exact key.
 Project asset previews resolve persisted project/workspace ownership before
 storage I/O. The recorded provider must match the configured singleton; mismatch
 is 409, not automatic migration or local fallback. Local/S3/Azure adapters expose
-`stat(key) -> ObjectInfo(size)` and `read_range(key, offset, length) -> bytes`,
+`stat(key) -> ObjectInfo(size, etag?, version_id?)` and bounded ranged reads;
+`open_read(key)` acquires an owned generation-bound session for an HTTP transfer,
 with each read capped at 64 KiB and its response released before returning.
 The API supplies same-origin GET/HEAD and single byte-range delivery; it never
 uses whole-object `download_bytes` or exposes cloud URLs. Scene/workspace routes

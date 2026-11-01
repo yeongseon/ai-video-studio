@@ -291,7 +291,14 @@ Range and returns full headers without content reads. If-Range is treated as
 nonmatching (full 200); no ETag/Last-Modified validator support is advertised.
 Missing objects return the same generic 404 as unavailable identities. Provider
 auth/config/network failures return generic 502, recognized read timeouts 503,
-without logging keys or SDK exception/cause text. Failure after headers terminates
+without logging keys or SDK exception/cause text. During adapter stat/conditional
+read operations, context-scoped filters on the SDK's record-producing loggers
+suppress Azure/botocore diagnostics before any handlers receive them, including
+globally enabled DEBUG and explicitly enabled Azure HTTP logging. Offline real
+SDK pipelines test stat, range and transport/auth failures at INFO and DEBUG,
+including records formatted with the repository JSON formatter. This guarantee
+is scoped to those adapter read operations, not arbitrary external SDK clients
+or operator instrumentation. Failure after headers terminates
 the response; Content-Length exposes truncation, never JSON embedded in media.
 
 Scene/workspace preview routes remain local-only (remote 409). Run-artifact
@@ -300,6 +307,20 @@ its authorized internal `source` and identity `media_url`, and preserves revisio
 gates. The browser's `source` fallback is not used for responses from this route,
 which always emits `media_url`; no concrete cross-tenant or cloud-capability leak
 was demonstrated. Do not treat internal source keys as public delivery URLs.
+
+Literal legacy keys (including encoded or Unicode dots and uppercase prefixes)
+are not normalized into new namespaces. Key validation is a traversal boundary,
+not a universal ownership proof for non-workspace legacy keys: persisted project
+and workspace identity controls still apply.
+
+Transfers acquire an owned read session. Local reads retain one no-follow
+descriptor and serve its original inode across atomic rename/replacement. Each
+read verifies descriptor size/mtime/identity before and after I/O; in-place growth,
+shrink or modification aborts. Cloud sessions capture ETag (S3 VersionId when
+present) and condition every range with S3 IfMatch/VersionId or Azure
+IfNotModified. A failed condition is generic 502 before bytes; after start it
+aborts the incomplete transfer. Short/over-reads also abort and never append JSON.
+HEAD describes the single acquired generation without fetching content.
 
 #### Manual cloud acceptance (not proved by offline tests)
 
@@ -312,6 +333,11 @@ seek/suffix ranges, foreign/missing 404, credential-revocation fail-closed behav
 disconnect cleanup and memory under a large file, through the normal Studio
 proxy. Confirm no cloud URL/SAS/key appears in browser responses or logs. These
 checks require real credentials and are not performed by CI or this change.
+
+Production cloud enablement remains conditional: shipped API/worker images do
+not currently install boto3/azure-storage-blob. Cloud configuration therefore
+returns generic 502 until SDK provisioning in #895/#898 lands. Offline test
+dependencies do not change shipped runtime images.
 
 For external preview access during development, use the documented loopback
 HTTP server pattern (see `AGENTS.md`). External tunneling requires explicit

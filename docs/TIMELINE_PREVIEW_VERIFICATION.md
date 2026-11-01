@@ -1,5 +1,33 @@
 # Timeline provider-neutral preview verification (#900)
 
+## Oracle round-1 remediation
+
+Oracle rejected c73e172 at 70/100 for SDK logging, unbound generations and missing
+short-read sensitivity. Logging Red `75b64d1`: 9 failed/3 passed (Azure INFO/DEBUG
+and botocore DEBUG leak); Green `7d33b38` plus precise offline response fixture
+`9fb6c4b`: 12 real-pipeline tests pass. Suppression-disabled mutation repeats
+9 failures. Per-operation SDK filters protect raw records and JSON formatting.
+
+Generation Red `e8698db`: 9 failed/8 passed, reproducing real local mixed bytes
+and growth success. Green `61f8093`/`bd9d2dc`: owned read sessions retain the
+original local inode and verify fstat size/mtime around reads; cloud ranges carry
+captured S3 IfMatch/VersionId and Azure IfNotModified ETag. Real HTTP generation
+matrix covers replacement before/between chunks, same-size replacement, growth,
+shrink, full/ranged responses and HEAD. Removing S3 IfMatch fails Stubber's exact
+conditional request; removing Azure match_condition fails its captured contract.
+
+First-block short/over-read returns generic 502 without media bytes; later short
+read over real uvicorn/httpx yields RemoteProtocolError and transmits only the
+first block. An in-flight cancellation test holds the worker-thread read until
+release and confirms no active read remains. Disabling the exact-length check
+now causes **3 intended failures** (2 initial-length cases and real HTTP later
+truncation), whereas it survived the original tests. All mutations restored.
+
+Post-remediation local suites: API1175, service1612 + domain/provider677 (2289
+combined), worker1165/27 existing skips, mandatory real-media runtime160.
+Ruff/basedpyright and architecture diagram validator: zero errors/blocking
+diagnostics. Frontend source is untouched. Oracle re-review remains required.
+
 ## Red-first evidence
 
 At `a837e56`, local API characterization: 43 passed; real nginx/API guard: 97

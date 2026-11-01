@@ -184,6 +184,12 @@ graph BT
 
 ## Pipeline Stages
 
+Timeline project asset previews stream local/S3/Azure media through the
+authorized same-origin API route. Scene/workspace remote previews remain
+unavailable (409); final cloud artifact downloads retain authorized redirects.
+Cloud SDK provisioning in shipped images remains conditional (see
+[Security Model](docs/SECURITY.md#timeline-project-previews)).
+
 ```
 IDEA_READY -> SCRIPT_GENERATING -> SCRIPT_REVIEW
   -> VISUAL_PLAN_SETUP -> VISUAL_PLAN_GENERATING -> VISUAL_PLAN_REVIEW
