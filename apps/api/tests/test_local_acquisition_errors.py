@@ -23,6 +23,7 @@ def test_operational_acquisition_failure_is_unavailable_not_missing(tmp_path, mo
         return original(*args, **kwargs)
 
     with http_stream(backend, "object") as client:
+        assert client.head("/content").status_code == 200
         baseline = len(os.listdir("/proc/self/fd"))
         monkeypatch.setattr(os, syscall, failed)
         response = client.get("/content")

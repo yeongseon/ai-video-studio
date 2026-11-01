@@ -42,7 +42,7 @@ class LocalReader:
         try:
             self._initial = os.fstat(self._descriptor)
             self.info = ObjectInfo(self._initial.st_size)
-        except OSError:
+        except BaseException:
             self.close()
             raise
 

@@ -9,6 +9,7 @@ Selects backend based on STORAGE_BACKEND env var:
 from __future__ import annotations
 
 import hashlib
+import errno
 import logging
 import os
 import tempfile
@@ -214,8 +215,12 @@ class LocalStorageBackend:
 
         try:
             return LocalReader(local_descriptor(self._root, key))
-        except OSError:
-            raise StorageObjectMissing() from None
+        except TimeoutError:
+            raise StorageReadError("timeout") from None
+        except OSError as error:
+            if error.errno in {errno.ENOENT, errno.ELOOP, errno.ENOTDIR}:
+                raise StorageObjectMissing() from None
+            raise StorageReadError("unavailable") from None
 
 
 class S3StorageBackend:
