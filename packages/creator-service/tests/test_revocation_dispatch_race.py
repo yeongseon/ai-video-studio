@@ -63,14 +63,23 @@ async def test_revocation_after_worker_claim_preserves_only_success(tracking: Ta
     await tracking.record_task_pending(1, "render_video", "claimed")
     started = await tracking.record_task_start(1, "render_video", "claimed")
     assert started is not None and started.status == "running"
+    original = started
     if completed:
-        await tracking.mark_success("claimed")
+        original = await tracking.mark_success("claimed")
+        assert original is not None and original.finished_at is not None
     # When cancellation arrives after the claim (or after success).
     result = await tracking.mark_revoked("claimed")
     # Then running becomes revoked, while completed success cannot be overwritten.
     tasks = await tracking.list_run_tasks(1)
     assert [task.status for task in tasks] == ["success" if completed else "revoked"]
     assert (result is None) == completed
+    assert tasks[0].finished_at is not None
+    if completed:
+        assert tasks[0].finished_at == original.finished_at
+        assert tasks[0] == original
+    else:
+        assert result is not None and result.finished_at is not None
+        assert tasks[0].finished_at == result.finished_at
 
 
 @pytest.mark.asyncio
