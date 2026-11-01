@@ -1,7 +1,12 @@
 from collections.abc import Callable, Coroutine
+from typing import Final
 
 from fastapi import HTTPException, Request, Response
 from fastapi.routing import APIRoute
+
+MAX_JSON_WHITESPACE: Final = 65_536
+# Escaped astral characters: 12*(5000+50000+200000+200+2000) + settings4096 + JSON1024 + whitespace65536.
+MAX_CREATION_BYTES: Final = 12 * (5000 + 50000 + 200000 + 200 + 2000) + 4096 + 1024 + MAX_JSON_WHITESPACE
 
 
 class JsonDepthValidator:
@@ -9,6 +14,7 @@ class JsonDepthValidator:
         self.depth = 0
         self.quoted = False
         self.escaped = False
+        self.whitespace = 0
 
     def feed(self, chunk: bytes) -> None:
         for byte in chunk:
@@ -21,6 +27,13 @@ class JsonDepthValidator:
                     self.quoted = False
             elif byte == 34:
                 self.quoted = True
+            elif byte in (9, 10, 13, 32):
+                self.whitespace += 1
+                if self.whitespace > MAX_JSON_WHITESPACE:
+                    raise HTTPException(status_code=422, detail=[{
+                        "loc": ["body"], "type": "settings_whitespace",
+                        "msg": "Insignificant JSON whitespace must not exceed 65536 bytes",
+                    }])
             elif byte in (123, 91):
                 self.depth += 1
                 if self.depth > 16:
@@ -38,7 +51,7 @@ class ProjectSettingsRoute(APIRoute):
         creation = self.path.endswith("/projects") and "POST" in self.methods
         if creation or (self.path.endswith("/settings") and "PUT" in self.methods):
             async def bounded_handler(request: Request) -> Response:
-                budget = 900_000 if creation else 4096
+                budget = MAX_CREATION_BYTES if creation else 4096
                 body = bytearray()
                 depth = JsonDepthValidator()
                 async for chunk in request.stream():
