@@ -14,6 +14,7 @@ from creator_service.ffmpeg_service import FFmpegService, RenderInput
 from creator_service.render_profile import RenderProfile
 from creator_service.render_segments import render_plan
 from creator_domain.models import EncodingProfile, OutputSpec, RenderPlan, RenderSegment, RenderSegmentKind
+from creator_service.media_integrity import MediaExpectation, MediaIntegrityError, validate_media
 
 
 def make_media(path: Path, *, duration: float = 5, size: str = "128x128", fps: int = 30,
@@ -165,3 +166,72 @@ def test_image_segment_encodes_actual_profile_cadence(tmp_path: Path) -> None:
                             "stream=nb_read_frames", "-of", "json", str(output)],
                            capture_output=True, text=True, check=True, timeout=15)
     assert int(json.loads(probe.stdout)["streams"][0]["nb_read_frames"]) == 60
+
+
+@pytest.mark.parametrize("rule", ["video", "audio_codec", "audio_duration", "video_duration",
+                                 "size", "average_fps", "malformed", "probe_error", "tail_error",
+                                 "tail_empty", "timeout"])
+def test_validator_rejects_untrusted_probe_or_decoder_results(tmp_path: Path, rule: str) -> None:
+    # Given: real media with exactly one corrupted tool result.
+    fixture = make_media(tmp_path / "good.mp4", audio=True)
+    result = subprocess.run(["ffprobe", "-v", "error", "-show_streams", "-show_format", "-of",
+                             "json", str(fixture)], capture_output=True, text=True, check=True, timeout=15)
+    document = json.loads(result.stdout)
+    if rule == "video":
+        document["streams"] = document["streams"][1:]
+    if rule == "audio_codec":
+        document["streams"][1]["codec_name"] = "mp3"
+    if rule == "audio_duration":
+        document["streams"][1]["duration"] = "1"
+    if rule == "video_duration":
+        document["streams"][0]["duration"] = "1"
+    if rule == "size":
+        document["format"]["size"] = "1000"
+    if rule == "average_fps":
+        document["streams"][0]["avg_frame_rate"] = "24/1"
+    real_run = subprocess.run
+
+    def run(cmd: list[str], **kwargs):
+        if rule == "timeout":
+            raise subprocess.TimeoutExpired(cmd, 15)
+        if cmd[0] == "ffprobe":
+            return subprocess.CompletedProcess(cmd, 1 if rule == "probe_error" else 0,
+                "{}" if rule == "malformed" else json.dumps(document), "")
+        if rule in ("tail_error", "tail_empty"):
+            return subprocess.CompletedProcess(cmd, 0, "", "decoder error" if rule == "tail_error" else "")
+        return real_run(cmd, **kwargs)
+
+    # When / Then
+    with patch("subprocess.run", side_effect=run), pytest.raises(MediaIntegrityError):
+        validate_media(fixture, MediaExpectation(RenderProfile(width=128, height=128), 5, True))
+
+
+@pytest.mark.parametrize("duration", [0.4, 5.03])
+def test_validator_accepts_frame_and_audio_rounding(tmp_path: Path, duration: float) -> None:
+    # Given: real output rounded by the encoder, within documented plan tolerance.
+    fixture = make_media(tmp_path / "good.mp4", duration=duration, audio=True)
+    # When / Then
+    validate_media(fixture, MediaExpectation(RenderProfile(width=128, height=128),
+                                            0.4 if duration < 1 else 5, True))
+
+
+def test_real_audio_render_respects_plan_end(tmp_path: Path) -> None:
+    from PIL import Image
+    # Given: muxer -shortest buffering must not extend a one-second plan.
+    image = tmp_path / "scene.png"
+    Image.new("RGB", (128, 128), "red").save(image)
+    voice = tmp_path / "voice.wav"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "sine=duration=1", str(voice)], check=True, capture_output=True, timeout=15)
+    subtitles = tmp_path / "captions.srt"
+    subtitles.write_text("1\n00:00:00,000 --> 00:00:01,000\nCAPTION\n")
+    # When
+    from creator_service.render_profile import TransitionStyle
+    output = FFmpegService(RenderProfile(width=128, height=128, fps=15, preset="ultrafast",
+                                         transition_style=TransitionStyle.KEN_BURNS_LITE)).render(
+        RenderInput([image], voice, subtitles, [1]), tmp_path / "out.mp4")
+    # Then
+    probe = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                            "-of", "default=noprint_wrappers=1:nokey=1", str(output)],
+                           check=True, capture_output=True, text=True, timeout=15)
+    assert abs(float(probe.stdout) - 1) < 0.1

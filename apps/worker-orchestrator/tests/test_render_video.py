@@ -6,6 +6,11 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+import shutil
+import subprocess
+from unittest.mock import Mock
+from creator_service.ffmpeg_service import FFmpegService
+from creator_service.render_profile import RenderProfile
 from creator_service.quality_profile import get_quality_profile
 from tasks import render_video as render_video_module
 
@@ -543,6 +548,45 @@ def test_render_video_ffmpeg_failure_marks_failed(monkeypatch: pytest.MonkeyPatc
     assert fake_render_service.create_calls == []
     assert storage.calls == [(204, {"current_stage": "FAILED", "status": "failed"})]
     assert storage.cas_calls[0][2] == frozenset({"RENDER_GENERATING"})
+
+
+def test_render_video_partial_output_never_published(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pacing_split: None,
+) -> None:
+    # Given: real same-profile 1s output for a 5s worker plan.
+    fixture = tmp_path / "partial.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "testsrc2=size=128x128:rate=30:duration=1", "-c:v", "libx264",
+                    "-threads", "1", "-preset", "ultrafast", str(fixture)],
+                   check=True, capture_output=True, timeout=30)
+    storage = _make_storage(run_id=204)
+    manifest = _manifest(204, scenes=[{"scene_id": "scene-1", "asset_path": str(fixture)}],
+                         audio_path=None, subtitle_path=None, max_duration_seconds=5)
+    renders = FakeRenderService(manifest=manifest)
+    _patch_services(monkeypatch, storage=storage, fake_render_service=renders,
+                    fake_vas=FakeVisualAssetService(), fake_audio=FakeAudioService(),
+                    fake_subtitle=FakeSubtitleService(), fake_ffmpeg=FakeFFmpegService())
+    monkeypatch.setattr(render_video_module, "_ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setattr(render_video_module, "FFmpegService",
+                        lambda profile=None: FFmpegService(RenderProfile(width=128, height=128)))
+
+    def encode(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        shutil.copyfile(fixture, cmd[-1])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("creator_service.ffmpeg_service._run_ffmpeg", encode)
+    upload = Mock()
+    usage = Mock()
+    monkeypatch.setattr("creator_service.artifact_storage_integration.store_artifact_file", upload)
+    monkeypatch.setattr(render_video_module, "record_provider_call", usage)
+    # When / Then: existing ProviderError mapping and FAILED transition remain.
+    with pytest.raises(render_video_module.ProviderError, match="Provider failed video render"):
+        _invoke_task(run_id=204)
+    upload.assert_not_called()
+    usage.assert_not_called()
+    assert renders.create_calls == []
+    assert storage.calls == [(204, {"current_stage": "FAILED", "status": "failed"})]
+    assert list((tmp_path / "204" / "render").iterdir()) == []
 
 
 def test_render_video_without_audio_subtitles(monkeypatch: pytest.MonkeyPatch) -> None:
