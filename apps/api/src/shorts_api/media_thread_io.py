@@ -20,6 +20,7 @@ class Completion(Generic[T]):
         self.abandoned = False
         self.claimed = False
         self.finished = False
+        self.discarded = False
         self.value: T | None = None
         self.error: BaseException | None = None
 
@@ -28,13 +29,15 @@ class Completion(Generic[T]):
             self.value, self.error = future.result()
             self.finished = True
             if self.abandoned and self.error is None and self.discard is not None:
+                self.discarded = True
                 self.discard(self.value)
 
     def abandon(self) -> None:
         with self.lock:
             if not self.abandoned:
                 self.abandoned = True
-                if self.finished and not self.claimed and self.error is None and self.discard is not None:
+                if self.finished and not self.claimed and not self.discarded and self.error is None and self.discard is not None:
+                    self.discarded = True
                     self.discard(self.value)
 
     def claim(self) -> T:
@@ -66,12 +69,17 @@ class MediaThreadIO:
                 # Thread boundary: carry even process-control exceptions as data,
                 # not asyncio Task exceptions that can terminate the event loop.
                 return None, error
+
+        future = self.executor.submit(worker)
+
+        def completed(done: Future[tuple[T | None, BaseException | None]]) -> None:
+            try:
+                completion.complete(done)
             finally:
                 with self.lock:
                     self.borrowed_tokens -= 1
 
-        future = self.executor.submit(worker)
-        future.add_done_callback(completion.complete)
+        future.add_done_callback(completed)
         wrapped = asyncio.wrap_future(future)
         cancelled = False
         with anyio.CancelScope(shield=True):

@@ -1,4 +1,5 @@
 from types import SimpleNamespace
+from io import BytesIO
 
 import pytest
 
@@ -20,7 +21,11 @@ def test_missing_etag_refuses_http_delivery_before_ranged_read(monkeypatch, back
         calls.append(kwargs)
         return SimpleNamespace(readall=lambda: b"data")
 
-    backend._client = SimpleNamespace(get_object=ranged)
+    def s3_ranged(**kwargs):
+        calls.append(kwargs)
+        return {"Body": BytesIO(b"data")}
+
+    backend._client = SimpleNamespace(get_object=s3_ranged)
     backend._container_client = SimpleNamespace(get_blob_client=lambda _: SimpleNamespace(download_blob=ranged))
     monkeypatch.setattr(backend, "stat", lambda _: ObjectInfo(4, etag))
     with http_stream(backend, "object") as client:
