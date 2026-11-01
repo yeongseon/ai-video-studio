@@ -73,6 +73,18 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: review
+          POSTGRES_PASSWORD: review-local-only
+          POSTGRES_DB: settings_test
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready -U review" --health-interval=5s --health-timeout=5s --health-retries=12
+    env:
+      FIRST_SHORT_TEST_DATABASE_URL: postgresql://review:review-local-only@127.0.0.1:5432/settings_test
     steps:
       - uses: actions/checkout@v4
       - name: Install FFmpeg for media tests
@@ -113,6 +125,7 @@ jobs:
         run: python3 -m pytest tests/test_package_dependency_cli.py tests/test_package_dependency_parser.py tests/test_package_dependency_compliance.py tests/test_architecture_diagrams.py -q
       - name: Test Packages (with coverage)
         run: |
+          git fetch origin main:refs/remotes/origin/main --depth=1
           python3 -m pytest packages/creator-domain/tests/ -v --cov=creator_domain --cov-report=term-missing --cov-fail-under=60
           python3 -m pytest packages/creator-provider/tests/ -v --cov=creator_provider --cov-report=term-missing --cov-fail-under=60
           python3 -m pytest packages/creator-service/tests/ -v --cov=creator_service --cov-report=term-missing --cov-fail-under=60

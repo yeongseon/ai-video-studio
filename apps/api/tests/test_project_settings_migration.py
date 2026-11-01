@@ -41,6 +41,8 @@ async def test_settings_migration_when_upgraded_and_downgraded_postgres() -> Non
     # Given a schema-isolated database at the previous head with an existing row.
     url = os.getenv("FIRST_SHORT_TEST_DATABASE_URL")
     if not url:
+        if os.getenv("GITHUB_ACTIONS") == "true":
+            raise RuntimeError("FIRST_SHORT_TEST_DATABASE_URL is required for settings runtime tests in CI")
         pytest.skip("FIRST_SHORT_TEST_DATABASE_URL must name a disposable database")
     schema = f"settings_migration_{uuid.uuid4().hex}"
     root = Path(__file__).resolve().parents[3]
