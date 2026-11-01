@@ -9,6 +9,37 @@ from azure.core import MatchConditions
 from creator_service.object_storage import S3StorageBackend, StorageReadError
 
 
+@pytest.mark.parametrize("etag", [None, ""])
+def test_s3_missing_etag_refuses_session_without_get(monkeypatch, etag):
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "offline")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "offline")
+    monkeypatch.setenv("AWS_S3_BUCKET", "bucket")
+    backend = S3StorageBackend()
+    response = {"ContentLength": 4}
+    if etag is not None:
+        response["ETag"] = etag
+    with Stubber(backend._client) as stub:
+        stub.add_response("head_object", response)
+        with pytest.raises(StorageReadError):
+            backend.open_read("object")
+        stub.assert_no_pending_responses()
+
+
+def test_azure_empty_etag_refuses_session_without_download(monkeypatch):
+    from creator_service.object_storage import AzureBlobStorageBackend
+    from azure.storage.blob import BlobServiceClient
+
+    calls = []
+    blob = SimpleNamespace(get_blob_properties=lambda: SimpleNamespace(size=4, etag=""),
+                           download_blob=lambda **kwargs: calls.append(kwargs))
+    client = SimpleNamespace(get_container_client=lambda _: SimpleNamespace(get_blob_client=lambda _: blob))
+    monkeypatch.setattr(BlobServiceClient, "from_connection_string", lambda *args, **kwargs: client)
+    monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", "offline")
+    with pytest.raises(StorageReadError):
+        AzureBlobStorageBackend().open_read("object")
+    assert calls == []
+
+
 def test_s3_session_binds_etag_and_version_on_every_range(monkeypatch) -> None:
     # Given generation metadata supplied by the real S3 protocol.
     monkeypatch.setenv("AWS_ACCESS_KEY_ID", "offline")
