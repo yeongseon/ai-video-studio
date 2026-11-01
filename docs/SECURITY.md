@@ -248,8 +248,70 @@ larger secret-management feature.
 ## Artifact Access
 
 Generated artifacts (videos, images, audio) are stored on the local filesystem
-under `ARTIFACT_ROOT`. Access is gated by the creator API — artifacts are never
+under `ARTIFACT_ROOT` or the configured S3/Azure Blob backend. Access is gated
+by the creator API — artifacts are never
 served directly from the filesystem to external clients.
+
+### Timeline project previews
+
+`GET`/`HEAD /api/creator/projects/{project_id}/assets/{asset_id}/content`
+uses project access and a workspace-scoped asset lookup before any object I/O.
+Foreign projects, missing assets, wrong project associations, missing objects,
+unsafe keys and foreign workspace-prefixed keys return 404. Anonymous requests
+return 401. Only stored `image/png`, `image/jpeg`, `image/webp`, `video/mp4` and
+`video/webm` MIME types can be previewed; caller or cloud MIME metadata cannot
+override the allowlist (415). Previews retain inline behavior without a filename
+or storage key in Content-Disposition, declare `nosniff`, and are
+`Cache-Control: private, no-store`.
+
+The asset's recorded `storage_provider` must match both `STORAGE_BACKEND` and
+the initialized singleton's provider. Mismatch returns 409 without reading any
+object; historical assets require an operator-controlled migration/configuration,
+not caller-selected accounts, buckets or keys. GCS/unknown providers return an
+explicit unsupported-provider 409. Local reads use no-follow directory
+descriptors, including every path component, to prevent symlink/traversal races.
+Cloud reads stay under the adapter's configured bucket/container and prefix.
+
+Media streams through the same-origin API, never a signed redirect, SAS, public
+cloud URL or unsigned development fallback. CSP and nginx raw-file policy remain
+unchanged. Each provider read requests at most 64 KiB and releases its response
+before returning. S3 uses `GetObject Range`; Azure uses `download_blob(offset,
+length, max_concurrency=1)` and consumes only that bounded range. Blocking I/O
+runs on the capacity-limited executor. Disconnect/cancellation stops further
+reads; an already-running synchronous SDK call finishes and releases its
+response before cancellation propagates (existing SDK connection/read timeouts
+and retries apply). This is bounded memory, not an instantaneous cancellation
+guarantee for an in-flight network call. A large full GET can incur many cloud
+range requests; cloud cost/latency must be assessed during manual acceptance.
+
+Full GET returns 200; single bounded, open-ended and suffix byte ranges return
+206 with exact Content-Range and Content-Length. Malformed, multi-range and
+unsatisfiable ranges return 416 with `Content-Range: bytes */size`. HEAD ignores
+Range and returns full headers without content reads. If-Range is treated as
+nonmatching (full 200); no ETag/Last-Modified validator support is advertised.
+Missing objects return the same generic 404 as unavailable identities. Provider
+auth/config/network failures return generic 502, recognized read timeouts 503,
+without logging keys or SDK exception/cause text. Failure after headers terminates
+the response; Content-Length exposes truncation, never JSON embedded in media.
+
+Scene/workspace preview routes remain local-only (remote 409). Run-artifact
+download/expiration behavior is unchanged. Timeline preview JSON still includes
+its authorized internal `source` and identity `media_url`, and preserves revision
+gates. The browser's `source` fallback is not used for responses from this route,
+which always emits `media_url`; no concrete cross-tenant or cloud-capability leak
+was demonstrated. Do not treat internal source keys as public delivery URLs.
+
+#### Manual cloud acceptance (not proved by offline tests)
+
+Offline S3 SDK Stubber, injected Azure client and real nginx/API/PostgreSQL tests
+prove request shape, bytes, auth boundaries and range/header behavior, not live
+IAM/RBAC permissions, credential rotation/expiry, cloud transport cleanup or
+provider latency/cost. Before enabling cloud previews, an authorized operator
+must use a private configured bucket/container and verify PNG/MP4 full GET, HEAD,
+seek/suffix ranges, foreign/missing 404, credential-revocation fail-closed behavior,
+disconnect cleanup and memory under a large file, through the normal Studio
+proxy. Confirm no cloud URL/SAS/key appears in browser responses or logs. These
+checks require real credentials and are not performed by CI or this change.
 
 For external preview access during development, use the documented loopback
 HTTP server pattern (see `AGENTS.md`). External tunneling requires explicit

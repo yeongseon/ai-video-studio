@@ -52,6 +52,21 @@ Sweepers claim expired rows with `FOR UPDATE SKIP LOCKED`, verify a same-workspa
 state idempotently. Ambiguous outcomes favor preservation: no object is deleted
 until the lease expires and registration has been checked by exact key.
 
+### Authorized Timeline reads
+
+Project asset previews resolve persisted project/workspace ownership before
+storage I/O. The recorded provider must match the configured singleton; mismatch
+is 409, not automatic migration or local fallback. Local/S3/Azure adapters expose
+`stat(key) -> ObjectInfo(size)` and `read_range(key, offset, length) -> bytes`,
+with each read capped at 64 KiB and its response released before returning.
+The API supplies same-origin GET/HEAD and single byte-range delivery; it never
+uses whole-object `download_bytes` or exposes cloud URLs. Scene/workspace routes
+and final-artifact downloads retain their existing contracts. See
+[SECURITY.md](SECURITY.md#timeline-project-previews) for Range/error/cancellation
+semantics and the required manual cloud acceptance checklist, and
+[TIMELINE_PREVIEW_VERIFICATION.md](TIMELINE_PREVIEW_VERIFICATION.md) for Red and
+mutation evidence.
+
 ## Workspace media capacity
 
 Media uploads reserve their validated byte size and one asset slot on the durable
