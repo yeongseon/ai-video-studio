@@ -32,6 +32,10 @@ legacy defaults; persisting choices alone must not silently change rendering.
    exclusively from this immutable approval snapshot, never mutable project
    settings or a legacy-profile argument for new-contract approvals. Validate
    snapshot version and digest before materialization; refuse unknown versions.
+   Extend `TimelineApprovalNotes(extra="forbid")` explicitly. Cross-check snapshot
+   and digest in both persisted approval notes and dispatch metadata. Fence the
+   settings read against concurrent PUT using the same transaction/project-timestamp
+   CAS; revision/run fences alone do not establish current settings identity.
    Real ffprobe fixtures prove square/landscape/vertical and encoding selection,
    preserving authorization, cancellation, revision and task ownership fences.
 3. **C: generation and Studio.** Carry persisted duration/format into generation
@@ -84,7 +88,10 @@ return 404. Replacement is atomic against the authorized row's `updated_at`;
 concurrent row changes cause 409 rather than overwriting status/title. The flat
 PUT body has a 4096-byte receive budget and field-level 422 validation.
 
-Creation has a900,000-byte streamed budget compatible with large source fields;
+Creation has a3,157,056-byte streamed budget:12*(5000+50000+200000+200+2000)
+escaped bytes for source/title/URL maxima, plus4096 settings,1024 JSON framing,
+65536 insignificant whitespace. Non-string whitespace is separately capped65536;
+string whitespace remains content under existing character limits.
 PUT remains4096 bytes. A quote/escape-aware finite depth counter rejects nesting
 over16 containers before JSON parsing. Version coercion is forbidden: true,1.0 and
 "1" are not integer1. Decimal duration normalizes to float. Archived/deleting

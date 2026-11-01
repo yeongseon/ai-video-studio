@@ -34,7 +34,10 @@ finite JSON number or null; booleans/strings, NaN and infinity are rejected.
 (not a `settings` wrapper) and replaces the whole value; omitted fields resolve
 to explicit defaults. It returns the updated project, not a render result.
 The body must be a flat object of the five documented fields, at most 4096 bytes.
-Creation is bounded at 900,000 bytes before parsing, preserving large source fields.
+Creation is bounded at3,157,056 bytes before parsing, covering worst-case escaped
+astral source/title/URL characters:12*(5000+50000+200000+200+2000)+4096 settings
++1024 JSON framing+65536 whitespace. Non-string whitespace is separately capped
+at65536 bytes; whitespace inside source strings is content under character limits.
 Both budgets count streamed chunks without Content-Length; oversized requests
 return field-level 422 before writes. An explicit quote/escape-aware scanner rejects
 JSON nesting above 16 containers before parsing with a field-level 422.
