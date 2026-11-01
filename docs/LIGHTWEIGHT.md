@@ -51,9 +51,20 @@ independent worker scaling. Always use Celery + Redis in production.
 In normal (Celery) mode, successful generation trigger endpoints return
 `202 Accepted` after queue submission, not worker completion. In lightweight
 mode, successful triggers also return `202`, but only after local task execution
-returns. Execution failures are surfaced as errors, not successful `202` responses.
-The trigger response contains task identity and dispatch-stage information; it is
-not a guarantee that the body contains the final persisted run state.
+returns. The response shape depends on the endpoint:
+
+- The main generation and Timeline-render triggers return `task_id`, `run_id` and
+  the run's dispatch `current_stage`. A raised execution failure surfaces as a
+  non-`202` error, not as a successful response.
+- Scene-image triggers carry the stage the run had *before* dispatch.
+- Single storyboard triggers return only `task_id`, `run_id` and `section_id`.
+- The bulk storyboard triggers (`generate-all-audio`, `generate-all-subtitles`)
+  still return `202` when individual items fail: failures appear as per-item
+  `error` entries in `tasks` and in the `failed` count, and `tasks` may contain no
+  submitted task.
+
+None of these responses guarantees that the body contains the final persisted run
+state.
 
 This means:
 - Requests may take significantly longer (seconds to minutes) depending on the AI provider.
