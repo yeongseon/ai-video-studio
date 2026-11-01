@@ -4,6 +4,7 @@ import asyncio
 from collections.abc import Awaitable, Callable
 
 import asyncpg
+import anyio
 import pytest
 
 from creator_service.dispatch_reconciler import DispatchReconciler
@@ -114,7 +115,8 @@ async def test_retry_stage_and_pending_owner_are_published_atomically(
             rejected_statuses=frozenset({"cancelled"}),
         )
     )
-    await inserted.wait()
+    with anyio.fail_after(10):
+        await inserted.wait()
     cleanup = asyncio.create_task(
         tracking.rollback_run_if_task_owner(
             "attempt-a",
@@ -126,11 +128,26 @@ async def test_retry_stage_and_pending_owner_are_published_atomically(
         )
     )
     if quota_pool is not None:
-        await cleanup
+        try:
+            # A nonmatching READ COMMITTED UPDATE skips the locked run row.
+            with anyio.fail_after(10):
+                before_ok, before = await cleanup
+            assert not before_ok
+            assert before is not None and before["current_stage"] == "VISUAL_ASSET_REVIEW"
+            assert before["status"] == "pending"
+            assert await storage.get_by_celery_id("attempt-b") is None
+        finally:
+            resume.set()
+            await dispatch
 
     resume.set()
     transition_ok, _ = await dispatch
     rollback_ok, current = await cleanup
+    if quota_pool is not None:
+        rollback_ok, current = await tracking.rollback_run_if_task_owner(
+            "attempt-a", run_storage, run_id, frozenset({"generate_audio"}),
+            frozenset({"AUDIO_GENERATING"}), frozenset({"cancelled", "completed"}),
+        )
     task_b = await tracking.promote_pending_to_queued("attempt-b")
 
     assert transition_ok
