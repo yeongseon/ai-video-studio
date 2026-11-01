@@ -89,20 +89,42 @@ it("seeks a trimmed video to source-local time and starts/stops its media clock"
   expect(video.pause).toHaveBeenCalled();
 });
 
-it("withholds first-video readiness until the trimmed target frame is decoded", async () => {
-  mixed(true);
-  const onReady = vi.fn();
+it.each(["wrong source", "internal seek", "browser seeking", "drifted completion"])(
+  "withholds first-video readiness for %s until the trimmed target frame is decoded", async (condition) => {
+  mixed(true); const onReady = vi.fn();
   render(<TimelinePreview projectId={72} onReady={onReady} />);
   await screen.findByTestId("preview-media");
   const video = videoElement();
-  fireEvent.loadedData(video);
-  expect(onReady).not.toHaveBeenCalled();
-  Object.defineProperty(video, "readyState", { configurable: true, value: 1 });
-  fireEvent.loadedMetadata(video);
-  expect(video.currentTime).toBe(2);
-  expect(onReady).not.toHaveBeenCalled();
-  decoded(video);
-  expect(onReady).toHaveBeenCalledWith(17);
+  Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
+  if (condition === "wrong source") {
+    fireEvent.loadedData(video);
+    expect(onReady).not.toHaveBeenCalled(); expect(video.currentTime).toBe(2);
+  }
+  fireEvent.loadedMetadata(video); expect(video.currentTime).toBe(2);
+  if (condition === "browser seeking") {
+    Object.defineProperty(video, "seeking", { configurable: true, value: true });
+    fireEvent.seeked(video);
+  }
+  if (condition === "drifted completion") {
+    video.currentTime = 0; fireEvent.seeked(video);
+    expect(video.currentTime).toBe(2);
+  }
+  fireEvent.loadedData(video); expect(onReady).not.toHaveBeenCalled();
+  Object.defineProperty(video, "seeking", { configurable: true, value: false });
+  fireEvent.seeked(video); expect(onReady).toHaveBeenCalledWith(17);
+});
+
+it("signals first-video readiness once and never approves later placements", async () => {
+  mixed(true); const onReady = vi.fn(), onUnavailable = vi.fn();
+  render(<TimelinePreview projectId={72} onReady={onReady} onUnavailable={onUnavailable} />);
+  await screen.findByTestId("preview-media");
+  const video = videoElement(); decoded(video);
+  fireEvent.canPlay(video); fireEvent.loadedData(video);
+  expect(onReady).toHaveBeenCalledOnce(); expect(onReady).toHaveBeenCalledWith(17);
+  seek(5); decoded(videoElement());
+  expect(onReady).toHaveBeenCalledOnce();
+  onUnavailable.mockClear(); fireEvent.error(videoElement());
+  expect(onUnavailable).toHaveBeenCalledOnce();
 });
 
 it("pauses outgoing same-source placements and realigns backward seeks", async () => {
