@@ -20,8 +20,10 @@ Approval, ownership, revision and cancellation fences remain upstream and unchan
   is at most segment count plus one frame, absorbing container endpoint rounding
   without allowing a proportional loss of samples on longer shorts.
 - Format, video and required audio durations must each match expected plan duration
-  within **0.100 seconds + segment count / profile FPS**. Segment count describes
-  independent frame rounding, not a short/long classification. Legacy durations
+  within **max(0.100 seconds, 2 / profile FPS)**, plus 1 microsecond for decimal
+  representation. This aggregate ceiling never grows with segment count.
+  Independently rounded plans that exceed it fail closed rather than licensing
+  truncation; exact-CFR tiny segments concatenate without cumulative loss. Legacy durations
   derive from narration; Timeline narration is padded to the approved plan.
   `-shortest` is not permission to truncate the plan. Explicit segment trim and
   final `-t` bound zoompan expansion and muxer buffering; short narration fails.
@@ -35,6 +37,10 @@ Approval, ownership, revision and cancellation fences remain upstream and unchan
   **not** a claim that every middle frame has been decoded.
 
 Both validation subprocesses have 15-second timeouts and isolated sessions;
+stdout is limited to 1 MiB and stderr to 64 KiB, drained in 8 KiB reads. Overflow
+rejects output. Every exit terminates the group (SIGTERM, 200 ms grace, SIGKILL)
+and waits for the direct child. KeyboardInterrupt and soft-limit exceptions
+propagate unchanged after cleanup, not as ordinary media failures.
 timeout/unavailable binaries reject output. ffprobe selects only required fields,
 not full packet/frame scans. Temporary output and segment directories are cleaned
 in `finally`, including validation/cancellation exceptions; prior final files are
@@ -55,6 +61,17 @@ Local FFmpeg 4.4.2, real 540×960/30 FPS H.264/AAC lavfi fixtures, three validat
 subprocesses, metadata parsing and tail decode. Future #884 chunk callers can
 reuse `MediaExpectation` and `validate_media` with their own expected chunk timing;
 chunking is not implemented here.
+
+Only coded dimensions are currently validated. SAR and rotation/display-matrix
+presentation metadata are not checked; callers must not interpret this as full
+displayed-geometry validation. Pipeline outputs are square-pixel/unrotated, but
+arbitrary provider media would require additional presentation rules.
+
+Integrity failure strings contain fixed rule identifiers only. Numeric expected
+and observed durations are separate exception attributes; legacy and Timeline
+workers classify this typed error as terminal ProviderError before string-based
+rate-limit heuristics. Quota settlement still uses the existing terminal/unknown
+provider-outcome path.
 
 The shipped worker-image topology is verified by CI's `worker-topology-runtime`
 job (Dockerfile runtime target, pinned Celery, solo and scaled prefork scenarios).
