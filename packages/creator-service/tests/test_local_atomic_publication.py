@@ -8,6 +8,23 @@ import pytest
 from creator_service.object_storage import LocalStorageBackend
 
 
+@pytest.mark.parametrize("existing", [False, True])
+def test_atomic_publication_preserves_normal_file_read_permissions(tmp_path, existing) -> None:
+    # Given ordinary umask-created files or a deliberately restricted existing mode.
+    backend = LocalStorageBackend(str(tmp_path))
+    target = tmp_path / "object"
+    reference = tmp_path / "reference"
+    reference.write_bytes(b"reference")
+    if existing:
+        target.write_bytes(b"old")
+        target.chmod(0o640)
+    expected = 0o640 if existing else reference.stat().st_mode & 0o777
+    # When atomic publication replaces inode ownership without changing access policy.
+    backend.upload("object", b"new")
+    # Then host/container evidence readers retain the original permission contract.
+    assert target.stat().st_mode & 0o777 == expected
+
+
 @pytest.mark.parametrize("stream", [False, True])
 def test_upload_overwrite_preserves_open_inode_and_hard_link(tmp_path: Path, stream: bool) -> None:
     # Given a published inode also held by a reader and another hard-link name.
