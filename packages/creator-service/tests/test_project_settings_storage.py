@@ -120,3 +120,59 @@ async def test_raw_project_row_when_settings_explicit(settings_storage: ProjectS
     row = await settings_storage.db.fetch_project(created.id, workspace_id=1)
     # Then the original row model never receives an added settings column.
     assert row is not None and "settings" not in row
+
+
+@pytest.mark.asyncio
+async def test_settings_reads_when_two_workspaces(settings_storage: ProjectService) -> None:
+    # Given two projects with distinguishable explicit choices and one legacy row.
+    square = ProjectSettings(output_preset="short_square", target_duration_seconds=240)
+    landscape = ProjectSettings(output_preset="short_landscape", target_duration_seconds=3600)
+    first = await settings_storage.create_project("A", "idea", idea_brief="A", workspace_id=1, settings=square)
+    second = await settings_storage.create_project("B", "idea", idea_brief="B", workspace_id=2, settings=landscape)
+    legacy = await settings_storage.create_project("Legacy", "idea", idea_brief="L", workspace_id=None)
+    # When reading explicit and legacy settings, then derive scope only from their projects.
+    assert await settings_storage.db.fetch_settings(first.id, 2) is None
+    assert await settings_storage.db.fetch_settings(second.id, 1) is None
+    assert await settings_storage.db.fetch_settings(first.id, 1) == square
+    assert await settings_storage.db.fetch_settings(second.id, 2) == landscape
+    assert await settings_storage.db.fetch_settings(first.id, None) == square
+    assert await settings_storage.db.fetch_settings(legacy.id, None) is None
+    from creator_domain.models.project_settings import resolve_effective_settings
+    assert resolve_effective_settings(await settings_storage.db.fetch_settings(legacy.id, None)).source == "legacy_default"
+
+
+@pytest.mark.asyncio
+async def test_settings_visibility_when_project_workspace_moves(settings_storage: ProjectService) -> None:
+    # Given explicit settings in workspace1, when the existing project ownership setter moves it.
+    settings = ProjectSettings(output_preset="short_square")
+    created = await settings_storage.create_project("Moving", "idea", idea_brief="idea", workspace_id=1, settings=settings)
+    await settings_storage.db.update_project(created.id, {"workspace_id": 2}, workspace_id=1)
+    # Then visibility follows the project atomically, without duplicate ownership state.
+    assert await settings_storage.db.fetch_settings(created.id, 1) is None
+    assert await settings_storage.db.fetch_settings(created.id, 2) == settings
+
+
+@pytest.mark.asyncio
+async def test_settings_schema_when_ownership_derived(settings_storage: ProjectService) -> None:
+    # Given the PostgreSQL settings schema, when inspecting its authoritative columns.
+    if not isinstance(settings_storage.db, PostgresProjectStorage):
+        return
+    rows = await db.fetch_all("""SELECT column_name FROM information_schema.columns
+        WHERE table_schema=current_schema() AND table_name='creator_project_settings'""")
+    # Then contradictory workspace ownership is unrepresentable.
+    assert {row["column_name"] for row in rows} == {"project_id", "settings", "schema_version", "created_at", "updated_at"}
+
+
+@pytest.mark.asyncio
+async def test_settings_when_unrelated_workspace_deleted(settings_storage: ProjectService) -> None:
+    # Given workspace1's configured project, when workspace2 is deleted.
+    if not isinstance(settings_storage.db, PostgresProjectStorage):
+        return
+    settings = ProjectSettings(output_preset="short_square")
+    created = await settings_storage.create_project("Survives", "idea", idea_brief="idea", workspace_id=1, settings=settings)
+    await db.execute("DELETE FROM workspaces WHERE id=2")
+    # Then settings survive; owning-project deletion cascades its settings.
+    assert await settings_storage.db.fetch_settings(created.id, 1) == settings
+    await settings_storage.delete_project(created.id, workspace_id=1)
+    await db.execute("DELETE FROM workspaces WHERE id=1")
+    assert await db.fetch_one("SELECT project_id FROM creator_project_settings WHERE project_id=$1", created.id) is None

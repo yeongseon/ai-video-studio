@@ -50,6 +50,13 @@ def test_settings_frozen_when_mutation_attempted() -> None:
         settings.output_preset = "short_square"
 
 
+@pytest.mark.parametrize("version", [True, 1.0, "1"])
+def test_schema_version_when_coerced_rejected(version: bool | float | str) -> None:
+    # Given a coercible but non-integer version, when parsing the contract.
+    with pytest.raises(ValidationError):
+        ProjectSettings.model_validate({"schema_version": version})
+
+
 def test_effective_settings_when_project_is_legacy() -> None:
     # Given no stored settings, when resolving defaults.
     effective = resolve_effective_settings(None)

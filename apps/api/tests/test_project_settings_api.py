@@ -104,3 +104,69 @@ async def test_replace_when_body_exceeds_settings_budget(client: AsyncClient, se
                                 headers={"Content-Type": "application/json"})
     # Then enforce a settings-specific byte budget.
     assert response.status_code == 422
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,path,budget", [("POST", "/api/creator/projects", 1_000_000),
+                                               ("PUT", "/api/creator/projects/1/settings", 5000)])
+async def test_streamed_body_when_oversized_never_writes(client: AsyncClient, settings_service: ProjectService,
+                                                       monkeypatch: pytest.MonkeyPatch, method: str, path: str, budget: int) -> None:
+    # Given chunked input with no Content-Length and storage-write spies.
+    insert = AsyncMock(wraps=settings_service.db.insert_project)
+    update = AsyncMock(wraps=settings_service.db.update_project)
+    monkeypatch.setattr(settings_service.db, "insert_project", insert)
+    monkeypatch.setattr(settings_service.db, "update_project", update)
+    async def chunks() -> AsyncIterator[bytes]:
+        for _ in range(budget // 1000):
+            yield b" " * 1000
+        yield b'{"title":"New","source_type":"idea","idea_brief":"idea","settings":{}}' if method == "POST" else b"{}"
+    # When consuming the request, then reject before any persistence.
+    response = await client.request(method, path, content=chunks(), headers={"Content-Type": "application/json"})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["loc"][0] == "body"
+    insert.assert_not_called()
+    update.assert_not_called()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method,path", [("POST", "/api/creator/projects"), ("PUT", "/api/creator/projects/1/settings")])
+async def test_settings_depth_when_nested_rejected_before_writes(client: AsyncClient, settings_service: ProjectService,
+                                                               monkeypatch: pytest.MonkeyPatch, method: str, path: str) -> None:
+    # Given a depth bomb with a small byte size.
+    spy = AsyncMock(wraps=settings_service.db.insert_project)
+    update = AsyncMock(wraps=settings_service.db.update_project)
+    monkeypatch.setattr(settings_service.db, "insert_project", spy)
+    monkeypatch.setattr(settings_service.db, "update_project", update)
+    nested = '{"output_preset":' + '[' * 1000 + '0' + ']' * 1000 + '}'
+    body = '{"title":"New","source_type":"idea","idea_brief":"idea","settings":' + nested + '}' if method == "POST" else nested
+    # When parsing, then report a field-level depth error, never parser recursion failure.
+    response = await client.request(method, path, content=body, headers={"Content-Type": "application/json"})
+    assert response.status_code == 422
+    assert response.json()["detail"][0]["type"] == "settings_depth"
+    spy.assert_not_called()
+    update.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_creation_when_large_source_remains_supported(client: AsyncClient, settings_service: ProjectService) -> None:
+    # Given a near-limit JSON source containing structural-looking text.
+    source = "[\\\"{}]" * 28000
+    # When creating with supported settings, then preserve the existing source budget.
+    response = await client.post("/api/creator/projects", json={"title": "Large", "source_type": "pasted_json",
+                                "json_script": source, "settings": {}})
+    assert response.status_code == 201
+    assert response.json()["json_script"] == source
+
+
+@pytest.mark.asyncio
+async def test_read_when_schema_not_migrated_is_sanitized(client: AsyncClient, settings_service: ProjectService,
+                                                       monkeypatch: pytest.MonkeyPatch) -> None:
+    import asyncpg
+    # Given a missing settings table, when a new reader handles a legacy database.
+    monkeypatch.setattr(settings_service.db, "fetch_settings", AsyncMock(side_effect=asyncpg.UndefinedTableError("SELECT secret_sql")))
+    async with AsyncClient(transport=ASGITransport(app=app, raise_app_exceptions=False), base_url="http://test",
+                           headers=client.headers) as external:
+        response = await external.get("/api/creator/projects/1")
+    # Then return a sanitized deployment failure without database internals.
+    assert response.status_code == 500
+    assert "secret_sql" not in response.text
