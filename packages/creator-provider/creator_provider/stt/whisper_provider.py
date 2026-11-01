@@ -1,5 +1,4 @@
 from __future__ import annotations
-from .atomic_file import publish_text
 
 import logging
 import os
@@ -86,9 +85,9 @@ class WhisperSTTProvider(STTProvider):
             destination = Path(validated_output)
             destination.parent.mkdir(parents=True, exist_ok=True)
             if subtitle_format == "vtt":
-                publish_text(destination, _segments_to_vtt(segments))
+                destination.write_text(_segments_to_vtt(segments), encoding="utf-8")
             else:
-                publish_text(destination, _segments_to_srt(segments))
+                destination.write_text(_segments_to_srt(segments), encoding="utf-8")
 
         return SubtitleResult(
             segments=segments,
