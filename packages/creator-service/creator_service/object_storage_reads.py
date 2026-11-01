@@ -113,6 +113,8 @@ def s3_stat(operation: Callable[[], S3Head]) -> ObjectInfo:
             result = operation()
             return ObjectInfo(result["ContentLength"], result.get("ETag"), result.get("VersionId"))
     except ClientError as error:
+        if error.response.get("Error", {}).get("Code") in {"PreconditionFailed", "412"}:
+            raise StorageReadError("generation_changed") from None
         if error.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
             raise StorageObjectMissing() from None
         raise StorageReadError() from None
@@ -135,6 +137,8 @@ def s3_read(operation: Callable[[str], S3Object], offset: int, length: int) -> b
             finally:
                 body.close()
     except ClientError as error:
+        if error.response.get("Error", {}).get("Code") in {"PreconditionFailed", "412"}:
+            raise StorageReadError("generation_changed") from None
         if error.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
             raise StorageObjectMissing() from None
         raise StorageReadError() from None
@@ -168,7 +172,7 @@ def azure_stat(operation: Callable[[], BlobProperties]) -> ObjectInfo:
 
 
 def azure_read(operation: Callable[[int, int], bytes], offset: int, length: int) -> bytes:
-    from azure.core.exceptions import AzureError, ResourceNotFoundError
+    from azure.core.exceptions import AzureError, HttpResponseError, ResourceNotFoundError
 
     validate_range(offset, length)
     try:
@@ -178,6 +182,8 @@ def azure_read(operation: Callable[[int, int], bytes], offset: int, length: int)
             return operation(offset, length)
     except ResourceNotFoundError:
         raise StorageObjectMissing() from None
+    except HttpResponseError as error:
+        raise StorageReadError("generation_changed" if error.status_code == 412 else "unavailable") from None
     except TimeoutError:
         raise StorageReadError("timeout") from None
     except (AzureError, OSError):

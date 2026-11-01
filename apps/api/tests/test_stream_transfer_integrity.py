@@ -55,6 +55,32 @@ def test_later_short_read_aborts_real_http_without_media_error_body(tmp_path, mo
     assert "private-key-marker" not in caplog.text
 
 
+def test_midstream_storage_error_cannot_complete_real_http(tmp_path, monkeypatch, caplog) -> None:
+    # Given a backend that fails after one successful chunk.
+    from tests.project_preview_support import CountedStorage
+    from creator_service.object_storage import StorageReadError
+
+    backend = CountedStorage(tmp_path)
+    backend.size = 131072
+
+    def read(key, offset, length):
+        if offset:
+            raise StorageReadError("generation_changed")
+        return b"a" * length
+
+    monkeypatch.setattr(backend, "read_range", read)
+    chunks = []
+    # When a storage exception arrives after headers through real HTTP.
+    with http_stream(backend, "private-marker") as client:
+        with pytest.raises(httpx.RemoteProtocolError):
+            with client.stream("GET", "/content") as response:
+                for chunk in response.iter_bytes():
+                    chunks.append(chunk)
+    # Then even swallowing the exception cannot turn this into a complete transfer.
+    assert b"".join(chunks) == b"a" * 65536
+    assert "private-marker" not in caplog.text
+
+
 @pytest.mark.asyncio
 async def test_cancel_during_inflight_read_waits_for_release_then_closes(preview, monkeypatch) -> None:
     # Given a read held in a worker thread while response cancellation arrives.
