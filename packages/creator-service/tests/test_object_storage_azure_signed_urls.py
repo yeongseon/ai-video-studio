@@ -92,7 +92,7 @@ def test_azure_download_url_includes_sas_token(monkeypatch):
     assert calls[0]["account_name"] == "acct"
     assert calls[0]["container_name"] == "artifacts"
     assert calls[0]["blob_name"] == "prefix/42/render/output.mp4"
-    assert calls[0]["permission"].read is True
+    assert getattr(calls[0]["permission"], "read") is True
     expiry = calls[0]["expiry"]
     assert isinstance(expiry, datetime)
     assert 600 <= (expiry - before).total_seconds()
