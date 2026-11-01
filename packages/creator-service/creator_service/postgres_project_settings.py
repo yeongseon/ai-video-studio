@@ -39,7 +39,7 @@ async def replace_settings(project_id: int, settings: ProjectSettings, *,
     async with transaction() as connection:
         row = await connection.fetchrow("""
             UPDATE creator_projects SET updated_at = NOW()
-            WHERE id = $1 AND workspace_id = $2 AND updated_at = $3 RETURNING *
+            WHERE id = $1 AND ($2::bigint IS NULL OR workspace_id = $2) AND updated_at = $3 RETURNING *
         """, project_id, workspace_id, expected_updated_at)
         if row is None:
             return None
