@@ -349,6 +349,7 @@ class AzureBlobStorageBackend:
             self._connection_string,
             connection_timeout=PROVIDER_CONNECT_TIMEOUT_SECONDS,
             read_timeout=PROVIDER_READ_TIMEOUT_SECONDS,
+            logging_enable=False,
         )
         self._container_client = self._client.get_container_client(self._container)
         self._content_settings_cls = ContentSettings

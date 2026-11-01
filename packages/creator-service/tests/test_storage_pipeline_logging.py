@@ -6,6 +6,7 @@ from azure.core.pipeline.transport import HttpResponse, HttpTransport
 from azure.core.exceptions import ServiceRequestError
 from azure.storage.blob import BlobServiceClient
 from botocore.awsrequest import AWSResponse
+from requests.structures import CaseInsensitiveDict
 
 from creator_service.object_storage import AzureBlobStorageBackend, S3StorageBackend, StorageReadError
 from creator_service.logging_config import JsonFormatter
@@ -15,17 +16,22 @@ class AzureResponse(HttpResponse):
     def __init__(self, request, data: bytes, status: int) -> None:
         super().__init__(request, None)
         self.status_code = status
-        self.headers = {"Content-Length": str(len(data)), "Content-Type": "application/octet-stream",
+        self.headers = CaseInsensitiveDict({"Content-Length": str(len(data)), "Content-Type": "application/octet-stream",
                         "ETag": '"generation-a"', "Last-Modified": "Mon, 02 Nov 2026 00:00:00 GMT",
-                        "Content-Range": "bytes 0-3/4", "x-ms-blob-type": "BlockBlob"}
-        self.content_type = "application/octet-stream"
+                        "Content-Range": "bytes 0-3/4", "x-ms-blob-type": "BlockBlob"})
+        self.content_type = "application/octet-stream" if request.method == "GET" else "text/plain"
         self.data = data
 
     def body(self) -> bytes:
         return self.data
 
     def stream_download(self, pipeline, **kwargs):
-        return iter([self.data])
+        class Download:
+            content_length = len(self.data)
+
+            def __iter__(inner):
+                return iter([self.data])
+        return Download()
 
 
 class OfflineAzure(HttpTransport):

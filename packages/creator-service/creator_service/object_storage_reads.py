@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from collections.abc import Callable, Iterator
 from typing import Final, Protocol, TypedDict
+from .storage_sdk_logging import private_sdk_operation
 
 READ_CHUNK_SIZE: Final = 64 * 1024
 
@@ -102,7 +103,8 @@ def s3_stat(operation: Callable[[], S3Head]) -> ObjectInfo:
     from botocore.exceptions import BotoCoreError, ClientError, ReadTimeoutError
 
     try:
-        return ObjectInfo(operation()["ContentLength"])
+        with private_sdk_operation():
+            return ObjectInfo(operation()["ContentLength"])
     except ClientError as error:
         if error.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
             raise StorageObjectMissing() from None
@@ -118,12 +120,13 @@ def s3_read(operation: Callable[[str], S3Object], offset: int, length: int) -> b
 
     validate_range(offset, length)
     try:
-        response = operation(f"bytes={offset}-{offset + length - 1}")
-        body = response["Body"]
-        try:
-            return body.read(length)
-        finally:
-            body.close()
+        with private_sdk_operation():
+            response = operation(f"bytes={offset}-{offset + length - 1}")
+            body = response["Body"]
+            try:
+                return body.read(length)
+            finally:
+                body.close()
     except ClientError as error:
         if error.response.get("Error", {}).get("Code") in {"NoSuchKey", "404", "NotFound"}:
             raise StorageObjectMissing() from None
@@ -143,7 +146,8 @@ def azure_stat(operation: Callable[[], BlobProperties]) -> ObjectInfo:
     from azure.core.exceptions import AzureError, ResourceNotFoundError
 
     try:
-        return ObjectInfo(operation().size)
+        with private_sdk_operation():
+            return ObjectInfo(operation().size)
     except ResourceNotFoundError:
         raise StorageObjectMissing() from None
     except TimeoutError:
@@ -159,7 +163,8 @@ def azure_read(operation: Callable[[int, int], bytes], offset: int, length: int)
     try:
         # readall consumes at most this bounded range, not the whole blob. The
         # synchronous SDK consumes/releases its HTTP response during this call.
-        return operation(offset, length)
+        with private_sdk_operation():
+            return operation(offset, length)
     except ResourceNotFoundError:
         raise StorageObjectMissing() from None
     except TimeoutError:
