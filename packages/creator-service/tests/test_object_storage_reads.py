@@ -106,7 +106,7 @@ def test_s3_closes_response_when_read_fails(s3: S3StorageBackend) -> None:
 
     # Given a response that fails while being consumed.
     class BrokenBody(BytesIO):
-        def read(self, size: int = -1) -> bytes:
+        def read(self, size: int | None = -1) -> bytes:
             raise OSError("secret-key")
 
     raw = BrokenBody(b"data")
@@ -117,3 +117,24 @@ def test_s3_closes_response_when_read_fails(s3: S3StorageBackend) -> None:
             s3.read_range("owned.mp4", 0, 4)
     # Then the failed provider response is released too.
     assert raw.closed
+
+
+@pytest.mark.parametrize("operation", ["stat", "read"])
+def test_s3_read_timeout_is_distinct(s3: S3StorageBackend, monkeypatch: pytest.MonkeyPatch, operation: str) -> None:
+    from botocore.exceptions import ReadTimeoutError
+    from creator_service.object_storage import StorageReadError
+
+    # Given a real SDK timeout raised without a network connection.
+    def fail(**kwargs):
+        raise ReadTimeoutError(endpoint_url="https://secret-key")
+
+    monkeypatch.setattr(s3._client, "head_object" if operation == "stat" else "get_object", fail)
+    # When the adapter reads.
+    with pytest.raises(StorageReadError) as failure:
+        if operation == "stat":
+            s3.stat("owned.mp4")
+        else:
+            s3.read_range("owned.mp4", 0, 4)
+    # Then timeout remains distinguishable without endpoint text.
+    assert failure.value.kind == "timeout"
+    assert "secret-key" not in str(failure.value)

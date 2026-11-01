@@ -17,6 +17,13 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import BinaryIO, Final, Protocol, cast
 
+from .object_storage_reads import (
+    ObjectInfo as ObjectInfo,
+    StorageObjectMissing as StorageObjectMissing,
+    StorageReadError as StorageReadError,
+    azure_read, azure_stat, local_read, local_stat, s3_read, s3_stat, validate_key,
+)
+
 logger = logging.getLogger(__name__)
 _STREAM_CHUNK_SIZE = 64 * 1024
 PROVIDER_CONNECT_TIMEOUT_SECONDS: Final = 30
@@ -71,6 +78,9 @@ class StorageResult:
 class ArtifactStorageBackend(Protocol):
     """Interface for artifact file storage."""
 
+    @property
+    def provider(self) -> str: ...
+
     def upload(
         self,
         key: str,
@@ -100,12 +110,22 @@ class ArtifactStorageBackend(Protocol):
         """Check if artifact exists."""
         ...
 
+    def stat(self, key: str) -> ObjectInfo:
+        """Read object size without downloading content; missing is normalized."""
+        ...
+
+    def read_range(self, key: str, offset: int, length: int) -> bytes:
+        """Read 1..65536 bytes, releasing the response before returning."""
+        ...
+
 
 class LocalStorageBackend:
     """Local filesystem storage. Default for development."""
 
     def __init__(self, root: str | None = None) -> None:
         self._root = Path(root or os.getenv("ARTIFACT_ROOT", "data/artifacts"))
+
+    provider = "local"
 
     def _safe_key(self, key: str) -> str:
         """Validate key to prevent path traversal attacks."""
@@ -178,6 +198,12 @@ class LocalStorageBackend:
     def exists(self, key: str) -> bool:
         return (self._root / self._safe_key(key)).is_file()
 
+    def stat(self, key: str) -> ObjectInfo:
+        return local_stat(self._root, key)
+
+    def read_range(self, key: str, offset: int, length: int) -> bytes:
+        return local_read(self._root, key, offset, length)
+
 
 class S3StorageBackend:
     """AWS S3 storage backend.
@@ -212,6 +238,8 @@ class S3StorageBackend:
                 tcp_keepalive=True,
             ),
         )
+
+    provider = "s3"
 
     def _full_key(self, key: str) -> str:
         return f"{self._prefix}/{key}" if self._prefix else key
@@ -278,6 +306,14 @@ class S3StorageBackend:
         except Exception:
             return False
 
+    def stat(self, key: str) -> ObjectInfo:
+        validate_key(key)
+        return s3_stat(self._client, self._bucket, self._full_key(key))
+
+    def read_range(self, key: str, offset: int, length: int) -> bytes:
+        validate_key(key)
+        return s3_read(self._client, self._bucket, self._full_key(key), offset, length)
+
 
 class AzureBlobStorageBackend:
     """Azure Blob Storage backend.
@@ -316,6 +352,8 @@ class AzureBlobStorageBackend:
         self._content_settings_cls = ContentSettings
         self._blob_sas_permissions_cls = BlobSasPermissions
         self._generate_blob_sas = generate_blob_sas
+
+    provider = "azure_blob"
 
     def _full_key(self, key: str) -> str:
         return f"{self._prefix}/{key}" if self._prefix else key
@@ -415,6 +453,14 @@ class AzureBlobStorageBackend:
     def exists(self, key: str) -> bool:
         blob_client = self._container_client.get_blob_client(self._full_key(key))
         return bool(blob_client.exists())
+
+    def stat(self, key: str) -> ObjectInfo:
+        validate_key(key)
+        return azure_stat(self._container_client.get_blob_client(self._full_key(key)))
+
+    def read_range(self, key: str, offset: int, length: int) -> bytes:
+        validate_key(key)
+        return azure_read(self._container_client.get_blob_client(self._full_key(key)), offset, length)
 
 
 class GCSStorageBackend:

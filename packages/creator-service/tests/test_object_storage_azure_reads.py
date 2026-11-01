@@ -76,3 +76,20 @@ def test_azure_normalizes_missing_and_auth(azure, operation: str, missing: bool)
             backend.read_range("owned.mp4", 0, 4)
     # Then errors have stable, generic text.
     assert "secret-key" not in str(failure.value)
+
+
+@pytest.mark.parametrize("operation", ["stat", "read"])
+def test_azure_timeout_is_distinct(azure, operation: str) -> None:
+    from creator_service.object_storage import StorageReadError
+
+    # Given a transport timeout.
+    backend, blob, _ = azure
+    blob.failure = TimeoutError("secret-key")
+    # When crossing the adapter boundary.
+    with pytest.raises(StorageReadError) as failure:
+        if operation == "stat":
+            backend.stat("owned.mp4")
+        else:
+            backend.read_range("owned.mp4", 0, 4)
+    # Then callers can select generic timeout semantics.
+    assert failure.value.kind == "timeout"
