@@ -3,9 +3,24 @@ from __future__ import annotations
 import importlib
 import sys
 import types
+from datetime import datetime, timezone
+
+import pytest
 
 
-def _install_fake_azure(account_key: str | None = "secret") -> None:
+@pytest.fixture(autouse=True)
+def restore_azure_modules():
+    names = ("azure", "azure.storage", "azure.storage.blob")
+    previous = {name: sys.modules.get(name) for name in names}
+    yield
+    for name, module in previous.items():
+        if module is None:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = module
+
+
+def _install_fake_azure(account_key: str | None = "secret") -> list[dict[str, object]]:
     azure_mod = types.ModuleType("azure")
     storage_mod = types.ModuleType("azure.storage")
     blob_mod = types.ModuleType("azure.storage.blob")
@@ -40,7 +55,10 @@ def _install_fake_azure(account_key: str | None = "secret") -> None:
         def __init__(self, content_type: str | None = None) -> None:
             self.content_type = content_type
 
-    def _generate_blob_sas(**_kwargs: object) -> str:
+    calls: list[dict[str, object]] = []
+
+    def _generate_blob_sas(**kwargs: object) -> str:
+        calls.append(kwargs)
         return "sig=fake"
 
     setattr(blob_mod, "BlobServiceClient", _BlobServiceClient)
@@ -50,10 +68,11 @@ def _install_fake_azure(account_key: str | None = "secret") -> None:
     sys.modules["azure"] = azure_mod
     sys.modules["azure.storage"] = storage_mod
     sys.modules["azure.storage.blob"] = blob_mod
+    return calls
 
 
 def test_azure_download_url_includes_sas_token(monkeypatch):
-    _install_fake_azure(account_key="super-secret")
+    calls = _install_fake_azure(account_key="super-secret")
     monkeypatch.setenv("AZURE_STORAGE_CONNECTION_STRING", "UseDevelopmentStorage=true")
     monkeypatch.setenv("AZURE_STORAGE_CONTAINER", "artifacts")
     monkeypatch.setenv("AZURE_STORAGE_PREFIX", "prefix")
@@ -61,12 +80,23 @@ def test_azure_download_url_includes_sas_token(monkeypatch):
     module = importlib.import_module("creator_service.object_storage")
     backend = module.AzureBlobStorageBackend()
 
+    before = datetime.now(timezone.utc)
     url = backend.download_url("42/render/output.mp4", expires_in=600)
+    after = datetime.now(timezone.utc)
 
     assert url.startswith(
         "https://acct.blob.core.windows.net/artifacts/prefix/42/render/output.mp4?"
     )
     assert "sig=fake" in url
+    assert len(calls) == 1
+    assert calls[0]["account_name"] == "acct"
+    assert calls[0]["container_name"] == "artifacts"
+    assert calls[0]["blob_name"] == "prefix/42/render/output.mp4"
+    assert calls[0]["permission"].read is True
+    expiry = calls[0]["expiry"]
+    assert isinstance(expiry, datetime)
+    assert 600 <= (expiry - before).total_seconds()
+    assert (expiry - after).total_seconds() <= 600
 
 
 def test_azure_download_url_raises_when_no_account_key(monkeypatch):
