@@ -1,8 +1,7 @@
 /**
  * TimelinePreview — browser preview of a compiled Timeline RenderPlan.
  *
- * Previews the same RenderPlan the renderer consumes (fetched from the preview
- * endpoint), so what the user sees is what gets rendered. Provides playback,
+ * Uses the compiled visual placements, not final-render parity. Provides playback,
  * seek, and aspect handling with deterministic timing: the displayed segment is
  * a pure function of currentTime via segmentAtTime(), so timing does not depend
  * on wall-clock in the mapping (rAF only advances currentTime during playback).
@@ -10,7 +9,8 @@
  * Three states via data-status: loading, error, ready.
  */
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { TimelineVideo } from "./TimelineVideo";
 
 import {
   fetchTimelinePreview,
@@ -66,6 +66,10 @@ export default function TimelinePreview({
   const [state, setState] = useState<LoadState>({ status: "loading" });
   const [currentTime, setCurrentTime] = useState(0);
   const [playing, setPlaying] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+  const held = useRef(false);
+  const onHold = useCallback((value: boolean) => { held.current = value; }, []);
+  const onBlocked = useCallback((message: string) => { setPlaying(false); setNotice(message); }, []);
   const rafRef = useRef<number | null>(null);
   const lastTsRef = useRef<number | null>(null);
 
@@ -95,14 +99,28 @@ export default function TimelinePreview({
   const total = state.status === "ready" ? totalDuration(state.plan) : 0;
 
   useEffect(() => {
+    const hide = () => { if (document.hidden) setPlaying(false); };
+    document.addEventListener("visibilitychange", hide);
+    return () => document.removeEventListener("visibilitychange", hide);
+  }, []);
+
+  useEffect(() => {
     if (!playing || state.status !== "ready") {
       return;
     }
     const step = (ts: number) => {
+      if (held.current) {
+        lastTsRef.current = null;
+        rafRef.current = requestAnimationFrame(step);
+        return;
+      }
       if (lastTsRef.current !== null) {
         const delta = (ts - lastTsRef.current) / 1000;
         setCurrentTime((prev) => {
-          const next = prev + delta;
+          const active = segmentAtTime(state.plan, prev);
+          const boundary = active ? active.timeline_start_seconds + active.duration_seconds
+            : state.plan.segments.find((segment) => segment.timeline_start_seconds > prev)?.timeline_start_seconds ?? total;
+          const next = Math.min(prev + delta, boundary);
           if (next >= total) {
             setPlaying(false);
             return total;
@@ -140,6 +158,7 @@ export default function TimelinePreview({
 
   const { plan } = state;
   const active = segmentAtTime(plan, currentTime);
+  const placement = active ? plan.segments.indexOf(active) : -1;
   const { width, height } = plan.output_spec;
   const mediaLoaded = () => {
     if (active === plan.segments[0]) onReady?.(plan.timeline_revision);
@@ -171,7 +190,7 @@ export default function TimelinePreview({
           <div data-testid="preview-empty">No content at this time</div>
         ) : active.kind === "image" ? (
           <img
-            key={active.media_url ?? active.source}
+            key={placement}
             data-testid="preview-media"
             src={active.media_url ?? active.source}
             onLoad={mediaLoaded}
@@ -184,19 +203,16 @@ export default function TimelinePreview({
             }}
           />
         ) : (
-          <video
-            key={active.media_url ?? active.source}
-            data-testid="preview-media"
-            src={active.media_url ?? active.source}
-            onLoadedData={mediaLoaded}
+          <TimelineVideo
+            key={placement}
+            segment={active}
+            time={currentTime}
+            playing={playing}
+            onHold={onHold}
+            onReady={mediaLoaded}
             onError={mediaFailed}
-            playsInline
-            muted
-            style={{
-              width: "100%",
-              height: "100%",
-              objectFit: active.fit_mode === "contain" ? "contain" : "cover",
-            }}
+            onBlocked={onBlocked}
+            onEnded={() => setPlaying(false)}
           />
         )}
       </div>
@@ -206,7 +222,12 @@ export default function TimelinePreview({
           type="button"
           data-testid="preview-play-toggle"
           data-playing={playing ? "true" : "false"}
-          onClick={() => setPlaying((p) => !p)}
+          onClick={() => {
+            setNotice(null);
+            if (currentTime >= total) setCurrentTime(0);
+            setPlaying((p) => !p);
+          }}
+          style={{ minWidth: 64, minHeight: 44 }}
         >
           {playing ? "Pause" : "Play"}
         </button>
@@ -214,6 +235,7 @@ export default function TimelinePreview({
           type="range"
           role="slider"
           data-testid="preview-seek"
+          aria-label="Timeline position"
           min={0}
           max={total}
           step={0.1}
@@ -227,6 +249,8 @@ export default function TimelinePreview({
           {currentTime.toFixed(1)} / {total.toFixed(1)}
         </span>
       </div>
+      {notice && <p role="status">{notice}</p>}
+      <p data-testid="preview-fidelity">Preview shows trimmed visual frames only. Audio, captions and transitions are not previewed; final-render framing may differ.</p>
 
       {(plan.narration_path !== null || plan.music_path !== null) && (
         <audio
