@@ -1,9 +1,15 @@
 from pathlib import Path
+import os
+import subprocess
+import sys
+import uuid
 
 from alembic.migration import MigrationContext
 from alembic.operations import Operations
 from alembic.script import ScriptDirectory
 import sqlalchemy as sa
+import asyncpg
+import pytest
 
 
 def test_settings_migration_when_upgraded_and_downgraded_sqlite() -> None:
@@ -26,3 +32,43 @@ def test_settings_migration_when_upgraded_and_downgraded_sqlite() -> None:
             revision.module.downgrade()
         assert connection.execute(sa.text("SELECT title FROM creator_projects")).scalar_one() == "Legacy"
         assert "settings" not in {c["name"] for c in sa.inspect(connection).get_columns("creator_projects")}
+
+
+@pytest.mark.asyncio
+async def test_settings_migration_when_upgraded_and_downgraded_postgres() -> None:
+    # Given a schema-isolated database at the previous head with an existing row.
+    url = os.getenv("FIRST_SHORT_TEST_DATABASE_URL")
+    if not url:
+        pytest.skip("FIRST_SHORT_TEST_DATABASE_URL must name a disposable database")
+    schema = f"settings_migration_{uuid.uuid4().hex}"
+    root = Path(__file__).resolve().parents[3]
+    async with asyncpg.create_pool(url, min_size=1, max_size=2) as admin:
+        await admin.execute(f'CREATE SCHEMA "{schema}"')
+        env = {**os.environ, "DATABASE_URL": url, "PGOPTIONS": f"-c search_path={schema}"}
+        try:
+            subprocess.run([sys.executable, "-m", "alembic", "upgrade", "050"],
+                           cwd=root / "apps/api", env=env, check=True, capture_output=True)
+            async with asyncpg.create_pool(url, min_size=1, max_size=2,
+                                          server_settings={"search_path": schema}) as pool:
+                await pool.execute("INSERT INTO creator_projects (id, title) VALUES (1, 'Legacy')")
+                # When upgrading, then preserve old data and NULL legacy semantics.
+                subprocess.run([sys.executable, "-m", "alembic", "upgrade", "051"],
+                               cwd=root / "apps/api", env=env, check=True, capture_output=True)
+                row = await pool.fetchrow("SELECT title, settings FROM creator_projects WHERE id=1")
+                assert row is not None and (row["title"], row["settings"]) == ("Legacy", None)
+                column = await pool.fetchrow("""
+                    SELECT udt_name, is_nullable, column_default FROM information_schema.columns
+                    WHERE table_schema=$1 AND table_name='creator_projects' AND column_name='settings'
+                """, schema)
+                assert column is not None
+                assert (column["udt_name"], column["is_nullable"], column["column_default"]) == ("jsonb", "YES", None)
+                # When downgrading, then preserve the project and remove only settings.
+                subprocess.run([sys.executable, "-m", "alembic", "downgrade", "050"],
+                               cwd=root / "apps/api", env=env, check=True, capture_output=True)
+                assert await pool.fetchval("SELECT title FROM creator_projects WHERE id=1") == "Legacy"
+                assert await pool.fetchval("""
+                    SELECT COUNT(*) FROM information_schema.columns
+                    WHERE table_schema=$1 AND table_name='creator_projects' AND column_name='settings'
+                """, schema) == 0
+        finally:
+            await admin.execute(f'DROP SCHEMA "{schema}" CASCADE')

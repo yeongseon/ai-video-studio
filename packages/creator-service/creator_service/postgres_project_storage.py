@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime
+import json
 from typing import Any
 
 from .db import fetch_all, fetch_one
@@ -17,9 +19,10 @@ class PostgresProjectStorage:
                 url_source,
                 json_script,
                 status,
-                workspace_id
+                workspace_id,
+                settings
             )
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::jsonb)
             RETURNING *
             """,
             payload.get("title"),
@@ -30,27 +33,29 @@ class PostgresProjectStorage:
             payload.get("json_script"),
             payload.get("status", "draft"),
             payload.get("workspace_id"),
+            json.dumps(payload["settings"]) if payload.get("settings") is not None else None,
         )
         if row is None:
             raise ValueError("Failed to insert project")
-        return row
+        return _decode_project(row)
 
     async def fetch_project(
         self, project_id: int, workspace_id: int | None = None
     ) -> dict[str, Any] | None:
         if workspace_id is None:
-            return await fetch_one("SELECT * FROM creator_projects WHERE id = $1", project_id)
-        return await fetch_one(
-            "SELECT * FROM creator_projects WHERE id = $1 AND workspace_id = $2",
-            project_id,
-            workspace_id,
-        )
+            row = await fetch_one("SELECT * FROM creator_projects WHERE id = $1", project_id)
+        else:
+            row = await fetch_one(
+                "SELECT * FROM creator_projects WHERE id = $1 AND workspace_id = $2",
+                project_id, workspace_id,
+            )
+        return _decode_project(row) if row is not None else None
 
     async def list_projects(
         self, limit: int, offset: int, workspace_id: int | None = None
     ) -> list[dict[str, Any]]:
         if workspace_id is None:
-            return await fetch_all(
+            rows = await fetch_all(
                 """
                 SELECT *
                 FROM creator_projects
@@ -60,18 +65,20 @@ class PostgresProjectStorage:
                 limit,
                 offset,
             )
-        return await fetch_all(
-            """
-            SELECT *
-            FROM creator_projects
-            WHERE workspace_id = $1
-            ORDER BY created_at DESC, id DESC
-            LIMIT $2 OFFSET $3
-            """,
-            workspace_id,
-            limit,
-            offset,
-        )
+        else:
+            rows = await fetch_all(
+                """
+                SELECT *
+                FROM creator_projects
+                WHERE workspace_id = $1
+                ORDER BY created_at DESC, id DESC
+                LIMIT $2 OFFSET $3
+                """,
+                workspace_id,
+                limit,
+                offset,
+            )
+        return [_decode_project(row) for row in rows]
 
     async def list_projects_with_latest_run(
         self, limit: int, offset: int, workspace_id: int | None = None
@@ -133,7 +140,7 @@ class PostgresProjectStorage:
                 }
             project_data = {k: v for k, v in dict(row).items() if k not in _LATERAL_KEYS}
             project_data["latest_run"] = latest_run
-            projects.append(project_data)
+            projects.append(_decode_project(project_data))
         return projects
 
     async def count_projects(self, workspace_id: int | None = None) -> int:
@@ -177,6 +184,7 @@ class PostgresProjectStorage:
             "json_script",
             "status",
             "workspace_id",
+            "settings",
         }
     )
 
@@ -186,6 +194,7 @@ class PostgresProjectStorage:
         updates: dict[str, Any],
         *,
         workspace_id: int | None = None,
+        expected_updated_at: datetime | None = None,
     ) -> dict[str, Any] | None:
         """Update project fields. Returns updated row or None if not found.
 
@@ -200,7 +209,7 @@ class PostgresProjectStorage:
         idx = 1
         for key, value in safe_updates.items():
             set_clauses.append(f"{key} = ${idx}")
-            params.append(value)
+            params.append(json.dumps(value) if key == "settings" and value is not None else value)
             idx += 1
         params.append(project_id)
         where_clause = f"id = ${idx}"
@@ -208,13 +217,18 @@ class PostgresProjectStorage:
             idx += 1
             params.append(workspace_id)
             where_clause += f" AND workspace_id = ${idx}"
+        if expected_updated_at is not None:
+            idx += 1
+            params.append(expected_updated_at)
+            where_clause += f" AND updated_at = ${idx}"
         query = f"""
             UPDATE creator_projects
             SET {", ".join(set_clauses)}, updated_at = NOW()
             WHERE {where_clause}
             RETURNING *
         """
-        return await fetch_one(query, *params)
+        row = await fetch_one(query, *params)
+        return _decode_project(row) if row is not None else None
 
     async def delete_project(self, project_id: int, *, workspace_id: int | None = None) -> bool:
         """Delete a project by id. Returns True if deleted.
@@ -233,3 +247,13 @@ class PostgresProjectStorage:
                 workspace_id,
             )
         return result is not None
+
+
+def _decode_project(row: dict[str, Any]) -> dict[str, Any]:
+    from creator_domain.models.project_settings import ProjectSettings
+
+    raw = row.get("settings")
+    if raw is not None:
+        settings = ProjectSettings.model_validate_json(raw) if isinstance(raw, str) else ProjectSettings.model_validate(raw)
+        return {**row, "settings": settings.model_dump(mode="json")}
+    return row
