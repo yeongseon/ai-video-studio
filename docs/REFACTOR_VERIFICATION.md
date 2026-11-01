@@ -49,6 +49,11 @@ Additional execution coverage:
   ownership, listing/pagination, and legacy-data preservation against PostgreSQL.
 - `test_studio_proxy_runtime.py`: actual nginx template injects the runtime key,
   does not expose it in the served page, and blocks foreign-origin mutations.
+- `test_authorized_media_runtime.py`: actual nginx template, API and PostgreSQL in
+  development and production mode serve scene, artifact, workspace and project media
+  through authorized identity routes with exact bytes and MIME types, return 404 for
+  absent and foreign objects, and never serve raw artifact paths. CI runs it in the
+  `first-short-runtime` job and `test_ci_media_runtime_gate.py` pins that it does.
 - `test_quickstart_execution.py`: actual Compose configuration smoke in a fresh
   temporary checkout without a local `.env`.
 - Worker tests render real image/video segments, narration and subtitles.
