@@ -2,6 +2,7 @@
 
 | Document | Description |
 |---|---|
+| [SYSTEM_TOPOLOGY.md](architecture/SYSTEM_TOPOLOGY.md) | Canonical configured execution, static imports, approval flows, and hosted contract; not live-host verification |
 | [FIRST_SHORT_WALKTHROUGH.md](FIRST_SHORT_WALKTHROUGH.md) | Offline demo, Timeline review, render and download |
 | [QUICKSTART.md](QUICKSTART.md) | Local bootstrap and proxy authentication |
 | [PRODUCT_DIRECTION.md](PRODUCT_DIRECTION.md) | Short-first product scope, target UX, and success criteria |

@@ -3,11 +3,24 @@
 **Deferred design checklist only.** Long-form is not in the current product
 scope, roadmap, or release acceptance criteria. Do not create long-form issues,
 recipes, UI, rendering workflows, or speculative infrastructure from this list.
+For actual configured services and revision approval, use the
+[current system topology](SYSTEM_TOPOLOGY.md). Neither sketch below is an
+execution inventory or a claim of live hosting.
 
 The [current target](SHORT_FIRST_MEDIA_CORE.md) stays simple:
 
-```text
-Project -> Timeline -> RenderPlan -> FFmpeg
+**TARGET simplification**, omitting the current approval gates, not a runtime guide.
+
+<!-- diagram: planned -->
+```mermaid
+flowchart LR
+    project["Project: production workspace"]
+    timeline["Timeline: one editable revision"]
+    plan["RenderPlan: resolved renderer input"]
+    ffmpeg["FFmpeg: encoder"]
+    project --> timeline
+    timeline --> plan
+    plan --> ffmpeg
 ```
 
 ## Boundaries retained now
@@ -36,13 +49,22 @@ The following is a future evaluation checklist, **not active implementation work
 
 Possible future structure:
 
-```text
-Project
-  -> Sequence[]
-       -> Timeline
-            -> RenderPlan
-                 -> Chunk Render
-                      -> Assembly
+**PLANNED / DEFERRED**, not deployed:
+
+<!-- diagram: planned -->
+```mermaid
+flowchart LR
+    project["Project: future multi-sequence workspace"]
+    sequence["PLANNED Sequence: grouped timelines"]
+    timeline["Timeline: sequence edit state"]
+    plan["RenderPlan: resolved renderer input"]
+    chunk["PLANNED Chunk Render: partial encoding"]
+    assembly["PLANNED Assembly: join encoded chunks"]
+    project --> sequence
+    sequence --> timeline
+    timeline --> plan
+    plan --> chunk
+    chunk --> assembly
 ```
 
 At that point, explicitly design migration from Project's single Timeline,

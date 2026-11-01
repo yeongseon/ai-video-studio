@@ -5,6 +5,8 @@
 This is the **target architecture** for the [short-first roadmap](../ROADMAP.md).
 Names, fields, and paths below describe planned contracts, not existing APIs or
 packages. The [README](../../README.md) describes the current pipeline foundation.
+The [system topology](SYSTEM_TOPOLOGY.md) maps configured execution and current
+approval gates to source files. The target sketches here are not deployed topology.
 
 > Short Form is a product constraint, not a core domain constraint.
 
@@ -25,21 +27,33 @@ are a UI projection, not a replacement state machine or an approval bypass.
 
 ## Target flow
 
-```text
-Project -> ContentRecipe -> AI Draft (Script + Assets + Audio)
-        -> Scenes -> MediaSegments -> Timeline
-                                     ^
-                       Scene / Manual / AI editing
-                                     |
-                              Timeline State
-                              /            \
-                       Browser Preview    Timeline Compiler
-                                               |
-                                            RenderPlan
-                                               |
-                                             FFmpeg
-                                               |
-                                           Short Video
+**TARGET / PLANNED integration**, not an automatic conversion of generated runs
+into approved Timelines. See the separate current entry flows in the topology.
+
+<!-- diagram: planned -->
+```mermaid
+flowchart LR
+    project["Project: production workspace"]
+    recipe["ContentRecipe: content structure"]
+    draft["AI Draft: script, assets, audio"]
+    scenes["Scenes: editable groups"]
+    segments["MediaSegments: timed asset placements"]
+    timeline["Timeline: authoritative editable state"]
+    edit["Scene, manual or AI editing"]
+    preview["Browser Preview: inspect the edit"]
+    compiler["Timeline Compiler: resolve media and timing"]
+    plan["RenderPlan: renderer input"]
+    ffmpeg["FFmpeg: encode short video"]
+    project --> recipe
+    recipe --> draft
+    draft --> scenes
+    scenes --> segments
+    segments --> timeline
+    edit --> timeline
+    timeline --> preview
+    timeline --> compiler
+    compiler --> plan
+    plan --> ffmpeg
 ```
 
 For now, **one Project has one Timeline**. No Sequence domain is required.
@@ -100,7 +114,8 @@ visual strategy, pacing and segment-duration range, narration, BGM, and subtitle
 behavior. RecipeRegistry resolves explicit recipe IDs. Core logic must not branch
 on niche names such as `ssul`, `viral`, `facts`, `product`, or `education`.
 
-Planned initial recipe files (not created by this design):
+Initial recipe layout proposed by this design (the files now exist; this does not
+make every target contract above implemented):
 
 ```text
 recipes/shorts/
@@ -168,13 +183,28 @@ Both UI and AI use typed EditorCommands, for example `trim_segment` with
 `segment_id` and `duration_seconds`, or `replace_asset` with `segment_id` and
 `asset_id`. Manual controls must not bypass the shared command boundary.
 
-```text
-Manual action -> validated EditorCommand -------------------+
-AI request -> structured proposal -> validation -> diff     |
-                                      |-> Cancel (no edit) |
-                                      `-> Apply -----------+
-                                                           |
-                                              Timeline revision + history
+**TARGET / PLANNED editing flow.** Accepting an edit is not render approval.
+
+<!-- diagram: planned -->
+```mermaid
+flowchart LR
+    manual["Manual action: user edit"]
+    command["Validated EditorCommand: typed change"]
+    request["AI request: suggested edit"]
+    proposal["Structured proposal: revision-bound change"]
+    validation["Validation: check proposal"]
+    diff["Diff: review changes"]
+    cancel["Cancel: no edit"]
+    apply["Apply: accept edit"]
+    history["Timeline revision and history: saved state"]
+    manual --> command
+    command --> history
+    request --> proposal
+    proposal --> validation
+    validation --> diff
+    diff --> cancel
+    diff --> apply
+    apply --> history
 ```
 
 Undo and Redo cover manual and accepted AI edits. Autosave persists the accepted
