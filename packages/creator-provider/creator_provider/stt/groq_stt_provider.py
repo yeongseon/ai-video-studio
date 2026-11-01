@@ -1,4 +1,5 @@
 from __future__ import annotations
+from .atomic_file import publish_text
 
 import logging
 import os
@@ -111,9 +112,9 @@ class GroqSTTProvider(STTProvider):
             destination.parent.mkdir(parents=True, exist_ok=True)
             subtitle_format = merged_params.get("format") or merged_params.get("subtitle_format", "srt")
             if subtitle_format == "vtt":
-                destination.write_text(_segments_to_vtt(normalized_segments), encoding="utf-8")
+                publish_text(destination, _segments_to_vtt(normalized_segments))
             else:
-                destination.write_text(_segments_to_srt(normalized_segments), encoding="utf-8")
+                publish_text(destination, _segments_to_srt(normalized_segments))
 
         return SubtitleResult(
             segments=normalized_segments,
