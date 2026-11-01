@@ -181,3 +181,20 @@ async def test_settings_when_unrelated_workspace_deleted(settings_storage: Proje
     await settings_storage.delete_project(created.id, workspace_id=1)
     await db.execute("DELETE FROM workspaces WHERE id=1")
     assert await db.fetch_one("SELECT project_id FROM creator_project_settings WHERE project_id=$1", created.id) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("owner,scope", [(1, None), (None, None), (1, 1)])
+async def test_settings_replace_when_scope_is_unscoped_or_owner(
+    settings_storage: ProjectService, owner: int | None, scope: int | None,
+) -> None:
+    # Given an owned or NULL-owned project with a current timestamp.
+    created = await settings_storage.create_project("Scoped", "idea", idea_brief="idea", workspace_id=owner)
+    settings = ProjectSettings(output_preset="short_square")
+    # When the adapter uses existing None-as-unscoped semantics, then replace settings.
+    row = await settings_storage.db.update_project(
+        created.id, {"settings": settings.model_dump(mode="json")},
+        workspace_id=scope, expected_updated_at=created.updated_at,
+    )
+    assert row is not None
+    assert await settings_storage.db.fetch_settings(created.id, None) == settings
