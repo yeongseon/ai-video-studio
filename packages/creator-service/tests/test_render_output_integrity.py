@@ -84,14 +84,14 @@ def test_rejects_invalid_probe_duration(tmp_path: Path, service: FFmpegService,
     document = json.loads(probe.stdout)
     document["format"]["duration"] = duration
 
-    def run(cmd: list[str], **kwargs):
+    def run(cmd: list[str], timeout: int):
         if cmd[0] == "ffprobe":
             return subprocess.CompletedProcess(cmd, 0, json.dumps(document), "")
-        return real_run(cmd, **kwargs)
+        return real_run(cmd, capture_output=True, text=True, timeout=timeout)
 
     # When / Then
     output = tmp_path / "output" / "video.mp4"
-    with patch("subprocess.run", side_effect=run), pytest.raises(RuntimeError):
+    with patch("creator_service.media_integrity.run_validation", side_effect=run), pytest.raises(RuntimeError):
         copy_render(service, fixture, output)
     assert list(output.parent.iterdir()) == []
 
@@ -191,18 +191,19 @@ def test_validator_rejects_untrusted_probe_or_decoder_results(tmp_path: Path, ru
         document["streams"][0]["avg_frame_rate"] = "24/1"
     real_run = subprocess.run
 
-    def run(cmd: list[str], **kwargs):
+    def run(cmd: list[str], timeout: int):
         if rule == "timeout":
-            raise subprocess.TimeoutExpired(cmd, 15)
+            from creator_service.media_validation_process import ValidationProcessError
+            raise ValidationProcessError("validation_timeout")
         if cmd[0] == "ffprobe":
             return subprocess.CompletedProcess(cmd, 1 if rule == "probe_error" else 0,
                 "{}" if rule == "malformed" else json.dumps(document), "")
         if rule in ("tail_error", "tail_empty"):
             return subprocess.CompletedProcess(cmd, 0, "", "decoder error" if rule == "tail_error" else "")
-        return real_run(cmd, **kwargs)
+        return real_run(cmd, capture_output=True, text=True, timeout=timeout)
 
     # When / Then
-    with patch("subprocess.run", side_effect=run), pytest.raises(MediaIntegrityError):
+    with patch("creator_service.media_integrity.run_validation", side_effect=run), pytest.raises(MediaIntegrityError):
         validate_media(fixture, MediaExpectation(RenderProfile(width=128, height=128), 5, True))
 
 

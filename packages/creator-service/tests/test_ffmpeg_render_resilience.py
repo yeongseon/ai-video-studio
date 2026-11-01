@@ -557,7 +557,7 @@ class TestProbeOutputValid:
         make_media(video)
 
         with patch(
-            "creator_service.media_integrity.subprocess.run", return_value=_make_probe_result(0.0)
+            "creator_service.media_integrity.run_validation", return_value=_make_probe_result(0.0)
         ):
             with pytest.raises(RuntimeError):
                 validate_media(video, MediaExpectation(ffmpeg_service.profile, 5, False))
@@ -567,18 +567,19 @@ class TestProbeOutputValid:
         make_media(video)
 
         with patch(
-            "creator_service.ffmpeg_service.subprocess.run", return_value=_make_probe_failure()
+            "creator_service.media_integrity.run_validation", return_value=_make_probe_failure()
         ):
             with pytest.raises(RuntimeError):
                 validate_media(video, MediaExpectation(ffmpeg_service.profile, 5, False))
 
     def test_probe_timeout(self, ffmpeg_service: FFmpegService, tmp_path: Path):
+        from creator_service.media_validation_process import ValidationProcessError
         video = tmp_path / "test.mp4"
         make_media(video)
 
         with patch(
-            "creator_service.ffmpeg_service.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["ffprobe"], timeout=15),
+            "creator_service.media_integrity.run_validation",
+            side_effect=ValidationProcessError("validation_timeout"),
         ):
             with pytest.raises(RuntimeError):
                 validate_media(video, MediaExpectation(ffmpeg_service.profile, 5, False))
@@ -590,7 +591,7 @@ class TestProbeOutputValid:
         result = subprocess.CompletedProcess(
             args=["ffprobe"], returncode=0, stdout="N/A\n", stderr=""
         )
-        with patch("creator_service.ffmpeg_service.subprocess.run", return_value=result):
+        with patch("creator_service.media_integrity.run_validation", return_value=result):
             with pytest.raises(RuntimeError):
                 validate_media(video, MediaExpectation(ffmpeg_service.profile, 5, False))
 
