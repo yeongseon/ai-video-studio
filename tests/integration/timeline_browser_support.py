@@ -48,6 +48,12 @@ def seed_mixed_timeline(runtime: StudioProxyRuntime, root: Path) -> tuple[int, P
         assert uploaded.status_code == 201, uploaded.text
         asset = uploaded.json()
         anyio.run(_assign_project, runtime, int(asset["id"]), project_id)
+        with video.open("rb") as stream:
+            later = client.post(f"/api/creator/workspaces/{runtime.workspace_id}/assets/videos",
+                                files={"file": ("later.mp4", stream, "video/mp4")})
+        assert later.status_code == 201, later.text
+        later_asset = later.json()
+        anyio.run(_assign_project, runtime, int(later_asset["id"]), project_id)
         segments = [
             {"id": "before", "scene_id": "scene", "asset_id": image_id,
              "timeline_start_seconds": 0, "duration_seconds": 0.5},
@@ -59,9 +65,14 @@ def seed_mixed_timeline(runtime: StudioProxyRuntime, root: Path) -> tuple[int, P
             {"id": "same-source", "scene_id": "scene", "asset_id": asset["id"],
              "timeline_start_seconds": 2.5, "duration_seconds": 0.5,
              "trim_start_seconds": 0.2, "trim_end_seconds": 0.7},
+            {"id": "consecutive-same-source", "scene_id": "scene", "asset_id": asset["id"],
+             "timeline_start_seconds": 3, "duration_seconds": 0.5,
+             "trim_start_seconds": 2, "trim_end_seconds": 2.5},
+            {"id": "decode-failure", "scene_id": "scene", "asset_id": later_asset["id"],
+             "timeline_start_seconds": 3.5, "duration_seconds": 0.5},
         ]
         saved = client.put(endpoint, json={"expected_revision": timeline["revision"], "timeline": {
             "id": timeline["id"], "project_id": project_id, "segments": segments,
         }})
         assert saved.status_code == 200, saved.text
-        return project_id, runtime.artifact_root / asset["storage_key"]
+        return project_id, runtime.artifact_root / later_asset["storage_key"]

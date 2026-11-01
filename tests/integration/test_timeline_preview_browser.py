@@ -39,7 +39,15 @@ def frame(page: Page, source_time: float) -> list[int]:
 def capture(page: Page, name: str) -> None:
     prefix = os.getenv("TIMELINE_BROWSER_SCREENSHOT_PREFIX")
     if prefix:
+        if name != "decode-error":
+            page.get_by_test_id("preview-play-toggle").focus()
         page.screenshot(path=f"{prefix}-{name}.png", full_page=True)
+        for width in (390, 1440):
+            for theme in ("light", "dark"):
+                page.set_viewport_size({"width": width, "height": 1000})
+                page.emulate_media(color_scheme=theme)
+                page.screenshot(path=f"{prefix}-{name}-{width}-{theme}.png", full_page=True)
+        page.set_viewport_size({"width": 1440, "height": 1000})
 
 
 def test_trimmed_video_play_pause_seek_and_mixed_boundaries(tmp_path: Path) -> None:
@@ -66,6 +74,9 @@ def test_trimmed_video_play_pause_seek_and_mixed_boundaries(tmp_path: Path) -> N
                 green = frame(page, 1.2)
                 assert green[1] > 90 and green[0] < 30 and green[2] < 30, green
                 capture(page, "green-seek")
+                page.get_by_test_id("preview-seek").focus()
+                page.keyboard.press("ArrowRight")
+                frame(page, 1.3)
                 seek(page, 1.9)
                 blue = frame(page, 2.4)
                 assert blue[2] > 200 and blue[0] < 30 and blue[1] < 30, blue
@@ -101,20 +112,25 @@ def test_trimmed_video_play_pause_seek_and_mixed_boundaries(tmp_path: Path) -> N
                 page.get_by_test_id("preview-play-toggle").click()
                 expect(media).to_have_js_property("tagName", "VIDEO")
                 page.wait_for_function("() => !document.querySelector('video').paused")
-                expect(media).to_have_js_property("tagName", "IMG")
+                page.wait_for_function("() => document.querySelector('[data-testid=preview-media]')?.tagName === 'IMG'")
                 page.get_by_test_id("preview-play-toggle").click()
 
                 seek(page, 2.5)
                 red = frame(page, 0.2)
                 assert red[0] > 200 and red[1] < 30 and red[2] < 30, red
+                media.evaluate("video => window.previousPlacement = video")
+                seek(page, 3)
+                assert frame(page, 2)[2] > 200
+                assert media.evaluate("video => video !== window.previousPlacement")
                 seek(page, 0.5)
                 assert frame(page, 1)[1] > 90
                 seek(page, 2)
                 expect(media).to_have_js_property("tagName", "IMG")
                 video_path.write_bytes(b"not a decodable video")
-                seek(page, 2.5)
+                seek(page, 3.5)
                 expect(approval).to_be_disabled()
                 expect(page.get_by_test_id("timeline-preview")).to_have_attribute("data-status", "error")
                 assert errors == [], errors
+                capture(page, "decode-error")
             finally:
                 browser.close()
