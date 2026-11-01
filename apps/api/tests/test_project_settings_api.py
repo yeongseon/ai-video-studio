@@ -95,3 +95,12 @@ async def test_replace_when_invalid(client: AsyncClient, settings_service: Proje
     # Then return field-level errors rather than accepting mass assignment.
     assert response.status_code == 422
     assert response.json()["detail"][0]["loc"][0] == "body"
+
+
+@pytest.mark.asyncio
+async def test_replace_when_body_exceeds_settings_budget(client: AsyncClient, settings_service: ProjectService) -> None:
+    # Given an oversized but otherwise valid settings body, when replacing settings.
+    response = await client.put("/api/creator/projects/1/settings", content=" " * 5000 + "{}",
+                                headers={"Content-Type": "application/json"})
+    # Then enforce a settings-specific byte budget.
+    assert response.status_code == 422
