@@ -550,8 +550,10 @@ def test_render_video_ffmpeg_failure_marks_failed(monkeypatch: pytest.MonkeyPatc
     assert storage.cas_calls[0][2] == frozenset({"RENDER_GENERATING"})
 
 
+@pytest.mark.parametrize("expected_duration", [5.0, 5.429])
 def test_render_video_partial_output_never_published(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pacing_split: None,
+    expected_duration: float,
 ) -> None:
     # Given: real same-profile 1s output for a 5s worker plan.
     fixture = tmp_path / "partial.mp4"
@@ -561,7 +563,7 @@ def test_render_video_partial_output_never_published(
                    check=True, capture_output=True, timeout=30)
     storage = _make_storage(run_id=204)
     manifest = _manifest(204, scenes=[{"scene_id": "scene-1", "asset_path": str(fixture)}],
-                         audio_path=None, subtitle_path=None, max_duration_seconds=5)
+                         audio_path=None, subtitle_path=None, max_duration_seconds=expected_duration)
     renders = FakeRenderService(manifest=manifest)
     _patch_services(monkeypatch, storage=storage, fake_render_service=renders,
                     fake_vas=FakeVisualAssetService(), fake_audio=FakeAudioService(),
@@ -579,9 +581,13 @@ def test_render_video_partial_output_never_published(
     usage = Mock()
     monkeypatch.setattr("creator_service.artifact_storage_integration.store_artifact_file", upload)
     monkeypatch.setattr(render_video_module, "record_provider_call", usage)
+    retry = Mock()
+    monkeypatch.setattr(render_video_module.render_video, "retry", retry)
     # When / Then: existing ProviderError mapping and FAILED transition remain.
-    with pytest.raises(render_video_module.ProviderError, match="Provider failed video render"):
+    with pytest.raises(render_video_module.ProviderError, match="Provider failed video render") as error:
         _invoke_task(run_id=204)
+    assert type(error.value) is render_video_module.ProviderError
+    retry.assert_not_called()
     upload.assert_not_called()
     usage.assert_not_called()
     assert renders.create_calls == []

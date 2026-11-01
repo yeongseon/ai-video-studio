@@ -171,6 +171,50 @@ def test_imports_are_from_worktree() -> None:
         assert Path(module.__file__).resolve().is_relative_to(root), module.__file__
 
 
+def test_approved_timeline_missing_narration_fails_terminal(worker: WorkerFixture,
+                                                          monkeypatch: pytest.MonkeyPatch) -> None:
+    from unittest.mock import Mock
+    import shutil
+    from creator_provider.exceptions import ProviderError
+    # Given: approved Timeline with requested narration and matching video-only output.
+    audio = AudioService()
+    monkeypatch.setattr(render_video, "_audio_service", audio)
+    voice = worker.root / "voice.wav"
+    video = worker.root / "video.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", "sine=duration=0.4",
+                    str(voice)], check=True, capture_output=True, timeout=30)
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                    "color=size=540x960:rate=15:duration=0.4", "-c:v", "libx264",
+                    "-threads", "1", "-preset", "ultrafast", str(video)],
+                   check=True, capture_output=True, timeout=30)
+
+    async def seed() -> int:
+        run_id = await worker.seed()
+        await audio.create_artifact(run_id, str(voice))
+        return run_id
+
+    run_id = anyio.run(seed)
+    def encode(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        shutil.copyfile(video, cmd[-1])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    monkeypatch.setattr("creator_service.ffmpeg_service._run_ffmpeg", encode)
+    upload, usage, retry = Mock(), Mock(), Mock()
+    monkeypatch.setattr(artifact_storage_integration, "store_artifact_file", upload)
+    monkeypatch.setattr(render_video, "record_provider_call", usage)
+    monkeypatch.setattr(render_video.render_video, "retry", retry)
+    # When / Then: typed integrity rejection is terminal on the Timeline path too.
+    with pytest.raises(ProviderError) as error:
+        render_video.render_video.run(run_id=run_id, render_profile="fast_preview")
+    assert type(error.value) is ProviderError
+    retry.assert_not_called()
+    upload.assert_not_called()
+    usage.assert_not_called()
+    assert anyio.run(worker.renders.get_latest, run_id) is None
+    row = anyio.run(worker.runs.get_run, run_id)
+    assert row is not None and row["current_stage"] == "FAILED"
+
+
 def test_worker_keeps_narration_and_burns_subtitles(worker: WorkerFixture, monkeypatch: pytest.MonkeyPatch) -> None:
     audio = AudioService()
     subtitles = SubtitleService()
