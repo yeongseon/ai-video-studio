@@ -34,6 +34,10 @@ finite JSON number or null; booleans/strings, NaN and infinity are rejected.
 (not a `settings` wrapper) and replaces the whole value; omitted fields resolve
 to explicit defaults. It returns the updated project, not a render result.
 The body must be a flat object of the five documented fields, at most 4096 bytes.
+Creation is bounded at 900,000 bytes before parsing, preserving large source fields.
+Both budgets count streamed chunks without Content-Length; oversized requests
+return field-level 422 before writes. An explicit quote/escape-aware scanner rejects
+JSON nesting above 16 containers before parsing with a field-level 422.
 Extra/reserved/nested fields and oversized bodies return 422. There is no reset-to-
 legacy PUT: null is not a settings object, and `legacy_default` cannot be written.
 
@@ -49,3 +53,12 @@ explicit so clients can distinguish historical compatibility from saved choices.
 **No render behavior changes in slice A.** Selection is persisted but not yet
 consumed by preview/approval/worker or generation/Studio. The [ADR](adr/008-typed-project-settings.md)
 defines B (digest-bound approval snapshot and worker matrix) and C (generation/UX).
+
+Version is strict: only JSON integer1 is accepted; true,1.0 and "1" are rejected.
+Python Decimal duration input normalizes to float; JSON durations remain numbers.
+Archived/deleting projects accept settings replacement (no run/approval transition).
+Deploy migration before new readers: schema050 lacks the table and returns a
+sanitized500 without SQL text; do not start new readers against unmigrated databases.
+Settings ownership is derived only from creator_projects.workspace_id; moves follow
+the project, and settings disappear with project deletion. Existing workspace
+deletion constraints are unchanged (occupied-workspace deletion can be blocked).

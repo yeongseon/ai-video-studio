@@ -111,7 +111,7 @@ dry-run output and backups before setting `MEDIA_RETENTION_DRY_RUN=false`.
 ## Project settings (slice A of #882)
 
 `creator_project_settings` stores explicit settings as required JSONB (JSON on
-SQLite), with project_id primary key/cascading FK, workspace scope, schema_version
+SQLite), with project_id primary key/cascading FK, schema_version
 and timestamps. No row preserves historical rendering; there is no backfill.
 `creator_projects` gains no columns: old SELECT-star/forbid-extra readers continue
 to work after migration and app-only rollback. Effective API resolution is
@@ -120,6 +120,8 @@ typed settings and atomically replace them under workspace scope plus the
 authorized project row's `updated_at` compare-and-swap, preserving status/source/title.
 PostgreSQL advances that row and upserts settings in one transaction; failed CAS
 writes neither. Project deletion cascades settings; memory deletion mirrors it.
+Scope derives exclusively from the project's workspace_id. Settings has no duplicate
+ownership column, so project workspace moves cannot leave contradictory ownership.
 See [the API contract](PROJECT_SETTINGS_API.md) and
 [ADR-008](adr/008-typed-project-settings.md) for the three-slice delivery.
 Approval snapshots/digests and worker consumption are slice B, not implemented

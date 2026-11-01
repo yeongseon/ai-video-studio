@@ -19,7 +19,8 @@ legacy defaults; persisting choices alone must not silently change rendering.
    `EncodingProfile.by_name`. Duration is optional, strictly numeric, finite and
    positive, with no hard maximum (180 seconds is product guidance, not a cap).
    Migration 051 creates `creator_project_settings` with required JSON/JSONB and
-   a project-cascading foreign key, without backfill. No row means legacy. Memory and
+   a project-cascading foreign key, without backfill. Ownership derives only from
+   the project; no redundant workspace_id exists on settings. No row means legacy. Memory and
    PostgreSQL preserve the same scoped replacement and timestamp CAS contract.
    See [project API](../PROJECT_SETTINGS_API.md).
 2. **B: approval snapshot and worker output (after A and #901).** Preview resolves
@@ -82,6 +83,15 @@ state. Project access is authenticated and workspace scoped; foreign/missing IDs
 return 404. Replacement is atomic against the authorized row's `updated_at`;
 concurrent row changes cause 409 rather than overwriting status/title. The flat
 PUT body has a 4096-byte receive budget and field-level 422 validation.
+
+Creation has a900,000-byte streamed budget compatible with large source fields;
+PUT remains4096 bytes. A quote/escape-aware finite depth counter rejects nesting
+over16 containers before JSON parsing. Version coercion is forbidden: true,1.0 and
+"1" are not integer1. Decimal duration normalizes to float. Archived/deleting
+projects can replace settings without state transitions. Migration-first is
+mandatory: a new reader at schema050 receives sanitized500, never SQL details.
+Workspace moves automatically move settings visibility; unrelated workspace
+deletion cannot delete settings. Existing occupied-workspace FK restrictions remain.
 
 ## Non-goals
 
