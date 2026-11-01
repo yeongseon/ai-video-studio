@@ -26,7 +26,8 @@ def test_changed_ctime_rejects_same_size_rewrite_with_restored_mtime(tmp_path: P
         def observed_change(fd):
             current = original(fd)
             return SimpleNamespace(st_dev=current.st_dev, st_ino=current.st_ino, st_size=current.st_size,
-                                   st_mtime_ns=current.st_mtime_ns, st_ctime_ns=before.st_ctime_ns + 1)
+                                   st_mtime_ns=current.st_mtime_ns, st_ctime_ns=before.st_ctime_ns + 1,
+                                   st_nlink=current.st_nlink)
 
         monkeypatch.setattr(os, "fstat", observed_change)
         with pytest.raises(StorageReadError):
@@ -49,7 +50,7 @@ def test_size_change_is_rejected_even_when_other_stat_fields_match(tmp_path, mon
     def coarse(fd):
         current = original(fd)
         return SimpleNamespace(st_dev=current.st_dev, st_ino=current.st_ino, st_size=current.st_size,
-                               st_mtime_ns=before.st_mtime_ns, st_ctime_ns=before.st_ctime_ns)
+                               st_mtime_ns=before.st_mtime_ns, st_ctime_ns=before.st_ctime_ns, st_nlink=current.st_nlink)
 
     monkeypatch.setattr(os, "fstat", coarse)
     try:

@@ -39,14 +39,22 @@ class LocalReader:
         self._owner = owner
         self._descriptor = owner.__enter__()
         self._closed = False
-        self._initial = os.fstat(self._descriptor)
-        self.info = ObjectInfo(self._initial.st_size)
+        try:
+            self._initial = os.fstat(self._descriptor)
+            self.info = ObjectInfo(self._initial.st_size)
+        except OSError:
+            self.close()
+            raise
 
     def verify(self) -> None:
         current = os.fstat(self._descriptor)
         if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != (
             self._initial.st_dev, self._initial.st_ino, self._initial.st_size, self._initial.st_mtime_ns,
         ):
+            raise StorageReadError("generation_changed")
+        # Atomic replacement unlinks the retained inode and changes its ctime,
+        # but not its data. Other ctime changes remain a mutation signal.
+        if current.st_ctime_ns != self._initial.st_ctime_ns and current.st_nlink >= self._initial.st_nlink:
             raise StorageReadError("generation_changed")
 
     def read_range(self, offset: int, length: int) -> bytes:

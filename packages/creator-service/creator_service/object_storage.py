@@ -24,6 +24,7 @@ from .object_storage_reads import (
     azure_read, azure_stat, local_read, local_stat, s3_read, s3_stat, validate_key,
 )
 from .storage_read_session import LocalReader, ObjectReader, RemoteReader
+from .local_publication import publish_local
 
 logger = logging.getLogger(__name__)
 _STREAM_CHUNK_SIZE = 64 * 1024
@@ -151,32 +152,17 @@ class LocalStorageBackend:
         path = self._root / safe_key
         path.parent.mkdir(parents=True, exist_ok=True)
 
-        md5 = hashlib.md5(usedforsecurity=False)
-        if isinstance(data, bytes):
-            path.write_bytes(data)
-            md5.update(data)
-            size = len(data)
-        else:
-            # Check if source file is the same as destination to avoid self-truncation
+        if not isinstance(data, bytes):
             source_path = Path(data.name).resolve() if hasattr(data, 'name') else None
             if source_path and source_path == path.resolve():
-                # Source and destination are the same file — just compute checksum
                 data.seek(0)
-                while chunk := data.read(8192):
-                    md5.update(chunk)
-                size = path.stat().st_size
-            else:
-                with open(path, "wb") as file_obj:
-                    while chunk := data.read(8192):
-                        file_obj.write(chunk)
-                        md5.update(chunk)
-                size = path.stat().st_size
+        size, checksum = publish_local(path, data)
 
         return StorageResult(
             key=key,
             size_bytes=size,
             content_type=normalized_content_type,
-            checksum=md5.hexdigest(),
+            checksum=checksum,
             storage_provider="local",
         )
 
