@@ -107,6 +107,16 @@ than partially implemented in this change.
 
 ## Media retention safety
 
+Timeline project preview generations rely on `_store_asset` creating fresh UUID
+workspace asset keys: reserve upload intent → upload → persist metadata. They
+do not rely on atomic local publication. Local uploads and STT/run-artifact
+writers retain origin/main's in-place inode/permission semantics; regeneratable
+run paths are outside this project-asset namespace. The retained local descriptor
+survives atomic replace and verifies detectable dev/ino/size/mtime/ctime changes.
+Filesystem write access means full control of served bytes; timestamp-restored
+or timestamp-granularity in-place rewrites are outside this threat model. See
+[writer-contract audit](TIMELINE_PREVIEW_VERIFICATION.md#writer-contract-audit).
+
 MediaAsset retention is separate from artifact expiration. It defaults to
 disabled (`MEDIA_RETENTION_ENABLED=false`) and dry-run
 (`MEDIA_RETENTION_DRY_RUN=true`); all original, generated-intermediate, and final

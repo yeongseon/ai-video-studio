@@ -321,12 +321,20 @@ Transfers acquire an owned read session. Local reads retain one no-follow
 descriptor and serve its original inode across atomic rename/replacement. Each
 read verifies descriptor size/mtime/ctime/identity before and after I/O as defense
 in depth (atomic unlink changes ctime/link count without mutating retained data).
-The consistency guarantee is for storage writers that publish atomically:
-LocalStorageBackend uploads stage in the same directory, fsync and os.replace,
-never mutate an existing published inode. External in-place writers (including
-timestamp-preserving hard-link writes) and network filesystems are unsupported;
-metadata checks alone cannot make them safe. Observed changes abort. See
-[local writer audit](TIMELINE_PREVIEW_VERIFICATION.md#local-writer-audit).
+The project-asset route serves workspace-media keys created once under fresh
+UUID addresses by `media_asset_service.py::MediaAssetService._store_asset`
+(currently `workspaces/<workspace>/assets/<uuid>-<filename>`). It reserves an
+upload intent, uploads bytes, then persists asset metadata; readers cannot
+discover a new asset identity before that metadata exists. Platform writers do
+not rewrite these keys. Local upload and other writers retain their original
+in-place semantics; this preview change does not alter writer permissions,
+inodes, groups or ACLs. An atomic rename/replace by any writer leaves the retained
+descriptor serving generation A. Detectable in-place changes abort, but same-inode
+rewrites that restore timestamps or fit inside timestamp granularity are out of
+scope: filesystem write access to the artifact root means full control of served
+bytes, including outright replacement. Metadata checks are not protection from
+such an actor. Network/case-insensitive filesystems are not validated. See the
+[writer-contract audit](TIMELINE_PREVIEW_VERIFICATION.md#writer-contract-audit).
 Cloud sessions capture ETag (S3 VersionId when
 present) and condition every range with S3 IfMatch/VersionId or Azure
 IfNotModified. A failed condition is generic 502 before bytes; after start it

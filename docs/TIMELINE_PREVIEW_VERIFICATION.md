@@ -1,45 +1,66 @@
 # Timeline provider-neutral preview verification (#900)
 
-## Local writer audit
+## Writer-contract audit
 
 | Writer | Published-key concurrency / policy |
 |---|---|
-| `object_storage.py::LocalStorageBackend.upload` | All canonical MediaAsset writes, including same-source artifact uploads, stage complete bytes in same-directory temporary file, fsync, atomic replace; collisions preserve old reader inode. Failures clean temporary files and preserve old data. |
-| `media_asset_service.py::_store_asset`, `media_file_ingestion.py` | UUID workspace keys and private upload staging; metadata registration follows adapter publication. No existing published key is written in place. |
-| `generate_scene_image.py:161,223`, `scene_batch_lifecycle.py::upload` | UUID/owner-specific output names before asset registration; provider retries select new names. Completed files use adapter publication. |
+| `object_storage.py::LocalStorageBackend.upload` | Original in-place bytes/stream writing; new modes honor umask and overwrite retains inode/mode/group/ACL. Same-source artifact registration only hashes. No anonymous publication staging added. |
+| `media_asset_service.py::_store_asset` (196-197) | The only production workspace-media backend upload caller: fresh `workspaces/<id>/assets/<uuid>-<filename>` each time. Reserve upload intent → upload → mark uploaded → persist metadata; never rewrites an existing served asset key. `create_image_asset`, generated image, video, audio and file ingestion all converge here. |
+| `artifact_storage_integration.py::upload_local_artifact` (20) | The other production `backend.upload` caller: caller-provided run/artifact paths, not UUID workspace asset keys. Regeneratable run keys retain original writer semantics; not the project-asset preview namespace. |
+| `generate_scene_image.py:161,223`, `scene_batch_lifecycle.py::upload` | UUID/owner-specific run output names before artifact registration; completed files use original adapter upload. |
 | `generate_audio.py:168-171,209`, `generate_paragraph_audio.py:101` | Delivery-specific directories; active output is unpublished, immutable completed files are registered after provider result. No previously published delivery key is reused by a successor. |
-| `generate_subtitles.py:94`, `generate_paragraph_subtitles.py:85` | Fixed subtitle keys can be served during regeneration. Whisper/Groq STT writers now use `stt.atomic_file.publish_text`: same-directory temporary + fsync + replace. Adapter upload likewise atomically republishes. |
-| `ffmpeg_service.py::render` (319-478), `render_video.py`, `timeline_render.py` | FFmpeg encodes unique temporary final output and atomically renames at success; published `<run>/render/output.mp4` is never FFmpeg's in-place encoding target. Completed outputs go through adapter publication. No render integrity code changed (#901 lane). |
+| `generate_subtitles.py:94`, `generate_paragraph_subtitles.py:85` | Fixed run subtitle paths may be rewritten. Whisper/Groq retain their original write_text semantics; these are not workspace-media project asset keys. |
+| `ffmpeg_service.py::render` (319-478), `render_video.py`, `timeline_render.py` | Existing FFmpeg temporary final output/rename unchanged; completed run outputs registered through original adapter upload. No render integrity code changed (#901 lane). |
 | FFmpeg segments/concat lists, merged SRT/ASS, narration mixing | Private unique render temporary directory or preparatory render inputs, never registered as downloadable output identities during write. Final video only registered after atomic render success. |
-| `render_segments.py::render_plan` | Direct-output helper has no production publication caller; repository callers are render unit tests. Not an authorized runtime artifact publisher; callers must use atomic publication if added. |
+| `render_segments.py::render_plan` | Direct-output helper has no production publication caller; repository callers are render unit tests. Not a workspace-media asset writer. |
 | `render_materializer.py:39`, probe/upload staging | Private TemporaryDirectory/materialization/probe files, never registered as public artifact identity; scope ends with task. |
 | `scripts/generate_ssul_shorts.py`, `scripts/image-gen/*` | Offline generation/gallery tools; no canonical MediaAsset or run-artifact registration. Do not run offline writers against live registered keys. Restore tooling runs in isolated/maintenance restore targets, not concurrent service publication. |
 
-Immutable local publication is an operator/runtime contract, not protection
-against arbitrary external in-place writes or network filesystem semantics.
+Audit search: `.upload(` across `apps/`, `packages/`, `scripts/`. Production
+backend calls are the two `_store_asset` branches and `upload_local_artifact`
+above; worker `batch.upload(target_path)` delegates artifact registration, not a
+new backend call. No script backend upload calls exist. Tests intentionally write
+fixture/corrupt keys: API `test_project_media_content`, worker
+`test_scene_upload_cancellation`, `test_scene_upload_sdk_errors`,
+`test_timeline_worker_boundaries`; creator-service storage adapter/asset tests
+exercise local/S3/Azure uploads, not production writers. Review future backend
+callers for rewriting the workspace asset namespace before claiming this contract.
+
+Project assets are written once under fresh UUID keys by `_store_asset`:
+reserve/upload/persist order makes asset identities undiscoverable until complete.
+The retained no-follow descriptor serves A across an atomic replace by any writer.
+It checks dev/ino/size/mtime_ns/ctime_ns around every read and aborts detectable
+in-place changes. An actor with artifact-root write access has full control of
+served bytes; same-inode rewrites restoring timestamps or fitting timestamp
+granularity are out of scope, not proved prevented. Network filesystems are not
+validated. Local writers were deliberately restored to origin/main semantics.
 ctime checks are defense in depth, with coarse-timestamp simulations proving
 independent size/ctime comparisons. Tests retain readers/responses and assert
 EBADF immediately on normal completion, failure, in-flight disconnect, HEAD,
 empty GET and constructor failure; garbage collection cannot mask leaks.
 
-## Oracle round-2 remediation
+## Oracle round-3 remediation (round 4)
 
-Red `77533c2`:9 failures/5 pass (in-place publisher, constructor leak, HEAD/empty
-500). Descriptor-close mutation:5 retained-reader cases fail (GC independent).
-Red `371a866`:cloud conditions2 failures; changed-ctime mutation2 failures.
-Fixes `ddaf195`/`ff1425d`/`6cf26db`:atomic publisher, constructor close, no-body
-mapping, condition classification. Fixed-key subtitle audit Red `de5854a`:4
-failures; Green `699409e`:4 passes. Fresh-interpreter pipeline logging12 passes
-with root/lastResort/warning/stderr capture; guaranteed emitters explicitly scoped.
+Writer reversal: Red `d473ee9` had six inode-preservation failures; `2d9ec49`
+and `4ac7ca7` restore original uploads and STT providers, six characterization
+cases pass (bytes/stream × umask022/002/077, retained inode/mode, no temp files).
+The former atomic-publisher tests are replaced, not retained as false contracts.
+Native cancellation Red `554778b`: six failures (five retained-FD phases and
+capacity). Fix `5bffeca` retains completion and limiter ownership through repeated
+Task.cancel; five ×500 acquisitions/prefetch/midstream/HEAD/close transfers and
+12 competing cancellations pass. Syscall Red `3bb6b6c`: twelve real-HTTP failures
+with private-marker ASGI logs; normalized pread/fstat now yield generic502/503 or
+incomplete midstream transfers with immediate retained-reader closure.
 
-Rerun mutations: close→pass, in-place upload, HEAD verify unmapped, drop ctime,
-drop size with restored timestamps, short/over-read rejection, bounded read,
-SDK suppression, S3 IfMatch, Azure match_condition, project access/workspace
-lookup, early backend call, MIME, nosniff and private/no-store all fail targeted
-assertions. Exact-length alone still gives3 intended transfer failures. All
-mutations restored. Swallowed midstream storage error remains incomplete by
-Content-Length: the real-HTTP invariant is tested, without claiming this harmless
-implementation mutation must fail. Post-pread verification remains in production.
+Round4 mutation reruns (fresh interpreter, in-memory edits, no tracked edits):
+membership1, workspace1, early-I/O1, MIME3, nosniff4, cache4, whole-read1,
+exact-length3, native acquisition done-callback2, early limiter release1
+(peak6 >4), OSError passthrough8, owner exit→pass8, ctime2, size1,
+S3 IfMatch1, Azure match_condition1, SDK suppression9, reused UUID key1
+all fail intended assertions. An initial unshielded-future mutation hung and was
+terminated; the explicit early-token-release mutation is the bounded capacity
+proof, not that timeout. Swallowed midstream errors remain incomplete by
+Content-Length; no mutation-killed claim for harmless swallowing.
 
 ## Oracle round-1 remediation
 
