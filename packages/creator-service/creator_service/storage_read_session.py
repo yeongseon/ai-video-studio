@@ -47,7 +47,12 @@ class LocalReader:
             raise
 
     def verify(self) -> None:
-        current = os.fstat(self._descriptor)
+        try:
+            current = os.fstat(self._descriptor)
+        except TimeoutError:
+            raise StorageReadError("timeout") from None
+        except OSError:
+            raise StorageReadError("unavailable") from None
         if (current.st_dev, current.st_ino, current.st_size, current.st_mtime_ns) != (
             self._initial.st_dev, self._initial.st_ino, self._initial.st_size, self._initial.st_mtime_ns,
         ):
@@ -60,7 +65,12 @@ class LocalReader:
     def read_range(self, offset: int, length: int) -> bytes:
         validate_range(offset, length)
         self.verify()
-        block = os.pread(self._descriptor, length, offset)
+        try:
+            block = os.pread(self._descriptor, length, offset)
+        except TimeoutError:
+            raise StorageReadError("timeout") from None
+        except OSError:
+            raise StorageReadError("unavailable") from None
         self.verify()
         return block
 
