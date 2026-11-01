@@ -22,7 +22,7 @@ def domain_checks() -> dict[tuple[str, str], frozenset[str]]:
         ("workspace_quota_reservation_owners", "ck_quota_owner_operation"): frozenset(get_args(UsageEvent.model_fields["operation_type"].annotation)),
         ("creator_media_assets", "ck_media_assets_type"): frozenset(value.value for value in MediaType),
         ("creator_media_assets", "ck_media_assets_origin"): frozenset(value.value for value in MediaOrigin),
-        ("creator_media_upload_intents", "ck_media_upload_intents_state"): frozenset(value.value for value in UploadIntentState),
+        ("creator_media_upload_intents", "ck_media_upload_intents_state"): frozenset(value.value for value in UploadIntentState.__members__.values()),
     }
 
 
