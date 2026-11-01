@@ -39,15 +39,13 @@ async def test_stale_post_request_rejects_when_barrier_commits_after_access_chec
     checked = anyio.Event()
     resume = anyio.Event()
     core = importlib.import_module("shorts_api.routes.creator_runs_core")
-    service = RunService(PostgresRunStorage())
-
-    class PausedRunService(RunService):
-        async def create_run(self, *args, **kwargs):
+    class PausedRunStorage(PostgresRunStorage):
+        async def create_run(self, row: dict[str, str | int | None]) -> dict[str, str | int | None]:
             checked.set()
             await resume.wait()
-            return await service.create_run(*args, **kwargs)
+            return await super().create_run(row)
 
-    monkeypatch.setattr(core, "run_service", PausedRunService(PostgresRunStorage()))
+    monkeypatch.setattr(core, "run_service", RunService(PausedRunStorage()))
     responses: list[httpx.Response] = []
 
     async def post() -> None:
@@ -95,3 +93,35 @@ async def test_owner_reads_and_title_update_remain_available_when_deletion_needs
     assert detail.json()["status"] == updated.json()["status"] == "deleting"
     assert listing.json()["total"] == 1
     assert listing.json()["projects"][0]["status"] == "deleting"
+
+
+@pytest.mark.asyncio
+async def test_run_insert_rechecks_barrier_when_waiting_on_uncommitted_delete_lock(
+    deletion_database: DeletionDatabase,
+) -> None:
+    # Given an uncommitted barrier holding the same row lock used by create_run.
+    pool = deletion_database.pool
+    conflicts: list[ConflictError] = []
+
+    async def create() -> None:
+        try:
+            await RunService(PostgresRunStorage()).create_run(1, {}, "default", workspace_id=1)
+        except ConflictError as error:
+            conflicts.append(error)
+
+    # When another connection's INSERT waits on that lock and the barrier commits.
+    with anyio.fail_after(10):
+        async with pool.acquire() as deleting_connection, anyio.create_task_group() as group:
+            async with deleting_connection.transaction():
+                await deleting_connection.execute("UPDATE creator_projects SET status='deleting' WHERE id=1")
+                blocker = await deleting_connection.fetchval("SELECT pg_backend_pid()")
+                group.start_soon(create)
+                async with pool.acquire() as observer:
+                    while not await observer.fetchval(
+                        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE $1 = ANY(pg_blocking_pids(pid)))",
+                        blocker,
+                    ):
+                        await anyio.lowlevel.checkpoint()
+    # Then PostgreSQL re-evaluates the predicate after waiting instead of storing a stale run.
+    assert len(conflicts) == 1
+    assert await pool.fetchval("SELECT count(*) FROM creator_runs") == 0

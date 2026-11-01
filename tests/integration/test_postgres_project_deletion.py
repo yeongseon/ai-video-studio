@@ -76,8 +76,11 @@ async def test_delete_can_retry_when_storage_fails_after_barrier(
     monkeypatch.setattr(downloads, "get_storage_backend", lambda: FailingDeleteBackend(str(tmp_path)))
     first = await deletion_client.delete("/api/creator/projects/1")
     assert first.status_code == 503, first.text
+    assert first.json() == {"detail": "1 artifact(s) could not be deleted from storage; retry later"}
     assert "private-provider-error" not in first.text
     assert await deletion_database.pool.fetchval("SELECT status FROM creator_projects WHERE id=1") == "deleting"
+    assert await deletion_database.pool.fetchval("SELECT status FROM creator_runs WHERE id=1") == "cancelled"
+    assert await deletion_database.pool.fetchval("SELECT delete_retry_count FROM creator_artifacts WHERE run_id=1") == 1
     assert backend.download_bytes("1/video.mp4") == b"video"
     monkeypatch.setattr(downloads, "get_storage_backend", lambda: backend)
     # When retrying with the backend available again.
