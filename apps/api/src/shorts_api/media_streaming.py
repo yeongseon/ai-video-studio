@@ -1,54 +1,21 @@
 """Same-origin bounded delivery after callers establish asset ownership."""
 
-import asyncio
 import logging
 import re
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator
 from functools import partial
-from typing import TypeVar
 
 import anyio
-from creator_service.blocking_io import BlockingIO
 from creator_service.object_storage import ArtifactStorageBackend, StorageObjectMissing, StorageReadError
 from creator_service.object_storage_reads import READ_CHUNK_SIZE
 from creator_service.storage_read_session import ObjectReader
 from fastapi import HTTPException, Request
 from starlette.responses import Response, StreamingResponse
+from .media_thread_io import MediaThreadIO
 
 logger = logging.getLogger(__name__)
-_io = BlockingIO(4)
-T = TypeVar("T")
-
-
-async def _run(function: Callable[[], T], discard: Callable[[T], None] | None = None) -> T:
-    # Native Task.cancel bypasses CancelScope; this child retains the worker's
-    # limiter reservation while repeated cancellation affects only the waiter.
-    task = asyncio.create_task(_io.run(function))
-    cancelled = False
-    abandoned: list[T] = []
-
-    def completed(done: asyncio.Task[T]) -> None:
-        if discard is not None and not done.cancelled() and done.exception() is None:
-            abandoned.append(done.result())
-
-    task.add_done_callback(completed)
-    with anyio.CancelScope(shield=True):
-        while True:
-            try:
-                result = await asyncio.shield(task)
-                break
-            except asyncio.CancelledError:
-                cancelled = True
-            except (StorageReadError, StorageObjectMissing):
-                if cancelled:
-                    raise asyncio.CancelledError() from None
-                raise
-        if cancelled:
-            for value in abandoned:
-                if discard is not None:
-                    await _run(partial(discard, value))
-            raise asyncio.CancelledError()
-        return result
+_io = MediaThreadIO()
+_run = _io.run
 
 
 def _range(header: str, size: int) -> tuple[int, int]:
