@@ -1,5 +1,46 @@
 # Timeline provider-neutral preview verification (#900)
 
+## Local writer audit
+
+| Writer | Published-key concurrency / policy |
+|---|---|
+| `object_storage.py::LocalStorageBackend.upload` | All canonical MediaAsset writes, including same-source artifact uploads, stage complete bytes in same-directory temporary file, fsync, atomic replace; collisions preserve old reader inode. Failures clean temporary files and preserve old data. |
+| `media_asset_service.py::_store_asset`, `media_file_ingestion.py` | UUID workspace keys and private upload staging; metadata registration follows adapter publication. No existing published key is written in place. |
+| `generate_scene_image.py:161,223`, `scene_batch_lifecycle.py::upload` | UUID/owner-specific output names before asset registration; provider retries select new names. Completed files use adapter publication. |
+| `generate_audio.py:168-171,209`, `generate_paragraph_audio.py:101` | Delivery-specific directories; active output is unpublished, immutable completed files are registered after provider result. No previously published delivery key is reused by a successor. |
+| `generate_subtitles.py:94`, `generate_paragraph_subtitles.py:85` | Fixed subtitle keys can be served during regeneration. Whisper/Groq STT writers now use `stt.atomic_file.publish_text`: same-directory temporary + fsync + replace. Adapter upload likewise atomically republishes. |
+| `ffmpeg_service.py::render` (319-478), `render_video.py`, `timeline_render.py` | FFmpeg encodes unique temporary final output and atomically renames at success; published `<run>/render/output.mp4` is never FFmpeg's in-place encoding target. Completed outputs go through adapter publication. No render integrity code changed (#901 lane). |
+| FFmpeg segments/concat lists, merged SRT/ASS, narration mixing | Private unique render temporary directory or preparatory render inputs, never registered as downloadable output identities during write. Final video only registered after atomic render success. |
+| `render_segments.py::render_plan` | Direct-output helper has no production publication caller; repository callers are render unit tests. Not an authorized runtime artifact publisher; callers must use atomic publication if added. |
+| `render_materializer.py:39`, probe/upload staging | Private TemporaryDirectory/materialization/probe files, never registered as public artifact identity; scope ends with task. |
+| `scripts/generate_ssul_shorts.py`, `scripts/image-gen/*` | Offline generation/gallery tools; no canonical MediaAsset or run-artifact registration. Do not run offline writers against live registered keys. Restore tooling runs in isolated/maintenance restore targets, not concurrent service publication. |
+
+Immutable local publication is an operator/runtime contract, not protection
+against arbitrary external in-place writes or network filesystem semantics.
+ctime checks are defense in depth, with coarse-timestamp simulations proving
+independent size/ctime comparisons. Tests retain readers/responses and assert
+EBADF immediately on normal completion, failure, in-flight disconnect, HEAD,
+empty GET and constructor failure; garbage collection cannot mask leaks.
+
+## Oracle round-2 remediation
+
+Red `77533c2`:9 failures/5 pass (in-place publisher, constructor leak, HEAD/empty
+500). Descriptor-close mutation:5 retained-reader cases fail (GC independent).
+Red `371a866`:cloud conditions2 failures; changed-ctime mutation2 failures.
+Fixes `ddaf195`/`ff1425d`/`6cf26db`:atomic publisher, constructor close, no-body
+mapping, condition classification. Fixed-key subtitle audit Red `de5854a`:4
+failures; Green `699409e`:4 passes. Fresh-interpreter pipeline logging12 passes
+with root/lastResort/warning/stderr capture; guaranteed emitters explicitly scoped.
+
+Rerun mutations: close→pass, in-place upload, HEAD verify unmapped, drop ctime,
+drop size with restored timestamps, short/over-read rejection, bounded read,
+SDK suppression, S3 IfMatch, Azure match_condition, project access/workspace
+lookup, early backend call, MIME, nosniff and private/no-store all fail targeted
+assertions. Exact-length alone still gives3 intended transfer failures. All
+mutations restored. Swallowed midstream storage error remains incomplete by
+Content-Length: the real-HTTP invariant is tested, without claiming this harmless
+implementation mutation must fail. Post-pread verification remains in production.
+
 ## Oracle round-1 remediation
 
 Oracle rejected c73e172 at 70/100 for SDK logging, unbound generations and missing

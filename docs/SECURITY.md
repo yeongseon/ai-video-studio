@@ -294,9 +294,13 @@ auth/config/network failures return generic 502, recognized read timeouts 503,
 without logging keys or SDK exception/cause text. During adapter stat/conditional
 read operations, context-scoped filters on the SDK's record-producing loggers
 suppress Azure/botocore diagnostics before any handlers receive them, including
-globally enabled DEBUG and explicitly enabled Azure HTTP logging. Offline real
+globally enabled DEBUG and explicitly enabled Azure HTTP logging for the pinned
+Azure HTTP/storage policies and botocore endpoint/signing/parser emitters.
+This is not a guarantee for future/lazy/unlisted emitters, SDK root loggers,
+third-party instrumentation or arbitrary warnings. Offline real
 SDK pipelines test stat, range and transport/auth failures at INFO and DEBUG,
-including records formatted with the repository JSON formatter. This guarantee
+including fresh-interpreter first operations captured through root handlers,
+lastResort, warnings and stderr and formatted with the repository JSON formatter. This guarantee
 is scoped to those adapter read operations, not arbitrary external SDK clients
 or operator instrumentation. Failure after headers terminates
 the response; Content-Length exposes truncation, never JSON embedded in media.
@@ -315,8 +319,15 @@ and workspace identity controls still apply.
 
 Transfers acquire an owned read session. Local reads retain one no-follow
 descriptor and serve its original inode across atomic rename/replacement. Each
-read verifies descriptor size/mtime/identity before and after I/O; in-place growth,
-shrink or modification aborts. Cloud sessions capture ETag (S3 VersionId when
+read verifies descriptor size/mtime/ctime/identity before and after I/O as defense
+in depth (atomic unlink changes ctime/link count without mutating retained data).
+The consistency guarantee is for storage writers that publish atomically:
+LocalStorageBackend uploads stage in the same directory, fsync and os.replace,
+never mutate an existing published inode. External in-place writers (including
+timestamp-preserving hard-link writes) and network filesystems are unsupported;
+metadata checks alone cannot make them safe. Observed changes abort. See
+[local writer audit](TIMELINE_PREVIEW_VERIFICATION.md#local-writer-audit).
+Cloud sessions capture ETag (S3 VersionId when
 present) and condition every range with S3 IfMatch/VersionId or Azure
 IfNotModified. A failed condition is generic 502 before bytes; after start it
 aborts the incomplete transfer. Short/over-reads also abort and never append JSON.
