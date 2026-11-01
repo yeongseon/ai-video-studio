@@ -23,7 +23,7 @@ async def _assign_project(runtime: StudioProxyRuntime, asset_id: int, project_id
         await connection.close()
 
 
-def seed_mixed_timeline(runtime: StudioProxyRuntime, root: Path) -> tuple[int, Path]:
+def seed_mixed_timeline(runtime: StudioProxyRuntime, root: Path, *, first_video: bool = False) -> tuple[int, Path]:
     video = root / "colors.mp4"
     subprocess.run([
         "ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
@@ -71,6 +71,14 @@ def seed_mixed_timeline(runtime: StudioProxyRuntime, root: Path) -> tuple[int, P
             {"id": "decode-failure", "scene_id": "scene", "asset_id": later_asset["id"],
              "timeline_start_seconds": 3.5, "duration_seconds": 0.5},
         ]
+        if first_video:
+            segments = [
+                {"id": "first-trimmed", "scene_id": "scene", "asset_id": asset["id"],
+                 "timeline_start_seconds": 0, "duration_seconds": 1,
+                 "trim_start_seconds": 1.2, "trim_end_seconds": 2.2, "fit_mode": "contain"},
+                {"id": "later", "scene_id": "scene", "asset_id": image_id,
+                 "timeline_start_seconds": 1, "duration_seconds": 0.5},
+            ]
         saved = client.put(endpoint, json={"expected_revision": timeline["revision"], "timeline": {
             "id": timeline["id"], "project_id": project_id, "segments": segments,
         }})

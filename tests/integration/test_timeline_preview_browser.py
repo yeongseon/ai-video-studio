@@ -134,3 +134,50 @@ def test_trimmed_video_play_pause_seek_and_mixed_boundaries(tmp_path: Path) -> N
                 capture(page, "decode-error")
             finally:
                 browser.close()
+
+
+def test_first_trimmed_video_approval_only_exposes_the_decoded_trim_start(tmp_path: Path) -> None:
+    needs = prerequisites_or_skip(required_in_ci=True)
+    with open_studio_proxy(tmp_path, needs) as runtime:
+        project_id, _ = seed_mixed_timeline(runtime, tmp_path, first_video=True)
+        with sync_playwright() as automation:
+            browser = automation.chromium.launch(
+                executable_path=os.getenv("PLAYWRIGHT_CHROMIUM_EXECUTABLE"), args=["--no-sandbox"],
+            )
+            try:
+                page = browser.new_page()
+                page.add_init_script("""
+                    window.approvalSamples = [];
+                    window.approvalBlockedSamples = 0;
+                    const sample = () => {
+                        const button = Array.from(document.querySelectorAll('button'))
+                            .find(button => button.textContent === 'Approve timeline & render');
+                        const video = document.querySelector('[data-testid="preview-media"]');
+                        if (!button) return;
+                        if (button.disabled) { window.approvalBlockedSamples++; return; }
+                        const canvas = document.createElement('canvas');
+                        canvas.width = canvas.height = 1;
+                        const context = canvas.getContext('2d');
+                        if (!(video instanceof HTMLVideoElement) || video.readyState < 2) {
+                            window.approvalSamples.push({valid: false}); return;
+                        }
+                        context.drawImage(video, 0, 0, 1, 1);
+                        const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+                        window.approvalSamples.push({valid: !video.seeking &&
+                            Math.abs(video.currentTime - 1.2) <= 2 / 30 && g > 90 && r < 30 && b < 30});
+                    };
+                    new MutationObserver(sample).observe(document, {subtree: true, childList: true,
+                        attributes: true, attributeFilter: ['disabled']});
+                    const step = () => { sample(); requestAnimationFrame(step); };
+                    requestAnimationFrame(step);
+                """)
+                page.goto(f"{runtime.origin}/projects/{project_id}")
+                expect(page.get_by_role("button", name="Approve timeline & render")).to_be_enabled()
+                green = frame(page, 1.2)
+                assert green[1] > 90 and green[0] < 30 and green[2] < 30, green
+                samples = page.evaluate("() => window.approvalSamples")
+                assert samples and all(sample["valid"] for sample in samples), samples
+                assert page.evaluate("() => window.approvalBlockedSamples") > 0
+                capture(page, "first-video-ready")
+            finally:
+                browser.close()
