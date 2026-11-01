@@ -162,6 +162,7 @@ jobs:
           FIRST_SHORT_TEST_REDIS_URL: redis://127.0.0.1:56389/0
         run: |
           STUDIO_BROWSER_TEST=true npm --prefix apps/studio-web run build
+          git fetch origin main:refs/remotes/origin/main --depth=1
           PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/test_project_settings_rollback.py apps/api/tests/test_project_settings_migration.py packages/creator-service/tests/test_project_settings_storage.py -v --basetemp=/tmp/project-settings-runtime
           python3 -m pytest packages/creator-service/tests/test_stale_pending_reconciler_fencing.py packages/creator-service/tests/test_reconciler_cleanup_claims.py packages/creator-service/tests/test_broker_recovery_resume.py -v --basetemp=/tmp/reconciler-fencing-runtime
           PYTHONPATH=tests/integration python3 -m pytest packages/creator-service/tests/test_postgres_media_asset_storage.py packages/creator-service/tests/test_temp_byte_lease.py tests/integration/test_first_short_runtime.py tests/integration/test_studio_proxy_runtime.py tests/integration/test_authorized_media_runtime.py -v --basetemp=/tmp/first-short-runtime
