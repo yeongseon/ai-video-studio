@@ -16,11 +16,17 @@ The bug fix: migration 029 adds ``name`` and ``revoked_at`` to api_keys.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 from types import ModuleType
 from unittest.mock import MagicMock
+from uuid import uuid4
 
 import pytest
+import sqlalchemy as sa
+from alembic.migration import MigrationContext
+from alembic.operations import Operations
+from alembic.script import ScriptDirectory
 
 # Columns that auth.py and scripts/create_api_key.py depend on.
 # - auth.py:84, auth.py:265 reference ``revoked_at`` in WHERE clauses
@@ -132,6 +138,53 @@ def test_migration_029_adds_name_and_revoked_at_to_api_keys() -> None:
     assert "revoked_at" in added_column_names, (
         "migration 029 must add 'revoked_at' column to api_keys"
     )
+
+
+@pytest.mark.parametrize(
+    "database_url",
+    ["sqlite://", os.environ.get("FIRST_SHORT_TEST_DATABASE_URL")],
+    ids=["sqlite", "postgres"],
+)
+def test_api_key_optional_columns_remain_nullable_without_backfill_when_upgrading_029(
+    database_url: str | None,
+) -> None:
+    # Given a real revision-018 table containing a key issued before labels existed.
+    if database_url is None:
+        pytest.skip("Disposable PostgreSQL endpoint required")
+    engine = sa.create_engine(database_url)
+    try:
+        # Connection exit rolls back the migration and the isolated PostgreSQL schema.
+        with engine.connect() as connection:
+            if engine.dialect.name == "postgresql":
+                schema = f"api_keys_581_{uuid4().hex}"
+                connection.execute(sa.text(f'CREATE SCHEMA "{schema}"'))
+                connection.execute(sa.text(f'SET LOCAL search_path TO "{schema}"'))
+            scripts = ScriptDirectory(str(_MIGRATIONS_DIR.parent))
+            historical = scripts.get_revision("018")
+            repair = scripts.get_revision("029")
+            assert historical is not None
+            assert repair is not None
+            with Operations.context(MigrationContext.configure(connection)):
+                historical.module.upgrade()
+                connection.execute(
+                    sa.text("INSERT INTO api_keys (user_id, key_hash) VALUES (7, 'existing')")
+                )
+                # When applying the real additive repair (not a recorded/mock operation).
+                repair.module.upgrade()
+
+            # Then the documented optional-column contract holds for schema and old rows.
+            columns = {
+                column["name"]: column
+                for column in sa.inspect(connection).get_columns("api_keys")
+            }
+            assert columns["name"]["nullable"] is True
+            assert columns["name"]["default"] is None
+            assert columns["revoked_at"]["nullable"] is True
+            assert connection.execute(
+                sa.text("SELECT name, revoked_at FROM api_keys WHERE key_hash = 'existing'")
+            ).one() == (None, None)
+    finally:
+        engine.dispose()
 
 
 def test_auth_py_sql_references_match_schema() -> None:
