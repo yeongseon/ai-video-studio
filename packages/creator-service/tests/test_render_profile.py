@@ -173,7 +173,14 @@ class TestFFmpegService(unittest.TestCase):
     @patch("pathlib.Path.rename")
     def test_render_success(self, mock_rename, mock_render_segment, mock_run_ffmpeg):
         """render() concatenates rendered segments and returns the output path."""
-        mock_run_ffmpeg.return_value = MagicMock(returncode=0, stderr="")
+        def encode(cmd, timeout):
+            import subprocess
+            subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+                            "color=size=1080x1920:rate=30:duration=5", "-c:v", "libx264",
+                            "-threads", "1", "-preset", "ultrafast", cmd[-1]],
+                           check=True, capture_output=True, timeout=30)
+            return MagicMock(returncode=0, stderr="")
+        mock_run_ffmpeg.side_effect = encode
 
         input_data = RenderInput(
             image_paths=[Path("/tmp/img1.png")],
@@ -193,9 +200,8 @@ class TestFFmpegService(unittest.TestCase):
         mock_rename.assert_called_once_with(output_path)
 
     @patch("creator_service.ffmpeg_service._run_ffmpeg")
-    @patch.object(FFmpegService, "_probe_output_valid", return_value=False)
     @patch.object(FFmpegService, "_render_segment")
-    def test_render_failure(self, mock_render_segment, mock_probe, mock_run_ffmpeg):
+    def test_render_failure(self, mock_render_segment, mock_run_ffmpeg):
         """render() raises when ffmpeg fails and the output is not valid."""
         mock_run_ffmpeg.return_value = MagicMock(
             returncode=1,
