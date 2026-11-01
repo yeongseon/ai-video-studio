@@ -2,7 +2,7 @@
 
 import hashlib
 import os
-import tempfile
+from uuid import uuid4
 from pathlib import Path
 from typing import BinaryIO
 
@@ -12,8 +12,11 @@ def publish_local(path: Path, data: bytes | BinaryIO) -> tuple[int, str]:
     size = 0
     temporary: Path | None = None
     try:
-        with tempfile.NamedTemporaryFile(dir=path.parent, prefix=".publish-", delete=False) as staged:
-            temporary = Path(staged.name)
+        temporary = path.parent / f".publish-{uuid4().hex}"
+        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o666)
+        with os.fdopen(descriptor, "wb") as staged:
+            if path.exists():
+                os.fchmod(staged.fileno(), path.stat().st_mode & 0o777)
             if isinstance(data, bytes):
                 staged.write(data)
                 md5.update(data)
