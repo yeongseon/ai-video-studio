@@ -49,8 +49,16 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
         } or name in {"dockerfile", ".dockerignore"}:
             result.update({gate: True for gate in GATES})
         elif path.startswith("apps/studio-web/src/"):
-            # Frontend lint, unit tests, typecheck, and build remain mandatory.
-            pass
+            # Most UI edits use frontend tests. API boundary and media preview
+            # changes also need the real browser/first-short runtime suite.
+            if path.startswith("apps/studio-web/src/api/") or name in {
+                "timelinepreview.tsx", "authorizedmedia.tsx",
+                "assetdropzone.tsx", "medialibrary.tsx",
+                "usemediaactions.ts",
+            }:
+                result["first_short"] = True
+            if any(word in name for word in ("auth", "token", "session", "credential")):
+                result.update({gate: True for gate in GATES})
         elif path.startswith("apps/studio-web/"):
             result["docker"] = True
             if "nginx" in name or "entrypoint" in path:
