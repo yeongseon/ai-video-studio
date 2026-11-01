@@ -4,6 +4,11 @@
 > `DEPLOYMENT_ENABLED` is exactly `true`. This guide does not authorize changing
 > that variable, publishing images, migrating a database, or deploying services.
 
+The [system modes and hosted contract](architecture/SYSTEM_TOPOLOGY.md#modes-and-hosted-contract)
+diagram is a configuration/contract template, not a discovered live cluster.
+Hosts, private networks, databases, brokers, singleton scheduling, storage and
+authenticated TLS ingress remain operator-owned resources.
+
 ## Validated release manifest
 
 Every release and rollback uses one immutable JSON manifest. It binds the
@@ -115,13 +120,10 @@ This document outlines the production deployment workflow for AI Video Studio, w
 
 ## Overview
 
-The CD (Continuous Deployment) workflow automates production deployments with the following stages:
-
-1. **CI Gate**: Wait for all CI checks (lint, test, docker) to pass
-2. **Migration**: Run Alembic migrations against production database
-3. **Verification**: Confirm migration success and schema consistency
-4. **Deploy**: Deploy application services (API, Worker, Frontend)
-5. **Health Check**: Verify deployment success
+The authoritative delivery sequence is the [release procedure](#release-procedure-and-stop-points):
+default hold, exact-source CI, candidate builds and scans, immutable manifest and
+HTTPS preflight, then protected migrations and staging verification before
+production deployment and verification. A push alone does not authorize delivery.
 
 ## Prerequisites
 
@@ -214,15 +216,14 @@ No manual action needed - CI will fail if migrations are malformed.
 
 #### 4. Production Deployment
 
-When you push to `main`:
+On a push to `main`, CD remains inert unless `DEPLOYMENT_ENABLED=true` was
+explicitly authorized for that release window. Exact-SHA CI, candidate scans,
+manifest/HTTPS preflight, protected migration approval and staging verification
+must succeed before production proceeds. See the release procedure above for
+the complete stop points; this section is not an unconditional push/migrate path.
 
-1. CI runs and validates migrations
-2. CD workflow waits for CI to pass
-3. GitHub prompts for production environment approval (required reviewer)
-4. After approval, migrations run against production database
-5. Application deploys only if migrations succeed
-
-**Manual override** (emergency only):
+**Legacy diagnostic example, not a CD override:** use the selected immutable
+API image and the protected release procedure for actual production migrations.
 
 ```bash
 # SSH to production server or use cloud CLI
@@ -254,7 +255,7 @@ alembic history | grep "(head)" | wc -l  # Should be 1
 
 If deployment fails or issues arise:
 
-1. **Immediate**: Revert to previous deployment (e.g., `kubectl rollout undo`, Docker image tag rollback)
+1. **Immediate**: Use the [manifest-bound application rollback](#application-rollback-and-database-downgrade), not an arbitrary image tag
 2. **Database**: Database stays at migrated state (see below)
 
 ### Database Rollback
@@ -269,6 +270,10 @@ Only rollback if:
 - Rollback can be done safely without data loss
 
 #### How to Rollback
+
+The following illustrates Alembic mechanics only. Production downgrade requires
+the separately protected, manifest-bound emergency procedure above; do not run
+this checkout-based example as an alternative approval path.
 
 ```bash
 # 1. Stop application traffic to database (read-only mode or full shutdown)
@@ -305,6 +310,11 @@ digests. Infrastructure-specific adapters remain operator-owned; the workflow
 does not add or require Kubernetes.
 
 ### Kubernetes
+
+The examples below illustrate operator adapter mechanics, not the release
+contract. Actual adapters must apply all three selected immutable image digests,
+attest observed platform identities and preserve the protected verification gates.
+They are not evidence that a Kubernetes cluster or any named host exists.
 
 ```bash
 # Update deployment images

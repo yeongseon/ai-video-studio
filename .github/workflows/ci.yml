@@ -62,6 +62,8 @@ jobs:
           python3 -m compileall apps packages
       - name: Enforce package dependency boundaries
         run: python3 scripts/check_package_dependencies.py
+      - name: Validate architecture diagrams and links
+        run: python3 scripts/check_architecture_diagrams.py
       - name: Verify uv.lock is current
         run: |
           python3 -m pip install --disable-pip-version-check uv==0.11.7
@@ -108,7 +110,7 @@ jobs:
       - name: Install Node dependencies
         run: npm --prefix apps/studio-web ci
       - name: Test architecture dependency checker
-        run: python3 -m pytest tests/test_package_dependency_cli.py tests/test_package_dependency_parser.py tests/test_package_dependency_compliance.py -q
+        run: python3 -m pytest tests/test_package_dependency_cli.py tests/test_package_dependency_parser.py tests/test_package_dependency_compliance.py tests/test_architecture_diagrams.py -q
       - name: Test Packages (with coverage)
         run: |
           python3 -m pytest packages/creator-domain/tests/ -v --cov=creator_domain --cov-report=term-missing --cov-fail-under=60
