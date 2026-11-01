@@ -26,11 +26,19 @@ class AzureResponse(HttpResponse):
         return self.data
 
     def stream_download(self, pipeline, **kwargs):
-        class Download:
-            content_length = len(self.data)
+        data = self.data
 
-            def __iter__(inner):
-                return iter([self.data])
+        class Download:
+            content_length = len(data)
+
+            def __init__(self):
+                self._chunks = iter([data])
+
+            def __iter__(self):
+                return self
+
+            def __next__(self) -> bytes:
+                return next(self._chunks)
         return Download()
 
 
