@@ -16,6 +16,7 @@ from creator_domain.models import RenderPlan, RenderSegment, RenderSegmentKind
 
 from creator_service.ffmpeg_service import RenderInput, _run_ffmpeg
 from creator_service.render_profile import AudioCodec, Codec, RenderProfile
+from creator_service.media_integrity import MediaExpectation, validate_media
 
 _PROBE_TIMEOUT_SECONDS = 30
 _RENDER_TIMEOUT_SECONDS = 180
@@ -218,7 +219,7 @@ def render_video_segment(
         str(source),
         "-an",
         "-vf",
-        vf,
+        f"{vf},fps={profile.fps}",
         "-c:v",
         profile.video_codec.value,
         "-crf",
@@ -271,7 +272,7 @@ def render_image_segment(
         "-i",
         str(source),
         "-vf",
-        _fit_filter(profile),
+        f"{_fit_filter(profile)},fps={profile.fps}",
         "-c:v",
         profile.video_codec.value,
         "-crf",
@@ -310,6 +311,7 @@ def render_plan(plan: RenderPlan, output_path: Path) -> Path:
 
     tmp_dir = output_path.parent / f".render_plan_{os.getpid()}_{os.urandom(4).hex()}"
     tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_output = output_path.with_suffix(f".tmp.{os.getpid()}.{os.urandom(4).hex()}.mp4")
     try:
         segment_paths: list[Path] = []
         for index, segment in enumerate(plan.segments):
@@ -341,15 +343,21 @@ def render_plan(plan: RenderPlan, output_path: Path) -> Path:
             "copy",
             "-map",
             "0:v",
-            str(output_path),
+            str(tmp_output),
         ]
         result = _run_ffmpeg(cmd, timeout=_CONCAT_TIMEOUT_SECONDS)
         if result.returncode != 0:
             raise SegmentSourceError(
                 f"failed to concatenate plan segments: {result.stderr[-500:]}"
             )
+        validate_media(tmp_output, MediaExpectation(
+            profile, plan.total_duration_seconds, bool(plan.narration_path or plan.music_path),
+            len(plan.segments),
+        ))
+        tmp_output.rename(output_path)
         return output_path
     finally:
+        tmp_output.unlink(missing_ok=True)
         for leftover in tmp_dir.glob("*"):
             leftover.unlink(missing_ok=True)
         tmp_dir.rmdir()
