@@ -26,6 +26,14 @@ class ProjectSettings(BaseModel):
         default=None, strict=True, gt=0, allow_inf_nan=False,
     )
 
+    @field_validator("schema_version", mode="before")
+    @classmethod
+    def strict_version(cls, value: int) -> int:
+        if type(value) is not int:
+            message = "schema_version must be the integer 1 without coercion"
+            raise ValueError(message)
+        return value
+
     @field_validator("content_format")
     @classmethod
     def supported_format(cls, value: ContentFormat) -> ContentFormat:

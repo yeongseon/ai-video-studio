@@ -170,3 +170,22 @@ async def test_read_when_schema_not_migrated_is_sanitized(client: AsyncClient, s
     # Then return a sanitized deployment failure without database internals.
     assert response.status_code == 500
     assert "secret_sql" not in response.text
+
+
+@pytest.mark.asyncio
+async def test_detail_and_list_when_settings_are_workspace_scoped(client: AsyncClient, settings_service: ProjectService) -> None:
+    # Given distinct explicit settings in two workspaces.
+    from creator_domain.models.project_settings import ProjectSettings
+    first = await settings_service.get_project(1, 1)
+    second = await settings_service.get_project(2, 2)
+    assert first is not None and second is not None
+    await settings_service.replace_settings(first, ProjectSettings(output_preset="short_square"), workspace_id=1)
+    await settings_service.replace_settings(second, ProjectSettings(output_preset="short_landscape"), workspace_id=2)
+    # When reading owned detail/list, then no foreign setting is exposed.
+    detail = await client.get("/api/creator/projects/1")
+    listing = await client.get("/api/creator/projects")
+    foreign = await client.get("/api/creator/projects/2")
+    assert detail.json()["settings"]["output_preset"] == "short_square"
+    assert [p["id"] for p in listing.json()["projects"]] == [1]
+    assert listing.json()["projects"][0]["settings"]["output_preset"] == "short_square"
+    assert foreign.status_code == 404
