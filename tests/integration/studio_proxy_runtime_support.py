@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import os
 from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
 import shutil
@@ -10,6 +11,7 @@ import socket
 import subprocess
 import sys
 import time
+from typing import NoReturn
 from uuid import uuid4
 
 import anyio
@@ -83,17 +85,54 @@ class StudioProxyRuntime:
     token: str
     body_temp: Path
     staging_parent: Path
+    foreign_token: str = ""
+    database_url: str = ""
+    schema: str = ""
+    artifact_root: Path = Path()
+    environment: str = "development"
 
 
-@pytest.fixture(scope="module")
-def studio_proxy_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[StudioProxyRuntime]:
+@dataclass(frozen=True, slots=True)
+class Prerequisites:
+    nginx: str
+    database_url: str
+    studio_dist: Path
+
+
+def _unavailable(reason: str, *, required_in_ci: bool) -> NoReturn:
+    if required_in_ci and os.getenv("GITHUB_ACTIONS") == "true":
+        pytest.fail(reason, pytrace=False)
+    pytest.skip(reason)
+
+
+def prerequisites_or_skip(*, required_in_ci: bool = False) -> Prerequisites:
     nginx = shutil.which("nginx")
     ffmpeg = shutil.which("ffmpeg")
     database_url = os.getenv("FIRST_SHORT_TEST_DATABASE_URL")
     if nginx is None or ffmpeg is None or database_url is None:
-        pytest.skip("nginx, ffmpeg, and a disposable PostgreSQL endpoint are required")
+        _unavailable(
+            "nginx, ffmpeg, and a disposable PostgreSQL endpoint are required", required_in_ci=required_in_ci,
+        )
+    studio_dist = ROOT / "apps/studio-web/dist"
+    if not (studio_dist / "index.html").is_file():
+        _unavailable("the built Studio is required", required_in_ci=required_in_ci)
+    return Prerequisites(nginx, database_url, studio_dist)
 
-    root = tmp_path_factory.mktemp("studio-proxy-runtime")
+
+def _production_environment(origin: str) -> dict[str, str]:
+    # Satisfies the production startup safety checks. Nothing on the media routes connects to Redis.
+    return {
+        "ADMIN_API_KEY": f"proxy-admin-{uuid4().hex}",
+        "CORS_ORIGINS": origin,
+        "REDIS_URL": "redis://127.0.0.1:1/0",
+    }
+
+
+@contextmanager
+def open_studio_proxy(
+    root: Path, needs: Prerequisites, *, environment: str = "development",
+) -> Iterator[StudioProxyRuntime]:
+    nginx, database_url, studio_dist = needs.nginx, needs.database_url, needs.studio_dist
     schema = f"studio_proxy_{uuid4().hex}"
     token = f"proxy-runtime-{uuid4().hex}"
     foreign_token = f"proxy-foreign-{uuid4().hex}"
@@ -101,19 +140,23 @@ def studio_proxy_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[S
     body_temp = root / "body"
     artifact_root.mkdir()
     body_temp.mkdir()
-    studio_dist = ROOT / "apps/studio-web/dist"
-    if not (studio_dist / "index.html").is_file():
-        pytest.skip("the built Studio is required")
+    nginx_port = _free_port()
+    api_port = _free_port()
+    while api_port == nginx_port:
+        api_port = _free_port()
+    origin = f"http://127.0.0.1:{nginx_port}"
+    api_origin = f"http://127.0.0.1:{api_port}"
     env = {
         **os.environ,
         "DATABASE_URL": f"{database_url}{'&' if '?' in database_url else '?'}search_path={schema}",
         "ARTIFACT_ROOT": str(artifact_root),
         "STORAGE_BACKEND": "local",
-        "ENVIRONMENT": "development",
+        "ENVIRONMENT": environment,
         "TMPDIR": str(root),
         "PYTHONPATH": os.pathsep.join(str(ROOT / path) for path in (
             "packages/creator-domain", "packages/creator-service", "packages/creator-provider", "apps/api/src",
         )),
+        **(_production_environment(origin) if environment == "production" else {}),
     }
     anyio.run(_change_schema, database_url, schema, False)
     processes: list[subprocess.Popen[bytes]] = []
@@ -129,7 +172,6 @@ def studio_proxy_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[S
         )
         workspace_id = anyio.run(_provision_identity, database_url, schema, token)
         foreign_workspace_id = anyio.run(_provision_identity, database_url, schema, foreign_token)
-        api_port = _free_port()
         api = subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "shorts_api.main:app", "--host", "127.0.0.1", "--port", str(api_port)],
             cwd=ROOT / "apps/api",
@@ -138,11 +180,9 @@ def studio_proxy_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[S
             stderr=subprocess.STDOUT,
         )
         processes.append(api)
-        api_origin = f"http://127.0.0.1:{api_port}"
         with httpx.Client(base_url=api_origin, timeout=5) as client:
             _await_health(client, api)
 
-        nginx_port = _free_port()
         template = (ROOT / "apps/studio-web/nginx.conf.template").read_text()
         configured = template.replace("${API_KEY}", token)
         configured = configured.replace("listen 8080;", f"listen 127.0.0.1:{nginx_port};")
@@ -161,11 +201,15 @@ def studio_proxy_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[S
             stderr=subprocess.DEVNULL,
         )
         processes.append(nginx_process)
-        origin = f"http://127.0.0.1:{nginx_port}"
         with httpx.Client(base_url=origin, timeout=5) as client:
             _await_health(client, nginx_process)
         yield StudioProxyRuntime(
             origin, api_origin, workspace_id, foreign_workspace_id, token, body_temp, root,
+            foreign_token=foreign_token,
+            database_url=database_url,
+            schema=schema,
+            artifact_root=artifact_root,
+            environment=environment,
         )
     finally:
         for process in reversed(processes):
@@ -173,3 +217,11 @@ def studio_proxy_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[S
             process.wait(timeout=15)
         api_log.close()
         anyio.run(_change_schema, database_url, schema, True)
+
+
+@pytest.fixture(scope="module")
+def studio_proxy_runtime(tmp_path_factory: pytest.TempPathFactory) -> Iterator[StudioProxyRuntime]:
+    needs = prerequisites_or_skip()
+    root = tmp_path_factory.mktemp("studio-proxy-runtime")
+    with open_studio_proxy(root, needs) as runtime:
+        yield runtime
