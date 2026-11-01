@@ -91,14 +91,11 @@ it("seeks a trimmed video to source-local time and starts/stops its media clock"
 
 it.each(["wrong source", "internal seek", "browser seeking", "drifted completion"])(
   "withholds first-video readiness for %s until the trimmed target frame is decoded", async (condition) => {
-  mixed(true); const onReady = vi.fn();
-  render(<TimelinePreview projectId={72} onReady={onReady} />);
-  await screen.findByTestId("preview-media");
-  const video = videoElement();
+  mixed(true); const onReady = vi.fn(); render(<TimelinePreview projectId={72} onReady={onReady} />);
+  await screen.findByTestId("preview-media"); const video = videoElement();
   Object.defineProperty(video, "readyState", { configurable: true, value: 2 });
   if (condition === "wrong source") {
-    fireEvent.loadedData(video);
-    expect(onReady).not.toHaveBeenCalled(); expect(video.currentTime).toBe(2);
+    fireEvent.loadedData(video); expect(onReady).not.toHaveBeenCalled(); expect(video.currentTime).toBe(2);
   }
   fireEvent.loadedMetadata(video); expect(video.currentTime).toBe(2);
   if (condition === "browser seeking") {
@@ -106,8 +103,7 @@ it.each(["wrong source", "internal seek", "browser seeking", "drifted completion
     fireEvent.seeked(video);
   }
   if (condition === "drifted completion") {
-    video.currentTime = 0; fireEvent.seeked(video);
-    expect(video.currentTime).toBe(2);
+    video.currentTime = 0; fireEvent.seeked(video); expect(video.currentTime).toBe(2);
   }
   fireEvent.loadedData(video); expect(onReady).not.toHaveBeenCalled();
   Object.defineProperty(video, "seeking", { configurable: true, value: false });
@@ -123,8 +119,7 @@ it("signals first-video readiness once and never approves later placements", asy
   expect(onReady).toHaveBeenCalledOnce(); expect(onReady).toHaveBeenCalledWith(17);
   seek(5); decoded(videoElement());
   expect(onReady).toHaveBeenCalledOnce();
-  onUnavailable.mockClear(); fireEvent.error(videoElement());
-  expect(onUnavailable).toHaveBeenCalledOnce();
+  onUnavailable.mockClear(); fireEvent.error(videoElement()); expect(onUnavailable).toHaveBeenCalledOnce();
 });
 
 it("pauses outgoing same-source placements and realigns backward seeks", async () => {
@@ -133,14 +128,11 @@ it("pauses outgoing same-source placements and realigns backward seeks", async (
   await screen.findByTestId("preview-media");
   const first = videoElement();
   decoded(first);
-  seek(5);
-  const second = videoElement();
-  decoded(second);
+  seek(5); const second = videoElement(); decoded(second);
   expect(second).not.toBe(first);
   expect(first.pause).toHaveBeenCalled();
   expect(second.currentTime).toBe(2);
-  seek(1);
-  decoded(videoElement());
+  seek(1); decoded(videoElement());
   expect(videoElement().currentTime).toBe(3);
 });
 
@@ -222,9 +214,7 @@ it("revokes readiness if a later placement fails", async () => {
   render(<TimelinePreview projectId={72} onReady={onReady} onUnavailable={onUnavailable} />);
   fireEvent.load(await screen.findByTestId("preview-media"));
   expect(onReady).toHaveBeenCalledWith(17);
-  onUnavailable.mockClear();
-  seek(5);
-  fireEvent.error(videoElement());
+  onUnavailable.mockClear(); seek(5); fireEvent.error(videoElement());
   expect(onUnavailable).toHaveBeenCalledOnce();
   expect(await screen.findByRole("alert")).toHaveTextContent(/reload/i);
 });

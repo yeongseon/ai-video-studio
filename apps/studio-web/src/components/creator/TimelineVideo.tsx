@@ -27,6 +27,7 @@ export function TimelineVideo(props: Props) {
   const latest = useRef(props);
   latest.current = props;
   const seeking = useRef(false);
+  const notified = useRef(false);
   const [displayable, setDisplayable] = useState(false);
 
   const synchronize = () => {
@@ -51,7 +52,10 @@ export function TimelineVideo(props: Props) {
       return;
     }
     setDisplayable(true);
-    latest.current.onReady();
+    if (!notified.current) {
+      notified.current = true;
+      latest.current.onReady();
+    }
     if (!latest.current.playing) latest.current.onHold(false);
   };
 
