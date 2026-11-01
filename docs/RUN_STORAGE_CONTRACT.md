@@ -107,11 +107,13 @@ than partially implemented in this change.
 
 ## Media retention safety
 
-Timeline project preview generations rely on `_store_asset` creating fresh UUID
+New workspace asset preview generations rely on `_store_asset` creating fresh UUID
 workspace asset keys: reserve upload intent → upload → persist metadata. They
 do not rely on atomic local publication. Local uploads and STT/run-artifact
 writers retain origin/main's in-place inode/permission semantics; regeneratable
-run paths are outside this project-asset namespace. The retained local descriptor
+run paths are outside the new UUID namespace; authorized legacy project rows may
+still reference non-workspace keys with weaker provenance and no write-once promise.
+The retained local descriptor
 survives atomic replace and verifies detectable dev/ino/size/mtime/ctime changes.
 Filesystem write access means full control of served bytes; timestamp-restored
 or timestamp-granularity in-place rewrites are outside this threat model. See

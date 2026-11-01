@@ -6,7 +6,7 @@
 |---|---|
 | `object_storage.py::LocalStorageBackend.upload` | Original in-place bytes/stream writing; new modes honor umask and overwrite retains inode/mode/group/ACL. Same-source artifact registration only hashes. No anonymous publication staging added. |
 | `media_asset_service.py::_store_asset` (196-197) | The only production workspace-media backend upload caller: fresh `workspaces/<id>/assets/<uuid>-<filename>` each time. Reserve upload intent → upload → mark uploaded → persist metadata; never rewrites an existing served asset key. `create_image_asset`, generated image, video, audio and file ingestion all converge here. |
-| `artifact_storage_integration.py::upload_local_artifact` (20) | The other production `backend.upload` caller: caller-provided run/artifact paths, not UUID workspace asset keys. Regeneratable run keys retain original writer semantics; not the project-asset preview namespace. |
+| `artifact_storage_integration.py::store_artifact_file` (20) | The other production `backend.upload` caller: local path relative to ARTIFACT_ROOT, commonly run/artifact paths, not freshly created UUID workspace asset keys. Regeneratable run keys retain original writer semantics; authorized legacy project rows can reference these with weaker provenance. |
 | `generate_scene_image.py:161,223`, `scene_batch_lifecycle.py::upload` | UUID/owner-specific run output names before artifact registration; completed files use original adapter upload. |
 | `generate_audio.py:168-171,209`, `generate_paragraph_audio.py:101` | Delivery-specific directories; active output is unpublished, immutable completed files are registered after provider result. No previously published delivery key is reused by a successor. |
 | `generate_subtitles.py:94`, `generate_paragraph_subtitles.py:85` | Fixed run subtitle paths may be rewritten. Whisper/Groq retain their original write_text semantics; these are not workspace-media project asset keys. |
@@ -17,7 +17,7 @@
 | `scripts/generate_ssul_shorts.py`, `scripts/image-gen/*` | Offline generation/gallery tools; no canonical MediaAsset or run-artifact registration. Do not run offline writers against live registered keys. Restore tooling runs in isolated/maintenance restore targets, not concurrent service publication. |
 
 Audit search: `.upload(` across `apps/`, `packages/`, `scripts/`. Production
-backend calls are the two `_store_asset` branches and `upload_local_artifact`
+backend calls are the two `_store_asset` branches and `store_artifact_file`
 above; worker `batch.upload(target_path)` delegates artifact registration, not a
 new backend call. No script backend upload calls exist. Tests intentionally write
 fixture/corrupt keys: API `test_project_media_content`, worker
@@ -26,20 +26,51 @@ fixture/corrupt keys: API `test_project_media_content`, worker
 exercise local/S3/Azure uploads, not production writers. Review future backend
 callers for rewriting the workspace asset namespace before claiming this contract.
 
-Project assets are written once under fresh UUID keys by `_store_asset`:
+Newly created workspace assets are written once under fresh UUID keys by `_store_asset`:
 reserve/upload/persist order makes asset identities undiscoverable until complete.
 The retained no-follow descriptor serves A across an atomic replace by any writer.
 It checks dev/ino/size/mtime_ns/ctime_ns around every read and aborts detectable
 in-place changes. An actor with artifact-root write access has full control of
 served bytes; same-inode rewrites restoring timestamps or fitting timestamp
 granularity are out of scope, not proved prevented. Network filesystems are not
-validated. Local writers were deliberately restored to origin/main semantics.
+validated. Authorized legacy non-workspace keys remain accepted, with weaker
+provenance and no write-once guarantee. Local writers were deliberately restored
+to origin/main semantics. The post-pread verify is redundant with the streaming
+verify before delivery; removing that individual check is not independently
+mutation-sensitive and no such claim is made.
 ctime checks are defense in depth, with coarse-timestamp simulations proving
 independent size/ctime comparisons. Tests retain readers/responses and assert
 EBADF immediately on normal completion, failure, in-flight disconnect, HEAD,
 empty GET and constructor failure; garbage collection cannot mask leaks.
 
 ## Oracle round-3 remediation (round 4)
+
+## Oracle round-4 remediation (round 5)
+
+Red `4f99a4f`:5 failures/1 pass: two subprocess shutdown watchdog timeouts,
+cancelled waiter leaking later ValueError, worker KeyboardInterrupt/SystemExit
+terminating the interpreter. `bdda72a` replaces loop-task ownership with a local
+four-worker ThreadPoolExecutor and concurrent future callback; lock-protected
+claim/abandon ensures one resource owner. Worker exceptions are completion data,
+cancellation takes precedence and repeated cancellation waits for thread completion.
+Completion accounting is released by the thread future callback, including discard.
+Shared BlockingIO and all writers remain unchanged.
+
+Acquisition Red `4c2dd08`:3 operational errors falsely404 and2 retained-owner
+constructor leaks. `1e8dcf1`:only ENOENT/ELOOP/ENOTDIR and nonregular refusal are
+missing; timeout503, other operational failures502. Constructors close on every
+post-acquisition BaseException then preserve the original failure.
+`1749ea4`:missing ETag adapter tests plus GET/HEAD HTTP tests. Removing both
+guards fails3 adapter tests and8 HTTP cases (200 vs502); no ranged read permitted.
+
+Round5 mutations rerun in fresh interpreters: all prior membership/workspace/
+earlyIO/MIME/nosniff/cache/buffering/exact-length/OSError/close/ctime/size/IfMatch/
+Azurecondition/SDK/UUID probes fail. VersionId removal1; callback discard removal1;
+claim-lock removal1; awaiter token release6; acquisition misclassification2;
+constructor OSError-only cleanup2; absent ETag HTTP8. No tracked mutation remains.
+Full local API1232, packages2316, worker1165/27 existing skips; whole mandatory
+multi-file media invocation160 (authorized-media file alone101), all DB env enabled.
+Ruff/typecheck/LSP and architecture/dependency validators clean.
 
 Writer reversal: Red `d473ee9` had six inode-preservation failures; `2d9ec49`
 and `4ac7ca7` restore original uploads and STT providers, six characterization

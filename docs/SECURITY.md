@@ -321,11 +321,14 @@ Transfers acquire an owned read session. Local reads retain one no-follow
 descriptor and serve its original inode across atomic rename/replacement. Each
 read verifies descriptor size/mtime/ctime/identity before and after I/O as defense
 in depth (atomic unlink changes ctime/link count without mutating retained data).
-The project-asset route serves workspace-media keys created once under fresh
+Newly created workspace assets use workspace-media keys created once under fresh
 UUID addresses by `media_asset_service.py::MediaAssetService._store_asset`
 (currently `workspaces/<workspace>/assets/<uuid>-<filename>`). It reserves an
 upload intent, uploads bytes, then persists asset metadata; readers cannot
-discover a new asset identity before that metadata exists. Platform writers do
+discover a new asset identity before that metadata exists. The route deliberately
+also accepts authorized legacy non-workspace keys, whose provenance is weaker:
+their writers may reuse keys and the write-once guarantee does not apply. Ownership,
+no-follow confinement and detectable-mutation checks still apply. Platform writers do
 not rewrite these keys. Local upload and other writers retain their original
 in-place semantics; this preview change does not alter writer permissions,
 inodes, groups or ACLs. An atomic rename/replace by any writer leaves the retained
