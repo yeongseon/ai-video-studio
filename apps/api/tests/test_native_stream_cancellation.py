@@ -91,6 +91,24 @@ async def test_raw_cancellation_waits_for_worker_before_closing_retained_readers
 
 
 @pytest.mark.asyncio
+async def test_keyboard_interrupt_at_response_send_closes_retained_reader(tmp_path):
+    backend = RetainedBackend(tmp_path)
+    (tmp_path / "object").write_bytes(b"a" * 131072)
+    scope = {"type": "http", "method": "GET", "headers": [], "asgi": {"spec_version": "2.4"}}
+    response = await media_streaming.stream_media(backend, "object", Request(scope), "video/mp4")
+
+    async def send(message):
+        raise KeyboardInterrupt()
+
+    async def receive():
+        return {"type": "http.disconnect"}
+
+    with pytest.raises(KeyboardInterrupt):
+        await response(scope, receive, send)
+    assert_closed(backend.readers[0])
+
+
+@pytest.mark.asyncio
 async def test_cancelled_acquisitions_keep_four_worker_capacity_until_completion(tmp_path, monkeypatch):
     # Given four workers blocked after acquiring real readers.
     backend = RetainedBackend(tmp_path)

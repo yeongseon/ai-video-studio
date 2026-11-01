@@ -5,6 +5,7 @@ import logging
 import re
 from collections.abc import AsyncIterator, Callable
 from functools import partial
+from typing import TypeVar
 
 import anyio
 from creator_service.blocking_io import BlockingIO
@@ -16,9 +17,10 @@ from starlette.responses import Response, StreamingResponse
 
 logger = logging.getLogger(__name__)
 _io = BlockingIO(4)
+T = TypeVar("T")
 
 
-async def _run[T](function: Callable[[], T], discard: Callable[[T], None] | None = None) -> T:
+async def _run(function: Callable[[], T], discard: Callable[[T], None] | None = None) -> T:
     # Native Task.cancel bypasses CancelScope; this child retains the worker's
     # limiter reservation while repeated cancellation affects only the waiter.
     task = asyncio.create_task(_io.run(function))
