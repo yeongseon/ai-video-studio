@@ -26,6 +26,7 @@ async def settings_storage(request: pytest.FixtureRequest, monkeypatch: pytest.M
     root = Path(__file__).resolve().parents[3]
     async with asyncpg.create_pool(url, min_size=1, max_size=2) as admin:
         await admin.execute(f'CREATE SCHEMA "{schema}"')
+        await admin.execute(f'CREATE TABLE "{schema}".alembic_version (version_num VARCHAR(32) PRIMARY KEY)')
         try:
             subprocess.run([sys.executable, "-m", "alembic", "upgrade", "head"],
                            cwd=root / "apps/api", check=True, capture_output=True,
@@ -85,3 +86,37 @@ async def test_settings_update_rejected_when_foreign(settings_storage: ProjectSe
     created = await settings_storage.create_project("Foreign", "idea", idea_brief="idea", workspace_id=2)
     # Then the storage boundary refuses the replacement.
     assert await settings_storage.replace_settings(created, ProjectSettings(), workspace_id=1) is None
+
+
+@pytest.mark.asyncio
+async def test_settings_removed_when_project_deleted(settings_storage: ProjectService) -> None:
+    # Given an explicitly configured project, when the project is deleted.
+    created = await settings_storage.create_project("Explicit", "idea", idea_brief="idea",
+                                                   workspace_id=1, settings=ProjectSettings())
+    assert await settings_storage.delete_project(created.id, workspace_id=1)
+    # Then no orphan settings remain, including unscoped adapter reads.
+    assert await settings_storage.db.fetch_settings(created.id, None) is None
+    if isinstance(settings_storage.db, PostgresProjectStorage):
+        assert await db.fetch_one("SELECT project_id FROM creator_project_settings WHERE project_id=$1", created.id) is None
+
+
+@pytest.mark.asyncio
+async def test_settings_preserved_when_title_changes(settings_storage: ProjectService) -> None:
+    # Given non-default settings, when changing an unrelated project field.
+    settings = ProjectSettings(output_preset="short_square", encoding_profile="high_quality")
+    created = await settings_storage.create_project("Explicit", "idea", idea_brief="idea",
+                                                   workspace_id=1, settings=settings)
+    updated = await settings_storage.update_project(created.id, "Renamed", workspace_id=1)
+    # Then detail and list both preserve settings from the separate storage seam.
+    assert updated is not None and updated.settings == settings
+    assert (await settings_storage.list_projects(workspace_id=1))[0].settings == settings
+
+
+@pytest.mark.asyncio
+async def test_raw_project_row_when_settings_explicit(settings_storage: ProjectService) -> None:
+    # Given persisted explicit settings, when reading the raw project adapter row.
+    created = await settings_storage.create_project("Explicit", "idea", idea_brief="idea",
+                                                   workspace_id=1, settings=ProjectSettings())
+    row = await settings_storage.db.fetch_project(created.id, workspace_id=1)
+    # Then the original row model never receives an added settings column.
+    assert row is not None and "settings" not in row

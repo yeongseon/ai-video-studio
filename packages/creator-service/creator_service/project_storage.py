@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Protocol
+from creator_domain.models.project_settings import ProjectSettings
 
 import creator_service.run_service as _run_svc_mod
 
@@ -36,6 +37,8 @@ class ProjectStorageBackend(Protocol):
 
     async def count_projects(self, workspace_id: int | None = None) -> int: ...
 
+    async def fetch_settings(self, project_id: int, workspace_id: int | None) -> ProjectSettings | None: ...
+
     async def update_project(
         self,
         project_id: int,
@@ -57,6 +60,7 @@ class InMemoryProjectStorage:
 
     def __init__(self) -> None:
         self._projects: dict[int, dict[str, Any]] = {}
+        self._settings: dict[int, ProjectSettings] = {}
         self._runs_by_project: dict[int, list[dict[str, Any]]] = {}
         self._next_project_id = 1
         self._next_run_id = 1
@@ -74,14 +78,19 @@ class InMemoryProjectStorage:
             "markdown_source": payload.get("markdown_source"),
             "url_source": payload.get("url_source"),
             "json_script": payload.get("json_script"),
-            "settings": payload.get("settings"),
             "status": payload.get("status", "draft"),
             "workspace_id": payload.get("workspace_id"),
             "created_at": now,
             "updated_at": now,
         }
         self._projects[project_id] = row
+        if payload.get("settings") is not None:
+            self._settings[project_id] = ProjectSettings.model_validate(payload["settings"])
         return dict(row)
+
+    async def fetch_settings(self, project_id: int, workspace_id: int | None) -> ProjectSettings | None:
+        row = await self.fetch_project(project_id, workspace_id)
+        return self._settings.get(project_id) if row is not None else None
 
     async def fetch_project(
         self, project_id: int, workspace_id: int | None = None
@@ -136,7 +145,10 @@ class InMemoryProjectStorage:
         if expected_updated_at is not None and row["updated_at"] != expected_updated_at:
             return None
         for key, value in updates.items():
-            row[key] = value
+            if key == "settings":
+                self._settings[project_id] = ProjectSettings.model_validate(value)
+            else:
+                row[key] = value
         row["updated_at"] = datetime.now(timezone.utc)
         return dict(row)
 
@@ -150,6 +162,7 @@ class InMemoryProjectStorage:
             del self._projects[project_id]
             # Also remove associated runs
             self._runs_by_project.pop(project_id, None)
+            self._settings.pop(project_id, None)
             return True
         return False
 
@@ -196,4 +209,3 @@ class InMemoryProjectStorage:
         }
         self._runs_by_project.setdefault(project_id, []).append(row)
         return dict(row)
-

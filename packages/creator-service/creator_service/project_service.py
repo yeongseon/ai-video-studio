@@ -70,7 +70,7 @@ class ProjectService:
                 "settings": settings.model_dump(mode="json") if settings is not None else None,
             }
         )
-        return Project.model_validate(row)
+        return Project.model_validate({**row, "settings": settings})
 
     async def get_project(self, project_id: int, workspace_id: int | None = None) -> Project | None:
         row = await self.db.fetch_project(project_id, workspace_id=workspace_id)
@@ -78,7 +78,8 @@ class ProjectService:
             return None
 
         latest_run = await self.db.fetch_latest_run_summary(project_id)
-        return ProjectWithLatestRun.model_validate({**row, "latest_run": latest_run})
+        settings = await self.db.fetch_settings(project_id, workspace_id)
+        return ProjectWithLatestRun.model_validate({**row, "latest_run": latest_run, "settings": settings})
 
     async def list_projects(
         self, limit: int = 20, offset: int = 0, workspace_id: int | None = None
@@ -91,7 +92,7 @@ class ProjectService:
         rows = await self.db.list_projects_with_latest_run(
             limit=limit, offset=offset, workspace_id=workspace_id,
         )
-        return [ProjectWithLatestRun.model_validate(row) for row in rows]
+        return [ProjectWithLatestRun.model_validate({**row, "settings": await self.db.fetch_settings(row["id"], workspace_id)}) for row in rows]
 
     async def count_projects(self, workspace_id: int | None = None) -> int:
         return await self.db.count_projects(workspace_id=workspace_id)
@@ -103,7 +104,8 @@ class ProjectService:
         if row is None:
             return None
         latest_run = await self.db.fetch_latest_run_summary(project_id)
-        return ProjectWithLatestRun.model_validate({**row, "latest_run": latest_run})
+        settings = await self.db.fetch_settings(project_id, workspace_id)
+        return ProjectWithLatestRun.model_validate({**row, "latest_run": latest_run, "settings": settings})
 
     async def delete_project(self, project_id: int, workspace_id: int | None = None) -> bool:
         return await self.db.delete_project(project_id, workspace_id=workspace_id)
@@ -115,7 +117,7 @@ class ProjectService:
             project.id, {"settings": settings.model_dump(mode="json")},
             workspace_id=workspace_id, expected_updated_at=project.updated_at,
         )
-        return Project.model_validate(row) if row is not None else None
+        return Project.model_validate({**row, "settings": settings}) if row is not None else None
 
     async def mark_deleting(self, project_id: int, workspace_id: int) -> Project:
         row = await self.db.update_project(
