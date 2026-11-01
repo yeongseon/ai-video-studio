@@ -21,17 +21,30 @@ class ValidationProcessError(RuntimeError):
 
 
 def _terminate_group(proc: subprocess.Popen[bytes]) -> None:
-    for signum in (signal.SIGTERM, signal.SIGKILL):
+    try:
         try:
-            os.killpg(proc.pid, signum)
+            os.killpg(proc.pid, signal.SIGTERM)
         except ProcessLookupError:
-            break
-        if signum == signal.SIGTERM:
-            try:
-                proc.wait(timeout=TERMINATION_GRACE)
-            except subprocess.TimeoutExpired:
-                continue
-    proc.wait()
+            return
+        _observe_exit(proc.pid, time.monotonic() + TERMINATION_GRACE)
+    finally:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        finally:
+            proc.wait(timeout=1)
+
+
+def _observe_exit(pid: int, deadline: float) -> bool:
+    """Observe without reaping: the zombie leader anchors PGID until escalation."""
+    while True:
+        if os.waitid(os.P_PID, pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is not None:
+            return True
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            return False
+        time.sleep(min(0.005, remaining))
 
 
 def run_validation(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
@@ -41,9 +54,9 @@ def run_validation(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[
     cancellation exceptions. SIGTERM gives cooperative parents time to reap their
     descendants before SIGKILL fences any remaining processes.
     """
-    with subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, start_new_session=True) as proc:
-        try:
+    proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, start_new_session=True)
+    try:
             assert proc.stdout is not None and proc.stderr is not None
             buffers = [bytearray(), bytearray()]
             limits = [STDOUT_LIMIT, STDERR_LIMIT]
@@ -64,11 +77,15 @@ def run_validation(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[
                         if len(buffers[index]) + len(chunk) > limits[index]:
                             raise ValidationProcessError("validation_output_overflow")
                         buffers[index].extend(chunk)
-            try:
-                returncode = proc.wait(timeout=max(0, deadline - time.monotonic()))
-            except subprocess.TimeoutExpired as exc:
-                raise ValidationProcessError("validation_timeout") from exc
-            return subprocess.CompletedProcess(cmd, returncode,
-                buffers[0].decode("utf-8", errors="replace"), buffers[1].decode("utf-8", errors="replace"))
-        finally:
+            if not _observe_exit(proc.pid, deadline):
+                raise ValidationProcessError("validation_timeout")
+    finally:
+        try:
             _terminate_group(proc)
+        finally:
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
+    return subprocess.CompletedProcess(cmd, proc.returncode,
+        buffers[0].decode("utf-8", errors="replace"), buffers[1].decode("utf-8", errors="replace"))

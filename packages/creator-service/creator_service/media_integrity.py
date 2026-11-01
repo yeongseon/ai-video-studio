@@ -1,8 +1,8 @@
 """Bounded final-media acceptance, shared by renderers and future chunk callers.
 
 Timing tolerance is max(100 ms, two frames), independent of segment count.
-Nominal FPS tolerance is 0.01; average-rate drift allows one rounded frame per
-segment plus one container endpoint frame, not a percentage of total duration.
+Nominal FPS tolerance is 0.01; sample counts and rate consistency use aggregate
+endpoint bounds independent of segment count.
 The plan remains authoritative even with -shortest: short narration must not
 silently truncate visuals. Legacy narration-derived durations and AAC/MP3 tail
 rounding fit this tolerance; Timeline narration is padded to its plan duration.
@@ -58,6 +58,7 @@ class ProbeStream(BaseModel):
     avg_frame_rate: str = "0/0"
     r_frame_rate: str = "0/0"
     duration: float = Field(gt=0)
+    nb_frames: int | None = Field(default=None, gt=0)
 
 
 class ProbeFormat(BaseModel):
@@ -120,7 +121,7 @@ def validate_media(output: Path, expected: MediaExpectation) -> None:
         raise MediaIntegrityError("output size")
     probe = _run([
         "ffprobe", "-v", "error", "-show_entries",
-        "stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,duration:format=duration,size",
+        "stream=codec_type,codec_name,width,height,r_frame_rate,avg_frame_rate,duration,nb_frames:format=duration,size",
         "-of", "json", str(output),
     ], PROBE_TIMEOUT)
     if probe.returncode != 0 or probe.stderr.strip():
@@ -145,8 +146,11 @@ def validate_media(output: Path, expected: MediaExpectation) -> None:
         raise MediaIntegrityError("invalid frame rate") from exc
     if not math.isfinite(fps) or abs(fps - expected.profile.fps) > 0.01:
         raise MediaIntegrityError("video frame rate")
-    if (not math.isfinite(average_fps) or average_fps <= 0
-            or abs(average_fps - fps) * stream.duration > expected.segment_count + 1):
+    if not math.isfinite(average_fps) or average_fps <= 0:
+        raise MediaIntegrityError("average video frame rate")
+    samples = stream.nb_frames if stream.nb_frames is not None else round(stream.duration * average_fps)
+    expected_samples = round(expected.duration_seconds * expected.profile.fps)
+    if abs(samples - stream.duration * average_fps) > 1:
         raise MediaIntegrityError("average video frame rate")
     if stream.codec_name != _video_codec(expected.profile.video_codec):
         raise MediaIntegrityError("video codec family")
@@ -155,8 +159,11 @@ def validate_media(output: Path, expected: MediaExpectation) -> None:
     durations = [document.format.duration, stream.duration]
     if expected.audio_required:
         durations.append(audio[0].duration)
-    if any(abs(duration - expected.duration_seconds) > expected.duration_tolerance + 1e-6 for duration in durations):
+    if any(abs(duration - expected.duration_seconds) > expected.duration_tolerance + 1e-6 + 1e-9 for duration in durations):
         raise MediaIntegrityError("duration completeness", durations=tuple(durations), expected=expected.duration_seconds)
+    if (abs(samples - expected_samples) > max(2, math.ceil(expected.duration_tolerance * fps))
+            or abs(samples - round(stream.duration * fps)) > 2):
+        raise MediaIntegrityError("video sample completeness")
     if document.format.size != size:
         raise MediaIntegrityError("output size metadata")
     tail = _run([

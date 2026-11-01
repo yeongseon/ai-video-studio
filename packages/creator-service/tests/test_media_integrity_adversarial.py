@@ -2,6 +2,9 @@
 import os
 import subprocess
 import sys
+import json
+import signal
+from unittest.mock import patch
 from pathlib import Path
 
 import pytest
@@ -85,6 +88,51 @@ for pid in pids:
     assert not os.path.exists('/proc/'+str(pid)), ('survivor',pid)
 '''
     # When / Then: external subprocess timeout turns a hang into a test failure.
-    result = subprocess.run([sys.executable, "-c", code, mode, str(tmp_path / "pids")],
-                            capture_output=True, text=True, timeout=3)
-    assert result.returncode == 0, result.stderr
+    pids = tmp_path / "pids"
+    try:
+        result = subprocess.run([sys.executable, "-c", code, mode, str(pids)],
+                                capture_output=True, text=True, timeout=3)
+        assert result.returncode == 0, result.stderr
+    finally:
+        if pids.exists():
+            try:
+                os.killpg(int(pids.read_text().split()[0]), signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+
+
+@pytest.mark.parametrize("missing", [2, 3])
+def test_sample_endpoint_boundary(tmp_path: Path, missing: int) -> None:
+    # Given: real timestamp-preserving video missing two / three interior frames.
+    path = tmp_path / "samples.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+        "testsrc2=size=128x128:rate=30:duration=5", "-vf",
+        f"select=not(between(n\\,30\\,{29 + missing}))", "-vsync", "0",
+        "-c:v", "libx264", "-threads", "1", "-preset", "ultrafast", str(path)],
+        check=True, capture_output=True, timeout=30)
+    # When / Then: no segment-count-dependent endpoint allowance.
+    expectation = MediaExpectation(RenderProfile(width=128, height=128), 5, False, 30)
+    if missing == 2:
+        validate_media(path, expectation)
+    else:
+        with pytest.raises(MediaIntegrityError):
+            validate_media(path, expectation)
+
+
+def test_nominal_rate_metadata_mismatch(tmp_path: Path) -> None:
+    # Given: actual complete samples, poisoned nominal rate only.
+    path = tmp_path / "good.mp4"
+    subprocess.run(["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+        "testsrc2=size=128x128:rate=30:duration=5", "-c:v", "libx264", "-threads", "1",
+        "-preset", "ultrafast", str(path)], check=True, capture_output=True, timeout=30)
+    from creator_service.media_integrity import run_validation
+    def run(cmd, timeout):
+        result = run_validation(cmd, timeout)
+        if cmd[0] == "ffprobe":
+            doc = json.loads(result.stdout)
+            doc["streams"][0]["r_frame_rate"] = "2998/100"
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(doc), "")
+        return result
+    # When / Then
+    with patch("creator_service.media_integrity.run_validation", side_effect=run), pytest.raises(MediaIntegrityError):
+        validate_media(path, MediaExpectation(RenderProfile(width=128, height=128), 5, False))
