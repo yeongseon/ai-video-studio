@@ -1,8 +1,9 @@
 """Same-origin bounded delivery after callers establish asset ownership."""
 
+import asyncio
 import logging
 import re
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Callable
 from functools import partial
 
 import anyio
@@ -15,6 +16,37 @@ from starlette.responses import Response, StreamingResponse
 
 logger = logging.getLogger(__name__)
 _io = BlockingIO(4)
+
+
+async def _run[T](function: Callable[[], T], discard: Callable[[T], None] | None = None) -> T:
+    # Native Task.cancel bypasses CancelScope; this child retains the worker's
+    # limiter reservation while repeated cancellation affects only the waiter.
+    task = asyncio.create_task(_io.run(function))
+    cancelled = False
+    abandoned: list[T] = []
+
+    def completed(done: asyncio.Task[T]) -> None:
+        if discard is not None and not done.cancelled() and done.exception() is None:
+            abandoned.append(done.result())
+
+    task.add_done_callback(completed)
+    with anyio.CancelScope(shield=True):
+        while True:
+            try:
+                result = await asyncio.shield(task)
+                break
+            except asyncio.CancelledError:
+                cancelled = True
+            except (StorageReadError, StorageObjectMissing):
+                if cancelled:
+                    raise asyncio.CancelledError() from None
+                raise
+        if cancelled:
+            for value in abandoned:
+                if discard is not None:
+                    await _run(partial(discard, value))
+            raise asyncio.CancelledError()
+        return result
 
 
 def _range(header: str, size: int) -> tuple[int, int]:
@@ -49,7 +81,7 @@ async def stream_media(backend: ArtifactStorageBackend, key: str, request: Reque
     try:
         try:
             with anyio.CancelScope(shield=True):
-                reader = await _io.run(partial(backend.open_read, key))
+                reader = await _run(partial(backend.open_read, key), lambda acquired: acquired.close())
         except (StorageObjectMissing, StorageReadError) as error:
             raise _failure(error) from None
         await anyio.lowlevel.checkpoint()
@@ -59,7 +91,7 @@ async def stream_media(backend: ArtifactStorageBackend, key: str, request: Reque
     finally:
         if reader is not None and not transferred:
             with anyio.CancelScope(shield=True):
-                await _io.run(reader.close)
+                await _run(reader.close)
 
 
 class OwnedMediaResponse(StreamingResponse):
@@ -72,7 +104,7 @@ class OwnedMediaResponse(StreamingResponse):
             await super().__call__(scope, receive, send)
         finally:
             with anyio.CancelScope(shield=True):
-                await _io.run(self._reader.close)
+                await _run(self._reader.close)
 
 
 async def _prepare_media(reader: ObjectReader, request: Request, mime: str) -> Response:
@@ -96,17 +128,17 @@ async def _prepare_media(reader: ObjectReader, request: Request, mime: str) -> R
     headers["Content-Length"] = str(end - start)
     if request.method == "HEAD" or start == end:
         try:
-            await _io.run(reader.verify)
+            await _run(reader.verify)
         except (StorageObjectMissing, StorageReadError) as error:
             raise _failure(error) from None
         return Response(media_type=mime, headers=headers)
 
     async def read(offset: int) -> bytes:
         length = min(READ_CHUNK_SIZE, end - offset)
-        block = await _io.run(partial(reader.read_range, offset, length))
+        block = await _run(partial(reader.read_range, offset, length))
         if len(block) != length:
             raise StorageReadError()
-        await _io.run(reader.verify)
+        await _run(reader.verify)
         return block
 
     # Prefetch only one bounded block so initial provider failures retain HTTP
@@ -131,6 +163,6 @@ async def _prepare_media(reader: ObjectReader, request: Request, mime: str) -> R
                 offset += len(block)
         finally:
             with anyio.CancelScope(shield=True):
-                await _io.run(reader.close)
+                await _run(reader.close)
 
     return OwnedMediaResponse(content(), reader, status_code=status, media_type=mime, headers=headers)
