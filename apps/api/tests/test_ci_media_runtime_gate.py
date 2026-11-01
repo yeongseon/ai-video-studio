@@ -6,7 +6,7 @@ import sys
 from collections.abc import Callable
 from pathlib import Path
 from types import ModuleType
-from typing import Final, NamedTuple
+from typing import Any, Final, NamedTuple
 
 import pytest
 import yaml
@@ -17,8 +17,10 @@ CI_WORKFLOW: Final = ROOT / ".github/workflows/ci.yml"
 JOB: Final = "first-short-runtime"
 GUARD: Final = "tests/integration/test_authorized_media_runtime.py"
 SUPPORT: Final = "studio_proxy_runtime_support"
-NARROWING_PREFIXES: Final = ("-k", "-m", "--deselect", "--ignore")
-NARROWING_FLAGS: Final = frozenset({"--co", "--collect-only"})
+NARROWING_PREFIXES: Final = (
+    "-k", "-m", "--deselect", "--ignore", "--collect", "-o", "--override-ini", "-c", "--config-file",
+)
+NARROWING_FLAGS: Final = frozenset({"--co"})
 MASKING_TOKENS: Final = frozenset({"||", ";", "&"})
 Environment = dict[str, str | int | bool]
 
@@ -85,9 +87,12 @@ def violations(workflow_text: str) -> list[str]:
     found: list[str] = []
     if job.condition != "" or job.continue_on_error is not False:
         found.append(f"{JOB} must be unconditional and fail-fast")
-    if any("PYTEST_ADDOPTS" in env for env in (workflow.env, job.env, *(step.env for step in job.steps))):
-        found.append("PYTEST_ADDOPTS can narrow or silence the guard")
     commands = _commands(job)
+    environments = (workflow.env, job.env, *(step.env for step in job.steps))
+    if any(name.startswith("PYTEST_") for env in environments for name in env) or any(
+        token.startswith("PYTEST_") for command in commands for token in command.tokens
+    ):
+        found.append("PYTEST_* variables can narrow or silence the guard")
     guards = [command for command in commands if "pytest" in command.tokens and GUARD in command.tokens]
     if len(guards) != 1:
         return [*found, f"{JOB} must run {GUARD} exactly once, found {len(guards)}"]
@@ -151,6 +156,7 @@ NEXT_COMMAND = (
 PUSH_ONLY = "        if: github.event_name == 'push'\n"
 OTHER_DIRECTORY = "        working-directory: apps/api\n"
 NARROWING_ENV = "          PYTEST_ADDOPTS: -k nothing\n"
+EXPORTED_ADDOPTS = '          export PYTEST_ADDOPTS="-k nothing"\n'
 BROKEN_WORKFLOWS: Final[dict[str, Break]] = {
     "guard module removed": Break(((" " + GUARD, ""),), "exactly once"),
     "guard deselected with -k": Break(_guard_options("-k nothing"), "narrowed"),
@@ -159,7 +165,14 @@ BROKEN_WORKFLOWS: Final[dict[str, Break]] = {
     "guard narrowed with --deselect=": Break(_guard_options(f"--deselect={GUARD}::test_x"), "narrowed"),
     "guard narrowed with --ignore=": Break(_guard_options(f"--ignore={GUARD}"), "narrowed"),
     "guard only collected": Break(_guard_options("--collect-only"), "narrowed"),
-    "PYTEST_ADDOPTS set on the step": Break(((REDIS_ENV, REDIS_ENV + NARROWING_ENV),), "PYTEST_ADDOPTS"),
+    "guard only collected with an abbreviation": Break(_guard_options("--collect"), "narrowed"),
+    "pytest ini overridden with -o": Break(_guard_options("-o addopts=-knothing"), "narrowed"),
+    "pytest config swapped with -c": Break(_guard_options("-c other.ini"), "narrowed"),
+    "PYTEST_ADDOPTS set on the step": Break(((REDIS_ENV, REDIS_ENV + NARROWING_ENV),), "PYTEST_"),
+    "PYTEST_ADDOPTS exported by the script": Break(((STUDIO_BUILD, STUDIO_BUILD + EXPORTED_ADDOPTS),), "PYTEST_"),
+    "PYTEST_ADDOPTS given inline": Break(
+        ((GUARD_COMMAND_START, 'PYTEST_ADDOPTS="-k nothing" ' + GUARD_COMMAND_START),), "PYTEST_",
+    ),
     "failure masked by || true": Break(
         (
             (
@@ -220,15 +233,33 @@ def _support(monkeypatch: pytest.MonkeyPatch) -> ModuleType:
     return module
 
 
+class Outcome(NamedTuple):
+    kind: str
+    message: str
+    value: Any
+
+
+def _outcome(call: Callable[[], Any]) -> Outcome:
+    try:
+        value = call()
+    except pytest.fail.Exception as failed:
+        return Outcome("failed", str(failed), None)
+    except pytest.skip.Exception as skipped:
+        return Outcome("skipped", str(skipped), None)
+    return Outcome("returned", "", value)
+
+
 def test_guard_fails_instead_of_skipping_on_github_actions(monkeypatch: pytest.MonkeyPatch) -> None:
     # Given a runner that lacks a prerequisite of the real runtime.
     support = _support(monkeypatch)
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
 
     # When the guard asks for its prerequisites.
+    outcome = _outcome(lambda: support.prerequisites_or_skip(required_in_ci=True))
+
     # Then it fails loudly, because a skip would turn the job green without running the guard.
-    with pytest.raises(pytest.fail.Exception, match="PostgreSQL"):
-        support.prerequisites_or_skip(required_in_ci=True)
+    assert outcome.kind == "failed", outcome
+    assert "PostgreSQL" in outcome.message
 
 
 def test_guard_still_skips_outside_github_actions(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -236,9 +267,53 @@ def test_guard_still_skips_outside_github_actions(monkeypatch: pytest.MonkeyPatc
     support = _support(monkeypatch)
     monkeypatch.delenv("GITHUB_ACTIONS", raising=False)
 
-    # When the guard asks for its prerequisites, then it skips instead of failing.
-    with pytest.raises(pytest.skip.Exception):
-        support.prerequisites_or_skip(required_in_ci=True)
+    # When the guard asks for its prerequisites.
+    outcome = _outcome(lambda: support.prerequisites_or_skip(required_in_ci=True))
+
+    # Then it skips instead of failing.
+    assert outcome.kind == "skipped", outcome
+
+
+def test_guard_fails_on_github_actions_when_the_studio_is_not_built(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # Given a runner with nginx, ffmpeg and a database, but no built Studio.
+    support = _support(monkeypatch)
+    monkeypatch.setattr(support.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setenv("FIRST_SHORT_TEST_DATABASE_URL", "postgresql://example.invalid/db")
+    monkeypatch.setattr(support, "ROOT", tmp_path)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+
+    # When the guard asks for its prerequisites.
+    outcome = _outcome(lambda: support.prerequisites_or_skip(required_in_ci=True))
+
+    # Then it fails loudly here too, because the dist check is a second place where it could skip.
+    assert outcome.kind == "failed", outcome
+    assert "Studio" in outcome.message
+
+
+def test_prerequisites_are_returned_when_the_runtime_can_start(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    # Given nginx, ffmpeg, a database and a built Studio on a GitHub Actions runner.
+    support = _support(monkeypatch)
+    monkeypatch.setattr(support.shutil, "which", lambda name: f"/usr/bin/{name}")
+    monkeypatch.setenv("FIRST_SHORT_TEST_DATABASE_URL", "postgresql://example.invalid/db")
+    monkeypatch.setattr(support, "ROOT", tmp_path)
+    monkeypatch.setenv("GITHUB_ACTIONS", "true")
+    dist = tmp_path / "apps/studio-web/dist"
+    dist.mkdir(parents=True)
+    (dist / "index.html").write_text("<!doctype html>")
+
+    # When the guard asks for its prerequisites.
+    outcome = _outcome(lambda: support.prerequisites_or_skip(required_in_ci=True))
+
+    # Then it neither skips nor fails, so the strict rule cannot turn a healthy runner red.
+    assert outcome.kind == "returned", outcome
+    needs = outcome.value
+    assert (needs.nginx, needs.database_url, needs.studio_dist) == (
+        "/usr/bin/nginx", "postgresql://example.invalid/db", dist,
+    )
 
 
 def test_other_runtime_tests_keep_skipping_on_github_actions(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -246,6 +321,8 @@ def test_other_runtime_tests_keep_skipping_on_github_actions(monkeypatch: pytest
     support = _support(monkeypatch)
     monkeypatch.setenv("GITHUB_ACTIONS", "true")
 
-    # When they ask for the prerequisites, then their behavior is unchanged.
-    with pytest.raises(pytest.skip.Exception):
-        support.prerequisites_or_skip()
+    # When they ask for the prerequisites.
+    outcome = _outcome(support.prerequisites_or_skip)
+
+    # Then their behavior is unchanged.
+    assert outcome.kind == "skipped", outcome
