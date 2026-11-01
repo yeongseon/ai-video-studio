@@ -39,7 +39,8 @@ No new decorative motion.
 Native buttons with disabled state, labelled form fields and tabs, errors with
 role=alert. Keep ProgressDialog focus trapping and focus restoration. Saved
 timeline approval is explicit and disabled until preview and revision load.
-Readiness requires the first image load or video loaded-data event. Approval uses
+Readiness requires the first image load or a decoded video frame at the trimmed
+source target after seeking (within two source frames at 30 fps). Approval uses
 the revision from that preview response; failed media revokes readiness and shows
 reload/access guidance. Onboarding guidance is labelled "For AI generation:".
 Final review retains the existing video card and adds an authenticated download
@@ -54,3 +55,12 @@ Component/API regression tests cover state and wire contracts. Parent lane owns
 real-backend browser verification at responsive sizes. Legacy inline style
 values are retained during extraction; design-token migration is outside this
 functional change. No browser or Lighthouse pass is claimed here.
+
+### Timeline clock fix (#899)
+Primary action: Approve timeline & render. Priorities: visible frame, transport
+position, fidelity limits. Required content: preview stage, Play/Pause, labelled
+seek, time readout, revision, approval and reload/access errors. Left out on
+purpose: extra playback speeds, decorative controls and render-parity claims.
+The logical timeline owns time; video follows trim offsets, holds the clock
+while seeking/buffering and resyncs above 2/30 seconds drift. Hidden pages pause.
+Audio, captions, transitions and possible framing differences are disclosed.

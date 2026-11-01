@@ -81,7 +81,7 @@ PREREQUISITES: Final[dict[str, Callable[[list[str]], bool]]] = {
 }
 
 
-def violations(workflow_text: str) -> list[str]:
+def violations(workflow_text: str, guard_module: str = GUARD) -> list[str]:
     workflow = Workflow.model_validate(yaml.safe_load(workflow_text))
     job = workflow.jobs[JOB]
     found: list[str] = []
@@ -93,9 +93,9 @@ def violations(workflow_text: str) -> list[str]:
         token.startswith("PYTEST_") for command in commands for token in command.tokens
     ):
         found.append("PYTEST_* variables can narrow or silence the guard")
-    guards = [command for command in commands if "pytest" in command.tokens and GUARD in command.tokens]
+    guards = [command for command in commands if "pytest" in command.tokens and guard_module in command.tokens]
     if len(guards) != 1:
-        return [*found, f"{JOB} must run {GUARD} exactly once, found {len(guards)}"]
+        return [*found, f"{JOB} must run {guard_module} exactly once, found {len(guards)}"]
     guard = guards[0]
     arguments = guard.tokens[guard.tokens.index("pytest") + 1:]
     if any(argument in NARROWING_FLAGS or argument.startswith(NARROWING_PREFIXES) for argument in arguments):
@@ -208,6 +208,21 @@ def test_runtime_job_executes_the_guard_without_narrowing_it() -> None:
 
     # Then none applies.
     assert found == []
+
+
+TIMELINE_GUARD: Final = "tests/integration/test_timeline_preview_browser.py"
+
+
+def test_runtime_job_executes_decoded_timeline_browser_guard() -> None:
+    assert violations(CI_WORKFLOW.read_text(), TIMELINE_GUARD) == []
+
+
+@pytest.mark.parametrize("option", ["removed", "-k nothing", "--collect-only", "|| true"])
+def test_timeline_pin_detects_silent_browser_guard_removal(option: str) -> None:
+    workflow = CI_WORKFLOW.read_text()
+    replacement = "" if option == "removed" else f"{TIMELINE_GUARD} {option}"
+    broken = _edit(workflow, TIMELINE_GUARD, replacement)
+    assert violations(broken, TIMELINE_GUARD)
 
 
 @pytest.mark.parametrize("name", BROKEN_WORKFLOWS)
