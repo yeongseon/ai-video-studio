@@ -10,7 +10,7 @@ def test_docs_only_stays_lightweight():
 
 
 def test_frontend_code_uses_standard_test_gate():
-    assert classify_paths(["apps/studio-web/src/components/creator/TimelineRuler.tsx"]) == {
+    assert classify_paths(["apps/studio-web/src/components/ui/Badge.tsx"]) == {
         "code": True, "restore": False, "first_short": False,
         "worker": False, "docker": False,
     }
@@ -48,3 +48,12 @@ def test_mixed_changes_take_union():
         "apps/worker-orchestrator/tasks/task_runner.py",
     ])
     assert gates["code"] and gates["worker"] and gates["first_short"]
+
+
+def test_frontend_media_requires_real_runtime():
+    gates = classify_paths(["apps/studio-web/src/components/creator/TimelinePreview.tsx"])
+    assert gates["code"] and gates["first_short"] and not gates["restore"]
+
+
+def test_frontend_auth_identity_requires_full_gate():
+    assert all(classify_paths(["apps/studio-web/src/api/session.ts"]).values())
