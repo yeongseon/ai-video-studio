@@ -107,3 +107,15 @@ object deletion happens before metadata deletion; a storage deletion failure
 therefore leaves both metadata and accounted capacity intact. Deletion is
 irreversible once the object backend confirms removal, so operators should review
 dry-run output and backups before setting `MEDIA_RETENTION_DRY_RUN=false`.
+
+## Project settings (slice A of #882)
+
+`creator_projects.settings` is nullable JSONB (JSON on SQLite), with no default
+or backfill. NULL preserves historical rendering; effective API resolution is
+read-only and does not write defaults. Both project adapters persist explicit
+typed settings and atomically replace them under workspace scope plus the
+authorized row's `updated_at` compare-and-swap, preserving status/source/title.
+See [the API contract](PROJECT_SETTINGS_API.md) and
+[ADR-008](adr/008-typed-project-settings.md) for the three-slice delivery.
+Approval snapshots/digests and worker consumption are slice B, not implemented
+by this storage change; old run/dispatch/profile contracts remain unchanged.
