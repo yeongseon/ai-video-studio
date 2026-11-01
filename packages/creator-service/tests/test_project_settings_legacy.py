@@ -1,4 +1,5 @@
 from creator_domain.models.output_spec import EncodingProfile, OutputSpec
+from creator_domain.models.project_settings import LEGACY_DEFAULT_ENCODING
 from creator_service.render_profile import RenderProfile
 
 
@@ -13,3 +14,4 @@ def test_legacy_output_when_default_profile_is_resolved() -> None:
         "libx264", "aac", 18, "fast",
     )
     assert encoding.crf != EncodingProfile.standard().crf
+    assert LEGACY_DEFAULT_ENCODING.model_dump(exclude={"name"}) == encoding.model_dump(exclude={"name"})

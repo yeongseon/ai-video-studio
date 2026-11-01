@@ -4,6 +4,8 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from creator_domain.models.project_settings import ProjectSettings
+
 
 class Project(BaseModel):
     model_config: ClassVar[ConfigDict] = ConfigDict(extra="forbid")
@@ -16,6 +18,7 @@ class Project(BaseModel):
     markdown_source: str | None = None
     url_source: str | None = None
     json_script: str | None = None
+    settings: ProjectSettings | None = None
     status: Literal["draft", "active", "completed", "archived", "deleting"] = "draft"
     created_at: datetime
     updated_at: datetime
