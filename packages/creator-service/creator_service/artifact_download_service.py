@@ -8,6 +8,7 @@ from typing import Any, Protocol
 
 from creator_service.artifact_storage_integration import get_artifact_download_path
 from creator_service.object_storage import get_storage_backend
+from creator_service.run_object_deletion import delete_run_object
 
 from .db import execute, fetch_all, fetch_one, transaction
 
@@ -58,7 +59,11 @@ class ArtifactDownloadService:
 
     async def delete_artifacts_for_run(self, run_id: int) -> int:
         artifacts = await fetch_all(
-            "SELECT id, storage_key, storage_provider FROM creator_artifacts WHERE run_id = $1",
+            "SELECT id, COALESCE(NULLIF(storage_key, ''), file_path) AS storage_key, "
+            "storage_provider AS object_storage_provider FROM creator_artifacts WHERE run_id = $1 "
+            "UNION ALL "
+            "SELECT NULL::integer AS id, COALESCE(NULLIF(storage_key, ''), asset_path) AS storage_key, "
+            "storage_provider AS object_storage_provider FROM creator_scene_assets WHERE run_id = $1",
             run_id,
         )
         # Mark all artifacts as deletion-requested
@@ -82,7 +87,8 @@ class ArtifactDownloadService:
                     deleted_ids.append(artifact_id)
                 continue
             try:
-                backend.delete(key)
+                provider = artifact.get("object_storage_provider")
+                delete_run_object(key, provider if isinstance(provider, str) else None, backend)
                 if isinstance(artifact_id, int):
                     deleted_ids.append(artifact_id)
             except Exception as exc:
@@ -117,8 +123,9 @@ class ArtifactDownloadService:
                     elif path.is_dir():
                         path.rmdir()
                 run_dir.rmdir()
-            except Exception:
+            except OSError:
                 logger.exception("Failed deleting local run directory '%s'", run_dir)
+                return 1
         return failed_count
 
 
