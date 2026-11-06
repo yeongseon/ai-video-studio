@@ -57,3 +57,9 @@ def test_frontend_media_requires_real_runtime():
 
 def test_frontend_auth_identity_requires_full_gate():
     assert all(classify_paths(["apps/studio-web/src/api/session.ts"]).values())
+
+
+def test_release_manifest_scripts_feed_restore_drill_and_docker():
+    for path in ["scripts/build_release_manifest.py", "scripts/release_manifest.py"]:
+        gates = classify_paths([path])
+        assert gates["restore"] and gates["docker"], path

@@ -103,6 +103,9 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
         elif path.startswith("scripts/"):
             if "restore" in name or "backup" in name:
                 result["restore"] = True
+            elif "release_manifest" in name:
+                # The restore drill builds and verifies the release manifest.
+                result["restore"] = result["docker"] = True
             elif "release" in name or "cutover" in name or "quickstart" in name:
                 result["docker"] = True
             else:
