@@ -9,6 +9,7 @@ a generic ProviderError, allowing Celery's retry mechanism to handle them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 import asyncio
 from typing import Any
@@ -168,7 +169,10 @@ class _FakeScriptDraft:
         self.structured_script = structured_script
 
 
-def test_generate_audio_preserves_provider_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_generate_audio_preserves_provider_timeout(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(generate_audio_module, "_ARTIFACT_ROOT", str(tmp_path))
     provider = _FakeProvider(error=ProviderTimeoutError("timeout"))
     _patch_registry(monkeypatch, generate_audio_module, _FakeRegistry(_FakeEntry(), provider))
 
@@ -187,7 +191,10 @@ def test_generate_audio_preserves_provider_timeout(monkeypatch: pytest.MonkeyPat
         run_callable(run_id=1)
 
 
-def test_generate_audio_preserves_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_generate_audio_preserves_rate_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(generate_audio_module, "_ARTIFACT_ROOT", str(tmp_path))
     provider = _FakeProvider(error=RateLimitError("rate limited"))
     _patch_registry(monkeypatch, generate_audio_module, _FakeRegistry(_FakeEntry(), provider))
 
@@ -241,7 +248,9 @@ class _FakeAudioServiceForParagraph:
 
 def test_generate_paragraph_audio_preserves_provider_timeout(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
+    monkeypatch.setattr(generate_paragraph_audio_module, "_ARTIFACT_ROOT", str(tmp_path))
     provider = _FakeProvider(error=ProviderTimeoutError("timeout"))
     _patch_registry(
         monkeypatch, generate_paragraph_audio_module, _FakeRegistry(_FakeEntry(), provider)
@@ -266,7 +275,10 @@ def test_generate_paragraph_audio_preserves_provider_timeout(
         run_callable(run_id=1, section_id="s1")
 
 
-def test_generate_paragraph_audio_preserves_rate_limit(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_generate_paragraph_audio_preserves_rate_limit(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(generate_paragraph_audio_module, "_ARTIFACT_ROOT", str(tmp_path))
     provider = _FakeProvider(error=RateLimitError("rate limited"))
     _patch_registry(
         monkeypatch, generate_paragraph_audio_module, _FakeRegistry(_FakeEntry(), provider)
