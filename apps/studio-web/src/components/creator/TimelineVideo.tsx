@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import type { RenderSegment } from "../../api/timelinePreview";
 
 // At 30 fps, resync after two source frames of drift. Never derive timeline time from media.
@@ -28,19 +28,45 @@ export function TimelineVideo(props: Props) {
   latest.current = props;
   const seeking = useRef(false);
   const notified = useRef(false);
+  const seekGeneration = useRef(0);
+  const decodedFrameRequest = useRef<number | null>(null);
+  const fallbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [displayable, setDisplayable] = useState(false);
 
-  const synchronize = () => {
+  const cancelReadinessGate = useCallback(() => {
+    const video = videoRef.current;
+    if (video && decodedFrameRequest.current !== null && "cancelVideoFrameCallback" in video) {
+      video.cancelVideoFrameCallback(decodedFrameRequest.current);
+    }
+    decodedFrameRequest.current = null;
+    if (fallbackTimer.current !== null) clearTimeout(fallbackTimer.current);
+    fallbackTimer.current = null;
+  }, []);
+
+  const synchronize = useCallback(() => {
     const video = videoRef.current;
     if (!video || video.readyState < 1) return;
     const target = sourceTime(latest.current.segment, latest.current.time);
     if (Math.abs(video.currentTime - target) > 0.000001) {
+      seekGeneration.current += 1;
+      cancelReadinessGate();
       seeking.current = true;
       setDisplayable(false);
       latest.current.onHold(true);
       video.pause();
       video.currentTime = target;
     }
+  }, [cancelReadinessGate]);
+
+  const markReady = (video: HTMLVideoElement, target: number, generation: number) => {
+    if (videoRef.current !== video || seekGeneration.current !== generation || seeking.current || video.seeking ||
+      video.readyState < 2 || Math.abs(video.currentTime - target) > MEDIA_DRIFT_SECONDS) return;
+    setDisplayable(true);
+    if (!notified.current) {
+      notified.current = true;
+      latest.current.onReady();
+    }
+    if (!latest.current.playing) latest.current.onHold(false);
   };
 
   const settled = () => {
@@ -51,26 +77,39 @@ export function TimelineVideo(props: Props) {
       synchronize();
       return;
     }
-    setDisplayable(true);
-    if (!notified.current) {
-      notified.current = true;
-      latest.current.onReady();
+    const generation = seekGeneration.current;
+    if (typeof video.requestVideoFrameCallback === "function") {
+      if (decodedFrameRequest.current !== null) return;
+      decodedFrameRequest.current = video.requestVideoFrameCallback((_, metadata) => {
+        decodedFrameRequest.current = null;
+        if (seekGeneration.current !== generation || videoRef.current !== video) return;
+        if (Math.abs(metadata.mediaTime - target) > MEDIA_DRIFT_SECONDS) {
+          settled();
+          return;
+        }
+        markReady(video, target, generation);
+      });
+      return;
     }
-    if (!latest.current.playing) latest.current.onHold(false);
+    if (fallbackTimer.current !== null) return;
+    fallbackTimer.current = setTimeout(() => {
+      fallbackTimer.current = null;
+      markReady(video, target, generation);
+    }, 100);
   };
 
   useLayoutEffect(() => {
     const video = videoRef.current;
     onHold(true);
-    return () => { video?.pause(); onHold(false); };
-  }, [onHold]);
+    return () => { cancelReadinessGate(); video?.pause(); onHold(false); };
+  }, [onHold, cancelReadinessGate]);
 
   useEffect(() => {
     const video = videoRef.current;
     if (!video) return;
     const target = sourceTime(props.segment, props.time);
     if (!props.playing || Math.abs(video.currentTime - target) > MEDIA_DRIFT_SECONDS) synchronize();
-  }, [props.segment, props.time, props.playing]);
+  }, [props.segment, props.time, props.playing, synchronize]);
 
   useEffect(() => {
     const video = videoRef.current;
