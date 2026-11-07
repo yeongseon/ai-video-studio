@@ -12,14 +12,14 @@ async def test_edge_sdk_soft_timeout_is_not_wrapped(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given an Edge SDK save interrupted by the worker soft deadline.
-    calls: list[str] = []
+    calls: list[tuple[str, str | None]] = []
 
     class FakeCommunicate:
         def __init__(self, **kwargs: str) -> None:
             assert kwargs["voice"] == "ko-KR-SunHiNeural"
 
-        async def save(self, path: str, _metadata_path: str | None = None) -> None:
-            calls.append(path)
+        async def save(self, path: str, metadata_path: str | None = None) -> None:
+            calls.append((path, metadata_path))
             raise SoftTimeLimitExceeded()
 
     monkeypatch.setattr("creator_provider.tts.edge_tts_provider.edge_tts.Communicate", FakeCommunicate)
@@ -31,7 +31,7 @@ async def test_edge_sdk_soft_timeout_is_not_wrapped(
             "hello", params={"output_path": str(output)},
         )
     # Then the caller receives the timeout identity and only one save was attempted.
-    assert calls == [str(output)]
+    assert calls == [(str(output), f"{output}.words.jsonl")]
     assert not output.exists()
 
 
