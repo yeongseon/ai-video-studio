@@ -77,3 +77,6 @@ def test_docs_job_runs_documentation_contract_checks() -> None:
     assert "apps/api/tests/test_quickstart_docs.py" in commands
     assert "apps/api/tests/test_quickstart_execution.py" in commands
     assert "apps/api/tests/test_first_short_walkthrough.py" in commands
+    assert "-e packages/creator-domain" in commands
+    assert "-e packages/creator-provider" in commands
+    assert "-e packages/creator-service" in commands

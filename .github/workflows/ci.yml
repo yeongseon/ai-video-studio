@@ -54,6 +54,12 @@ jobs:
           python-version: "3.12"
       - name: Install documentation contract dependencies
         run: python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt
+      - name: Install documentation contract packages
+        run: >-
+          python3 -m pip install -c constraints.txt
+          -e packages/creator-domain
+          -e packages/creator-provider
+          -e packages/creator-service
       - name: Validate documentation contracts
         env:
           PYTHONPATH: apps/api/src:packages/creator-domain:packages/creator-service:packages/creator-provider
