@@ -8,6 +8,8 @@ import anyio
 from celery.exceptions import Ignore, SoftTimeLimitExceeded
 from creator_domain.models.stage import RunStage
 from creator_service import artifact_storage_integration
+from creator_service.artifact_download_service import ArtifactDownloadService
+from creator_service.rejected_scene_cleanup import rejected_scene_cleanup_service
 from creator_service.object_storage import StorageResult, get_storage_backend
 from creator_service.run_service import RunService
 from tasks import task_runner
@@ -89,21 +91,31 @@ class SceneBatch:
         self.local_outputs.discard(path)
         return uploaded
 
-    def discard_rejected_upload(self, target_path: str, uploaded: StorageResult) -> None:
+    async def discard_rejected_upload(self, target_path: str, uploaded: StorageResult) -> None:
         path = Path(target_path)
         expected_key = f"{self.ctx.run_id}/scenes/{path.name}"
         if uploaded.key == expected_key:
+            record_id = await rejected_scene_cleanup_service.record(
+                run_id=self.ctx.run_id,
+                workspace_id=self.ctx.workspace_id,
+                project_id=self.ctx.project_id,
+                storage_key=uploaded.key,
+                local_path=str(path),
+                storage_provider=uploaded.storage_provider,
+                content_type=uploaded.content_type,
+                size_bytes=uploaded.size_bytes,
+                checksum=uploaded.checksum,
+            )
             try:
-                get_storage_backend().delete(uploaded.key)
+                await rejected_scene_cleanup_service.cleanup(record_id, uploaded.key, str(path))
             except SoftTimeLimitExceeded:
                 raise
             except Exception:
-                logger.warning(
-                    "Scene rejected upload cleanup failed",
-                    extra={"run_id": self.ctx.run_id},
+                await ArtifactDownloadService.record_rejected_cleanup_failure(
+                    record_id, uploaded.key,
                 )
-        path.unlink(missing_ok=True)
-        self.local_outputs.discard(path)
+            else:
+                self.local_outputs.discard(path)
 
     async def finish(self, total: int, metadata: dict[str, object]) -> TaskResult:
         status = "failed" if len(self.failures) == total else "partial" if self.failures else "success"

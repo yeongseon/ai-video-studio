@@ -252,7 +252,7 @@ def generate_scene_image(
                         idempotency_key=f"{ctx.task_id}:{target_scene.scene_id}",
                     )
                 except SceneAssetAcceptanceRejected:
-                    batch.discard_rejected_upload(target_path, uploaded)
+                    await batch.discard_rejected_upload(target_path, uploaded)
                     raise Ignore() from None
 
                 scene_result.update(
@@ -285,7 +285,7 @@ def generate_scene_image(
                     await batch.checkpoint()
                 except Ignore:
                     await _visual_asset_service.storage.delete_asset(asset.id)
-                    batch.discard_rejected_upload(target_path, uploaded)
+                    await batch.discard_rejected_upload(target_path, uploaded)
                     batch.results.remove(scene_result)
                     raise
                 except Exception as exc:
