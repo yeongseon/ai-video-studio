@@ -9,6 +9,11 @@ diagram is a configuration/contract template, not a discovered live cluster.
 Hosts, private networks, databases, brokers, singleton scheduling, storage and
 authenticated TLS ingress remain operator-owned resources.
 
+The [secure ACA staging contract](ACA_STAGING_TOPOLOGY.md) specifies the target
+private Azure Container Apps topology and environment matrix for #924. It is a
+design input only: it does not prove that Bicep, Azure resources, images,
+migrations, probes, smoke tests, or rollback exist or have passed.
+
 ## Validated release manifest
 
 Every release and rollback uses one immutable JSON manifest. It binds the
