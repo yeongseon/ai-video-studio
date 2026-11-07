@@ -191,7 +191,7 @@ decision for #925/#926 and must be reviewed with a deny-by-default test.
 | Beat UAMI | Pull Worker digest; read only Beat/database/Redis/storage secrets actually required by scheduled tasks; send telemetry | Provider secrets not used by scheduled tasks, registry push, infrastructure contributor |
 | Migration UAMI | Pull approved API digest; read migration database secret; execute only the separately approved migration | Runtime provider secrets, Blob data, registry push, standing app identity |
 | Candidate publisher (#928) | OIDC-federated push/sign permission scoped to staging repositories | Long-lived client secret, subscription Owner, application runtime access |
-| ACA pull identities | `AcrPull` scoped to the required registry/repositories | `AcrPush` |
+| ACA pull identities | `AcrPull` at registry scope, or ABAC repository-scoped reader roles/conditions if the selected registry uses repository permissions; #925 must validate which authorization mode applies and record the actual role/scope | `AcrPush` |
 
 Key Vault data-plane access is scoped per secret where the platform supports it.
 The Blob role for API/Worker is expected to be `Storage Blob Data Contributor`
@@ -218,12 +218,12 @@ the storage, database, queue, schema, or release contract is shared.
 | `CORS_ORIGINS` | API | Required: exact Studio HTTPS origin | Plain | Comma-separated; no wildcard under `production_checks.py` and `app_factory.py`. |
 | `API_KEY` | Studio only | Required until #894 changes proxy auth | Key Vault | nginx substitutes it and injects `X-API-Key` (`apps/studio-web/Dockerfile`, `nginx.conf.template`); it must correspond to a staging-only DB key. Do not give it to API as configuration. |
 | `ADMIN_API_KEY` | API | Required and at least 16 characters | Key Vault | Protects admin/health detail in `auth.py`, `health.py`, and `routes/admin.py`; staging should meet the production minimum even though current validation is less strict in staging. |
-| `API_HOST`, `API_PORT` | API | Optional; retain image defaults | Plain | `apps/api/Dockerfile` listens on `0.0.0.0:8000` inside the container; exposure is controlled by internal ACA ingress. |
+| *(none)* | API | Port is image-command configuration, not an env variable | n/a | `apps/api/Dockerfile` hard-codes `uvicorn --host 0.0.0.0 --port 8000`; `API_HOST`/`API_PORT` are not read anywhere, so setting them has no effect. The ACA `targetPort` must equal 8000; exposure is controlled by internal ACA ingress. |
 | `MAX_MEMORY_MB` | API, Worker | Required to match ACA limits | Plain | Parsed in API lifecycle/worker Celery startup; defaults differ (1024/4096). ACA cgroup limit is authoritative. |
 | `MAX_CPU_PERCENT`, `ENABLE_PROCESS_RESOURCE_GUARD` | API | Optional; initially disabled unless tested | Plain | `apps/api/src/shorts_api/lifecycle.py`; guard is opt-in. ACA scaling/limits remain primary. |
 | `SOURCE_SHA` | API, Worker, Beat, Studio, migration | Required, image-embedded reviewed SHA | Plain/image | Dockerfiles and release identity routes; must match manifest. |
 | `API_IMAGE_DIGEST` | API, migration | Required diagnostic identity | Plain/release adapter | `routes/release_identity.py`; platform-observed digest remains authoritative per `DEPLOYMENT.md`. |
-| `WORKER_IMAGE_DIGEST` | Worker, Beat | Required diagnostic identity | Plain/release adapter | `worker_release_identity.py`; active worker records expire if not refreshed. |
+| `WORKER_IMAGE_DIGEST` | Worker | Required diagnostic identity | Plain/release adapter | `worker_release_identity.py` publishes only on Celery `worker_ready` and `heartbeat_sent`; active worker records expire if not refreshed. **Beat does not currently publish release identity** (it is not a worker); a Beat identity mechanism is not wired and is assigned to #926/#927. Keep Beat singleton evidence separate from worker identity records. |
 | Studio API upstream | Studio | Required, internal API FQDN | Plain | **Not currently an env variable**: nginx hard-codes `http://api:8000`. #926 must add a narrowly filtered substitution without expanding nginx `$` variables. |
 
 ### Storage, retention, queue, and cost
@@ -267,11 +267,13 @@ and provider implementations. Empty keys disable those providers.
 
 | Name | Service | Staging requirement | Secret/source | Validation |
 |---|---|---|---|---|
-| `OTEL_ENABLED` | API, Worker, Beat | Required: `true` after endpoint validation | Plain | Truthy parser in `telemetry.py`; initialization is process/fork safe. |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | API, Worker, Beat | Required when telemetry enabled | Plain/private endpoint | `telemetry.py`; must resolve to the approved collector/Application Insights path. |
-| `OTEL_SERVICE_NAME` | API, Worker, Beat | Required distinct names | Plain | `telemetry.py`; do not use one default for all three workloads. |
-| `OTEL_ENVIRONMENT`, `OTEL_SERVICE_VERSION` | API, Worker, Beat | Required: staging and manifest/source version | Plain | `telemetry.py`. |
-| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | API, Worker, Beat | Optional reviewed sampling | Plain | OpenTelemetry SDK configuration; bound cost while preserving deployment traces. |
+| `OTEL_ENABLED` | API, Worker | Required: `true` after endpoint validation | Plain | Truthy parser in `telemetry.py`; initialization is process/fork safe. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | API, Worker | Required when telemetry enabled | Plain/private endpoint | `telemetry.py`; must resolve to the approved collector/Application Insights path. |
+| `OTEL_SERVICE_NAME` | API, Worker | Required distinct names | Plain | `telemetry.py`; do not use one default for all three workloads. |
+| `OTEL_ENVIRONMENT`, `OTEL_SERVICE_VERSION` | API, Worker | Required: staging and manifest/source version | Plain | `telemetry.py`. |
+| `OTEL_TRACES_SAMPLER`, `OTEL_TRACES_SAMPLER_ARG` | API, Worker | Optional reviewed sampling | Plain | OpenTelemetry SDK configuration; bound cost while preserving deployment traces. |
+
+**Beat telemetry is not currently wired.** `celery_app.py` initializes telemetry from `worker_process_init`, which the Beat process does not emit, so OTEL variables set on Beat have no effect today. Defining a Beat startup/instrumentation mechanism is assigned to #926/#927; until then Beat observability relies on platform logs and the singleton-evidence checks described above.
 | `WORKER_TOPOLOGY_PROBE_ENABLED`, `WORKER_TOPOLOGY_PRODUCTION_HARD_TIME_LIMIT`, `WORKER_TOPOLOGY_ALLOW_PRODUCTION_TIMEOUT_OVERRIDE`, `WORKER_TOPOLOGY_EVIDENCE_DIR`, `WORKER_TOPOLOGY_PROVIDER_URL` | Worker | Forbidden in normal staging revisions | None | Test-only switches in worker topology probe code; #927 may use an explicitly isolated verification revision/job, never the steady-state app. |
 | `NGINX_ENVSUBST_FILTER` | Studio | Required to remain narrowly scoped | Plain/image | `apps/studio-web/Dockerfile` currently limits substitution to `API_KEY`; #926 must include only the new upstream variable without expanding nginx runtime variables. |
 
