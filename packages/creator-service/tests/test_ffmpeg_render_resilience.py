@@ -1,7 +1,7 @@
 """Tests for FFmpegService.render() resilience — two-pass concat demuxer approach.
 
 Covers:
-- Non-zero exit + valid output → accepted (atomic rename)
+- Non-zero exit + valid output → rejected
 - Non-zero exit + zero-byte file → rejected
 - Non-zero exit + small corrupt file → rejected
 - Non-zero exit + no file created → rejected
@@ -30,11 +30,21 @@ from creator_service.ffmpeg_service import (
     _validate_durations,
 )
 from creator_service.render_profile import RenderProfile
+from creator_service.media_integrity import MediaExpectation, validate_media
+
+
+def make_media(path: Path, *, duration: float = 5, audio: bool = False) -> None:
+    cmd = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+           f"testsrc2=size=128x128:rate=30:duration={duration}"]
+    if audio:
+        cmd += ["-f", "lavfi", "-i", f"sine=frequency=440:duration={duration}"]
+    cmd += ["-c:v", "libx264", "-threads", "1", "-preset", "ultrafast", "-c:a", "aac", str(path)]
+    subprocess.run(cmd, check=True, capture_output=True, timeout=30)
 
 
 @pytest.fixture
 def ffmpeg_service() -> FFmpegService:
-    return FFmpegService(profile=RenderProfile.default())
+    return FFmpegService(profile=RenderProfile(width=128, height=128, preset="ultrafast"))
 
 
 @pytest.fixture
@@ -91,7 +101,7 @@ class TestRenderSuccess:
         def fake_ffmpeg(cmd, timeout):
             target = Path(cmd[-1])
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"\x00" * 50_000)  # valid-sized file
+            make_media(target)
             return _make_completed(0)
 
         with patch("creator_service.ffmpeg_service._run_ffmpeg", side_effect=fake_ffmpeg):
@@ -104,7 +114,7 @@ class TestRenderSuccess:
 class TestRenderNonZeroWithValidOutput:
     """FFmpeg concat pass exits non-zero but output is valid (verified by ffprobe)."""
 
-    def test_accepts_valid_output_on_nonzero_exit(
+    def test_rejects_valid_output_on_nonzero_exit(
         self, ffmpeg_service: FFmpegService, render_input: RenderInput, tmp_path: Path
     ):
         output_path = tmp_path / "output" / "video.mp4"
@@ -121,15 +131,10 @@ class TestRenderNonZeroWithValidOutput:
             return _make_completed(-12, "ENOMEM during filter cleanup")
 
         with patch("creator_service.ffmpeg_service._run_ffmpeg", side_effect=fake_ffmpeg):
-            with patch(
-                "creator_service.ffmpeg_service.subprocess.run",
-                return_value=_make_probe_result(30.0),
-            ):
-                result = ffmpeg_service.render(render_input, output_path)
-
-        assert result == output_path
-        assert output_path.exists()
-        assert output_path.stat().st_size == 50_000
+            with pytest.raises(RuntimeError, match="FFmpeg render failed"):
+                ffmpeg_service.render(render_input, output_path)
+        assert not output_path.exists()
+        assert list(output_path.parent.iterdir()) == []
 
 
 class TestRenderNonZeroWithInvalidOutput:
@@ -414,7 +419,7 @@ class TestAudioAndSubtitleBranch:
         def fake_ffmpeg(cmd, timeout):
             target = Path(cmd[-1])
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"\x00" * 50_000)
+            make_media(target, audio=True)
             if _is_concat_call(cmd):
                 concat_cmds.append(cmd)
             return _make_completed(0)
@@ -452,7 +457,7 @@ class TestAudioAndSubtitleBranch:
         def fake_ffmpeg(cmd, timeout):
             target = Path(cmd[-1])
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"\x00" * 50_000)
+            make_media(target)
             if _is_concat_call(cmd):
                 concat_cmds.append(cmd)
             return _make_completed(0)
@@ -481,7 +486,7 @@ class TestCleanup:
         def fake_ffmpeg(cmd, timeout):
             target = Path(cmd[-1])
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"\x00" * 50_000)
+            make_media(target)
             return _make_completed(0)
 
         with patch("creator_service.ffmpeg_service._run_ffmpeg", side_effect=fake_ffmpeg):
@@ -544,50 +549,51 @@ class TestProbeOutputValid:
 
     def test_valid_duration(self, ffmpeg_service: FFmpegService, tmp_path: Path):
         video = tmp_path / "test.mp4"
-        video.write_bytes(b"\x00" * 100)
-
-        with patch(
-            "creator_service.ffmpeg_service.subprocess.run", return_value=_make_probe_result(45.5)
-        ):
-            assert ffmpeg_service._probe_output_valid(video) is True
+        make_media(video)
+        validate_media(video, MediaExpectation(ffmpeg_service.profile, 5, False))
 
     def test_zero_duration(self, ffmpeg_service: FFmpegService, tmp_path: Path):
         video = tmp_path / "test.mp4"
-        video.write_bytes(b"\x00" * 100)
+        make_media(video)
 
         with patch(
-            "creator_service.ffmpeg_service.subprocess.run", return_value=_make_probe_result(0.0)
+            "creator_service.media_integrity.run_validation", return_value=_make_probe_result(0.0)
         ):
-            assert ffmpeg_service._probe_output_valid(video) is False
+            with pytest.raises(RuntimeError):
+                validate_media(video, MediaExpectation(ffmpeg_service.profile, 5, False))
 
     def test_probe_failure(self, ffmpeg_service: FFmpegService, tmp_path: Path):
         video = tmp_path / "test.mp4"
-        video.write_bytes(b"\x00" * 100)
+        make_media(video)
 
         with patch(
-            "creator_service.ffmpeg_service.subprocess.run", return_value=_make_probe_failure()
+            "creator_service.media_integrity.run_validation", return_value=_make_probe_failure()
         ):
-            assert ffmpeg_service._probe_output_valid(video) is False
+            with pytest.raises(RuntimeError):
+                validate_media(video, MediaExpectation(ffmpeg_service.profile, 5, False))
 
     def test_probe_timeout(self, ffmpeg_service: FFmpegService, tmp_path: Path):
+        from creator_service.media_validation_process import ValidationProcessError
         video = tmp_path / "test.mp4"
-        video.write_bytes(b"\x00" * 100)
+        make_media(video)
 
         with patch(
-            "creator_service.ffmpeg_service.subprocess.run",
-            side_effect=subprocess.TimeoutExpired(cmd=["ffprobe"], timeout=15),
+            "creator_service.media_integrity.run_validation",
+            side_effect=ValidationProcessError("validation_timeout"),
         ):
-            assert ffmpeg_service._probe_output_valid(video) is False
+            with pytest.raises(RuntimeError):
+                validate_media(video, MediaExpectation(ffmpeg_service.profile, 5, False))
 
     def test_invalid_duration_string(self, ffmpeg_service: FFmpegService, tmp_path: Path):
         video = tmp_path / "test.mp4"
-        video.write_bytes(b"\x00" * 100)
+        make_media(video)
 
         result = subprocess.CompletedProcess(
             args=["ffprobe"], returncode=0, stdout="N/A\n", stderr=""
         )
-        with patch("creator_service.ffmpeg_service.subprocess.run", return_value=result):
-            assert ffmpeg_service._probe_output_valid(video) is False
+        with patch("creator_service.media_integrity.run_validation", return_value=result):
+            with pytest.raises(RuntimeError):
+                validate_media(video, MediaExpectation(ffmpeg_service.profile, 5, False))
 
 
 class TestMultiSceneRender:
@@ -614,7 +620,7 @@ class TestMultiSceneRender:
         def fake_ffmpeg(cmd, timeout):
             target = Path(cmd[-1])
             target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_bytes(b"\x00" * 50_000)
+            make_media(target, duration=20.0)
             if _is_segment_call(cmd):
                 segment_calls["count"] += 1
             return _make_completed(0)

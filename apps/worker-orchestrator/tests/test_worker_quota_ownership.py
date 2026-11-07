@@ -2,7 +2,8 @@ import pytest
 from pathlib import Path
 from unittest.mock import AsyncMock
 from billiard.exceptions import SoftTimeLimitExceeded
-from creator_provider.exceptions import ProviderTimeoutError
+from creator_provider.exceptions import ProviderError, ProviderTimeoutError
+from creator_service.media_integrity import MediaIntegrityError
 from creator_service.postgres_task_tracking_storage import PostgresTaskTrackingStorage
 from creator_service.postgres_usage_storage import PostgresUsageStorage
 from creator_service.usage_service import InMemoryUsageStorage, UsageService
@@ -45,7 +46,8 @@ def test_worker_context_resolves_only_actual_reservation_owner(
     assert not run_in_worker_loop(quota_case.reserve_owned(1, "llm", "new-task"))
 
 
-@pytest.mark.parametrize("failure", [SoftTimeLimitExceeded(), RuntimeError("failure")])
+@pytest.mark.parametrize("failure", [SoftTimeLimitExceeded(), RuntimeError("failure"),
+    ProviderError("Provider failed video render"), MediaIntegrityError("duration completeness", expected=5.429)])
 def test_terminal_failure_cancels_only_claimed_owner(
     runner_case: RunnerCase, quota_case: UsageService, failure: Exception,
 ) -> None:
@@ -112,7 +114,8 @@ def test_lost_timeout_claim_does_not_settle_successor_reservation(
     settle.assert_not_awaited()
 
 
-@pytest.mark.parametrize("failure", [SoftTimeLimitExceeded(), RuntimeError("failure")])
+@pytest.mark.parametrize("failure", [SoftTimeLimitExceeded(), RuntimeError("failure"),
+    ProviderError("Provider failed video render"), MediaIntegrityError("duration completeness", expected=5.429)])
 def test_replacement_is_not_admitted_after_unknown_provider_outcome(
     runner_case: RunnerCase,
     quota_case: UsageService,
