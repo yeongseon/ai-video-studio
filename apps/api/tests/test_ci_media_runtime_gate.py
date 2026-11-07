@@ -12,6 +12,10 @@ import pytest
 import yaml
 from pydantic import BaseModel, Field
 
+# Main pushes always run the job; a PR runs it only when the impact classifier selects it.
+ALLOWED_JOB_CONDITION: Final = (
+    "${{ github.event_name != 'pull_request' || needs.impact.outputs.first_short == 'true' }}"
+)
 ROOT: Final = Path(__file__).resolve().parents[3]
 CI_WORKFLOW: Final = ROOT / ".github/workflows/ci.yml"
 JOB: Final = "first-short-runtime"
@@ -85,8 +89,8 @@ def violations(workflow_text: str, guard_module: str = GUARD) -> list[str]:
     workflow = Workflow.model_validate(yaml.safe_load(workflow_text))
     job = workflow.jobs[JOB]
     found: list[str] = []
-    if job.condition != "" or job.continue_on_error is not False:
-        found.append(f"{JOB} must be unconditional and fail-fast")
+    if job.condition not in ("", ALLOWED_JOB_CONDITION) or job.continue_on_error is not False:
+        found.append(f"{JOB} must be unconditional on main (impact-gated on PRs only) and fail-fast")
     commands = _commands(job)
     environments = (workflow.env, job.env, *(step.env for step in job.steps))
     if any(name.startswith("PYTEST_") for env in environments for name in env) or any(
@@ -194,7 +198,7 @@ BROKEN_WORKFLOWS: Final[dict[str, Break]] = {
     ),
     "guard step made conditional": Break(_in_guard_step(PUSH_ONLY), "exactly once"),
     "guard step allowed to fail": Break(_in_guard_step("        continue-on-error: true\n"), "exactly once"),
-    "whole job made conditional": Break(((RUNTIME_JOB, RUNTIME_JOB + "    " + PUSH_ONLY.lstrip()),), "unconditional"),
+    "whole job made conditional": Break(((f"    if: {ALLOWED_JOB_CONDITION}\n", "    " + PUSH_ONLY.lstrip()),), "unconditional"),
     "guard step run from another directory": Break(_in_guard_step(OTHER_DIRECTORY), "repository root"),
 }
 
