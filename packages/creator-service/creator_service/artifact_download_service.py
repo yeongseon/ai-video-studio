@@ -2,17 +2,23 @@ from __future__ import annotations
 
 import logging
 import os
+import hashlib
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
 from creator_service.artifact_storage_integration import get_artifact_download_path
+from creator_service.confined_directory_deletion import delete_direct_child_tree
 from creator_service.object_storage import get_storage_backend
 from creator_service.run_object_deletion import delete_run_object
 
 from .db import execute, fetch_all, fetch_one, transaction
 
 logger = logging.getLogger(__name__)
+
+
+def _key_fingerprint(key: str) -> str:
+    return hashlib.sha256(key.encode()).hexdigest()[:16]
 
 
 class ArtifactDownloadStorageBackend(Protocol):
@@ -93,9 +99,23 @@ class ArtifactDownloadService:
                     deleted_ids.append(artifact_id)
             except Exception as exc:
                 failed_count += 1
-                logger.exception("Failed deleting artifact key '%s' for run_id=%s", key, run_id)
+                provider_name = provider if isinstance(provider, str) else "configured"
+                fingerprint = _key_fingerprint(key)
+                logger.error(
+                    "Artifact deletion failed",
+                    extra={
+                        "run_id": run_id,
+                        "storage_provider": provider_name,
+                        "key_fingerprint": fingerprint,
+                        "error_type": type(exc).__name__,
+                    },
+                )
                 if isinstance(artifact_id, int):
-                    await self._record_delete_failure(artifact_id, exc)
+                    await self._record_delete_failure(
+                        artifact_id,
+                        provider_name,
+                        fingerprint,
+                    )
 
         if deleted_ids:
             await execute(
@@ -114,23 +134,20 @@ class ArtifactDownloadService:
             return failed_count
 
         artifact_root = Path(os.getenv("ARTIFACT_ROOT", "data/artifacts"))
-        run_dir = artifact_root / str(run_id)
-        if run_dir.is_dir():
-            try:
-                for path in sorted(run_dir.rglob("*"), reverse=True):
-                    if path.is_file() or path.is_symlink():
-                        path.unlink(missing_ok=True)
-                    elif path.is_dir():
-                        path.rmdir()
-                run_dir.rmdir()
-            except OSError:
-                logger.exception("Failed deleting local run directory '%s'", run_dir)
-                return 1
+        try:
+            delete_direct_child_tree(artifact_root, str(run_id))
+        except OSError:
+            logger.exception("Failed deleting local run directory for run_id=%s", run_id)
+            return 1
         return failed_count
 
 
     @staticmethod
-    async def _record_delete_failure(artifact_id: int, exc: Exception) -> None:
+    async def _record_delete_failure(
+        artifact_id: int,
+        provider: str,
+        fingerprint: str,
+    ) -> None:
         """Persist failure metadata for a single artifact."""
         await execute(
             "UPDATE creator_artifacts "
@@ -139,7 +156,7 @@ class ArtifactDownloadService:
             "    delete_retry_count = COALESCE(delete_retry_count, 0) + 1 "
             "WHERE id = $1",
             artifact_id,
-            str(exc)[:500],
+            f"provider={provider}; fingerprint={fingerprint}",
         )
 
     async def sweep_expired(self, batch_size: int = 500) -> int:
@@ -235,10 +252,20 @@ class ArtifactDownloadService:
                 backend.delete(key)
                 deleted_ids.append(artifact_id)
             except Exception as exc:
-                logger.exception(
-                    "Retry failed for artifact id=%s key='%s'", artifact_id, key
+                provider = "configured"
+                fingerprint = _key_fingerprint(key)
+                logger.error(
+                    "Artifact deletion retry failed",
+                    extra={
+                        "artifact_id": artifact_id,
+                        "storage_provider": provider,
+                        "key_fingerprint": fingerprint,
+                        "error_type": type(exc).__name__,
+                    },
                 )
-                failed_updates.append((artifact_id, str(exc)[:500]))
+                failed_updates.append(
+                    (artifact_id, f"provider={provider}; fingerprint={fingerprint}")
+                )
 
         # Phase 3: Update DB in a short transaction.
         async with transaction() as conn:

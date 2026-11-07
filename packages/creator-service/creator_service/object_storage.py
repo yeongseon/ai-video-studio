@@ -63,7 +63,8 @@ class StorageDeletionError(RuntimeError):
     key: str
 
     def __str__(self) -> str:
-        return f"object storage deletion failed for {self.key}"
+        fingerprint = hashlib.sha256(self.key.encode()).hexdigest()[:16]
+        return f"object storage deletion failed; fingerprint={fingerprint}"
 
 
 @dataclass
