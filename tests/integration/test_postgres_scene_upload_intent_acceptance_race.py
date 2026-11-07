@@ -53,16 +53,6 @@ async def _seed_intent(database: DeletionDatabase, local_path: Path) -> None:
     )
 
 
-def _bind_storage_pool(
-    database: DeletionDatabase,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    async def get_pool() -> asyncpg.Pool:
-        return database.pool
-
-    monkeypatch.setattr(postgres_visual_asset_storage, "get_pool", get_pool)
-
-
 async def _asset_row(database: DeletionDatabase) -> dict[str, object]:
     intent_id = await database.pool.fetchval(
         "SELECT id FROM creator_artifacts WHERE run_id = 956 AND storage_key = $1",
@@ -80,8 +70,29 @@ async def _asset_row(database: DeletionDatabase) -> dict[str, object]:
     }
 
 
-def _run_acceptance(row: dict[str, object]) -> dict[str, object]:
-    return asyncio.run(PostgresVisualAssetStorage().save_asset(row))
+def _run_acceptance(
+    row: dict[str, object],
+    database_url: str,
+    schema: str,
+) -> dict[str, object]:
+    async def save() -> dict[str, object]:
+        async with asyncpg.create_pool(
+            database_url,
+            min_size=1,
+            max_size=1,
+            server_settings={"search_path": schema},
+        ) as pool:
+            async def get_pool() -> asyncpg.Pool:
+                return pool
+
+            original_get_pool = postgres_visual_asset_storage.get_pool
+            postgres_visual_asset_storage.get_pool = get_pool
+            try:
+                return await PostgresVisualAssetStorage().save_asset(row)
+            finally:
+                postgres_visual_asset_storage.get_pool = original_get_pool
+
+    return asyncio.run(save())
 
 
 async def _blocking_pids(database: DeletionDatabase, pid: int) -> list[int]:
@@ -114,7 +125,6 @@ async def _wait_for_query_pid(database: DeletionDatabase, query_fragment: str) -
 @pytest.mark.asyncio
 async def test_retry_first_rejects_acceptance_without_committing_dangling_scene(
     deletion_database: DeletionDatabase,
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     # Given retry owns the aged intent and is blocked inside provider deletion.
@@ -124,7 +134,6 @@ async def test_retry_first_rejects_acceptance_without_committing_dangling_scene(
     local_path.write_bytes(b"race-local")
     await _seed_intent(deletion_database, local_path)
     asset_row = await _asset_row(deletion_database)
-    _bind_storage_pool(deletion_database, monkeypatch)
     retry_pid = 0
 
     @contextlib.asynccontextmanager
@@ -147,7 +156,12 @@ async def test_retry_first_rejects_acceptance_without_committing_dangling_scene(
     with ThreadPoolExecutor(max_workers=2) as executor:
         retry_future = executor.submit(asyncio.run, retry())
         assert backend.delete_entered.wait(timeout=10)
-        acceptance_future: Future[dict[str, object]] = executor.submit(_run_acceptance, asset_row)
+        acceptance_future: Future[dict[str, object]] = executor.submit(
+            _run_acceptance,
+            asset_row,
+            deletion_database.url,
+            deletion_database.schema,
+        )
         acceptance_pid = await _wait_for_query_pid(deletion_database, "creator_artifacts")
         assert retry_pid in await _blocking_pids(deletion_database, acceptance_pid)
 
@@ -172,7 +186,6 @@ async def test_retry_first_rejects_acceptance_without_committing_dangling_scene(
 @pytest.mark.asyncio
 async def test_acceptance_first_keeps_bytes_and_retry_cannot_claim_intent(
     deletion_database: DeletionDatabase,
-    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     # Given acceptance starts while scene insertion is blocked after intent ownership.
@@ -182,7 +195,6 @@ async def test_acceptance_first_keeps_bytes_and_retry_cannot_claim_intent(
     local_path.write_bytes(b"race-local")
     await _seed_intent(deletion_database, local_path)
     asset_row = await _asset_row(deletion_database)
-    _bind_storage_pool(deletion_database, monkeypatch)
     blocker = await asyncpg.connect(
         deletion_database.url,
         server_settings={"search_path": deletion_database.schema},
@@ -193,7 +205,12 @@ async def test_acceptance_first_keeps_bytes_and_retry_cannot_claim_intent(
 
     try:
         with ThreadPoolExecutor(max_workers=2) as executor:
-            acceptance_future = executor.submit(_run_acceptance, asset_row)
+            acceptance_future = executor.submit(
+                _run_acceptance,
+                asset_row,
+                deletion_database.url,
+                deletion_database.schema,
+            )
             acceptance_pid = await _wait_for_query_pid(
                 deletion_database,
                 "INSERT INTO creator_scene_assets",
