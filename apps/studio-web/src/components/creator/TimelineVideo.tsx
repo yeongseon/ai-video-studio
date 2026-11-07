@@ -45,13 +45,14 @@ export function TimelineVideo(props: Props) {
 
   const markReady = useCallback((video: HTMLVideoElement, target: number, generation: number) => {
     if (videoRef.current !== video || seekGeneration.current !== generation || seeking.current || video.seeking ||
-      video.readyState < 2 || Math.abs(video.currentTime - target) > MEDIA_DRIFT_SECONDS) return;
+      video.readyState < 2 || Math.abs(video.currentTime - target) > MEDIA_DRIFT_SECONDS) return false;
     setDisplayable(true);
     if (!notified.current) {
       notified.current = true;
       latest.current.onReady();
     }
     if (!latest.current.playing) latest.current.onHold(false);
+    return true;
   }, []);
 
   const observeDecodedTarget = useCallback((video: HTMLVideoElement, target: number, generation: number) => {
@@ -63,7 +64,7 @@ export function TimelineVideo(props: Props) {
         observeDecodedTarget(video, target, generation);
         return;
       }
-      markReady(video, target, generation);
+      if (!markReady(video, target, generation)) observeDecodedTarget(video, target, generation);
     });
   }, [markReady]);
 

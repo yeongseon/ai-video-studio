@@ -121,6 +121,25 @@ it("withholds readiness until a callback observes the decoded trim target", asyn
   expect(onReady).toHaveBeenCalledWith(17);
 });
 
+it("keeps observing when the target frame arrives before browser seeking settles", async () => {
+  // Given the first target frame is decoded while Chromium still reports an active seek.
+  const onReady = vi.fn();
+  renderTrimmedVideo(onReady);
+  const video = await settledVideo();
+  Object.defineProperty(video, "seeking", { configurable: true, value: true });
+
+  // When that callback arrives before the browser settles, then no readiness is published yet.
+  presentDecodedFrame(video, 2);
+  expect(onReady).not.toHaveBeenCalled();
+
+  // When Chromium later presents the target without emitting another media event.
+  Object.defineProperty(video, "seeking", { configurable: true, value: false });
+  presentDecodedFrame(video, 2);
+
+  // Then the continued frame observation releases readiness safely.
+  expect(onReady).toHaveBeenCalledWith(17);
+});
+
 it("ignores a decoded-frame callback from an obsolete seek generation", async () => {
   // Given readiness is waiting on the first seek generation.
   const onReady = vi.fn();
