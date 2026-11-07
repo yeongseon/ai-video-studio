@@ -29,12 +29,18 @@ remain:
 ```bash
 AZURE_BICEP_DISABLE_UPDATE_CHECK=true az bicep build \
   --file infra/azure/staging/main.bicep --outfile /tmp/staging-main.json
-python3 -m pytest tests/test_azure_staging_bicep.py -q
+python3 -m pytest 'tests/test_azure_staging_bicep*.py' -q
 ```
 
 No `az deployment`, `azd`, what-if, login, subscription lookup, or Azure resource
 operation is part of this validation. A real what-if and deployment are explicitly
 outside #925 and require the approvals documented in `docs/DEPLOYMENT.md`.
+
+Secret resources and their per-secret `Key Vault Secrets User` assignments are
+deferred to #926; this foundation deliberately grants no whole-vault runtime
+access. #927 must verify ACR ABAC condition acceptance, diagnostic category
+availability, Redis Entra data access, and the tenant's Azure Cache for Redis
+creation eligibility in the approved subscription before deployment.
 
 ## API version sources
 
@@ -57,3 +63,8 @@ publishes no stable template API.
 - <https://learn.microsoft.com/azure/templates/microsoft.dbforpostgresql/flexibleservers>
 - <https://learn.microsoft.com/azure/templates/microsoft.cache/redis>
 - <https://learn.microsoft.com/azure/templates/microsoft.insights/diagnosticsettings>
+- <https://learn.microsoft.com/azure/container-registry/container-registry-rbac-abac-repository-permissions>
+- <https://learn.microsoft.com/azure/container-apps/migrate-logs-azure-monitor>
+- <https://learn.microsoft.com/azure/azure-monitor/reference/supported-logs/microsoft-app-managedenvironments-logs>
+- <https://learn.microsoft.com/azure/container-registry/monitor-container-registry-reference>
+- <https://learn.microsoft.com/azure/azure-cache-for-redis/retirement-faq>
