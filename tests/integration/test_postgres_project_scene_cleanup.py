@@ -1,6 +1,7 @@
 """Real FK cascades must not erase the only references to stored scene bytes."""
 
 import importlib
+import os
 from pathlib import Path
 from typing import assert_never
 
@@ -137,26 +138,75 @@ async def test_unlink_failure_retains_retry_path_when_legacy_file_has_no_storage
     backend.upload("1/untracked.tmp", b"scratch")
     downloads = importlib.import_module("creator_service.artifact_download_service")
     monkeypatch.setattr(downloads, "get_storage_backend", lambda: backend)
-    original_unlink = Path.unlink
+    original_unlink = os.unlink
 
-    def fail_untracked(path: Path, missing_ok: bool = False) -> None:
-        if path.name == "untracked.tmp":
+    def fail_untracked(path: str, *, dir_fd: int | None = None) -> None:
+        if path == "untracked.tmp":
             raise PermissionError("private filesystem detail")
-        original_unlink(path, missing_ok=missing_ok)
+        original_unlink(path, dir_fd=dir_fd)
 
-    monkeypatch.setattr(Path, "unlink", fail_untracked)
+    monkeypatch.setattr(os, "unlink", fail_untracked)
     first = await deletion_client.delete("/api/creator/projects/1")
     assert first.status_code == 503, first.text
     assert "private filesystem" not in first.text
     assert await deletion_database.pool.fetchval("SELECT status FROM creator_projects WHERE id=1") == "deleting"
     assert await deletion_database.pool.fetchval("SELECT count(*) FROM creator_scene_assets WHERE run_id=1") == 1
     assert backend.download_bytes("1/untracked.tmp") == b"scratch"
-    monkeypatch.setattr(Path, "unlink", original_unlink)
+    monkeypatch.setattr(os, "unlink", original_unlink)
     # When local permissions recover and the owner retries.
     retry = await deletion_client.delete("/api/creator/projects/1")
     # Then both the cascade and directory cleanup finish.
     assert retry.status_code == 200, retry.text
     assert not (tmp_path / "1").exists()
+
+
+@pytest.mark.asyncio
+async def test_symlinked_run_root_fails_closed_without_deleting_outside(
+    deletion_client: httpx.AsyncClient,
+    deletion_database: DeletionDatabase,
+    tmp_path: Path,
+) -> None:
+    await deletion_database.pool.execute(
+        "INSERT INTO creator_runs (id, project_id, workspace_id) VALUES (1, 1, 1)",
+    )
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    protected = outside / "protected.txt"
+    protected.write_text("keep")
+    (tmp_path / "1").symlink_to(outside, target_is_directory=True)
+
+    response = await deletion_client.delete("/api/creator/projects/1")
+
+    assert response.status_code == 503, response.text
+    assert protected.read_text() == "keep"
+    assert await deletion_database.pool.fetchval(
+        "SELECT status FROM creator_projects WHERE id=1",
+    ) == "deleting"
+
+
+@pytest.mark.asyncio
+async def test_nested_symlinks_are_unlinked_without_deleting_targets(
+    deletion_client: httpx.AsyncClient,
+    deletion_database: DeletionDatabase,
+    tmp_path: Path,
+) -> None:
+    await deletion_database.pool.execute(
+        "INSERT INTO creator_runs (id, project_id, workspace_id) VALUES (1, 1, 1)",
+    )
+    run_dir = tmp_path / "1"
+    run_dir.mkdir()
+    outside = tmp_path / "outside"
+    outside.mkdir()
+    protected = outside / "protected.txt"
+    protected.write_text("keep")
+    (run_dir / "file-link").symlink_to(protected)
+    (run_dir / "dir-link").symlink_to(outside, target_is_directory=True)
+
+    response = await deletion_client.delete("/api/creator/projects/1")
+
+    assert response.status_code == 200, response.text
+    assert protected.read_text() == "keep"
+    assert not run_dir.exists()
 
 
 @pytest.mark.asyncio
