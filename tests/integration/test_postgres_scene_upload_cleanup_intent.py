@@ -198,6 +198,8 @@ async def test_child_exit_after_upload_leaves_durable_intent_for_exact_retry(
 import asyncio
 import os
 from datetime import datetime, timezone
+import asyncpg
+from creator_service import db
 from tasks.scene_batch_lifecycle import SceneBatch
 from tasks.task_runner import TaskContext
 
@@ -208,6 +210,13 @@ async def checkpoint(self):
     return None
 
 async def main():
+    pool = await asyncpg.create_pool(
+        os.environ["DATABASE_URL"],
+        server_settings={"search_path": os.environ["TEST_SCHEMA"]},
+    )
+    async def get_pool():
+        return pool
+    db.get_pool = get_pool
     SceneBatch.checkpoint = checkpoint
     target = os.environ["SCENE_TARGET"]
     batch = SceneBatch(
@@ -230,7 +239,7 @@ asyncio.run(main())
     env = {
         **os.environ,
         "DATABASE_URL": deletion_database.url,
-        "PGOPTIONS": f"-c search_path={deletion_database.schema}",
+        "TEST_SCHEMA": deletion_database.schema,
         "PYTHONPATH": os.pathsep.join((
             str(Path(__file__).resolve().parents[2] / "apps/worker-orchestrator"),
             os.environ.get("PYTHONPATH", ""),
