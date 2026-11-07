@@ -22,14 +22,45 @@ or structured script and produces a video with:
 
 The pipeline is stage-based with human-in-the-loop review at each step.
 
-> **Current support:** Short-form creation and editing are the primary supported workflows. Longer target durations and landscape output are not evidence that the full long-form workflow is complete. Track long-form delivery in [#882–#885](https://github.com/yeongseon/short-form-studio/issues/882) and repository-name migration in [#886](https://github.com/yeongseon/short-form-studio/issues/886).
+> **Current support:** Only `content_format=short` is accepted. A custom target may
+> be any finite number greater than zero, but that is an input intent rather than a
+> promise that the render will achieve that duration. Longer targets and landscape
+> geometry do not make the end-to-end workflow long-form capable. Resumable
+> long-form rendering and 10–20-minute acceptance remain open in
+> [#884](https://github.com/yeongseon/short-form-studio/issues/884),
+> [#885](https://github.com/yeongseon/short-form-studio/issues/885), and the
+> [#905 tracking roadmap](https://github.com/yeongseon/short-form-studio/issues/905).
+
+### Validated duration and output contracts
+
+- The Studio and onboarding API offer duration presets **15, 30, 45, 60, and 90
+  seconds**, plus Custom. The approximately-three-minute message is guidance, not
+  validation. Custom values are rejected only when they are non-numeric,
+  non-finite, or not greater than zero; there is no hard maximum.
+- Typed project settings accept `short_vertical` (1080×1920), `short_square`
+  (1080×1080), and `short_landscape` (1920×1080), all at 30 fps. Encoding choices
+  are `preview` (CRF 28/`veryfast`), `standard` (CRF 23/`fast`), and
+  `high_quality` (CRF 18/`slow`), using H.264/AAC defaults.
+- `legacy_default` is a read-only compatibility result for projects without a
+  settings row (vertical, CRF 18/`fast`); it is not a selectable alias for
+  `standard`. The persisted choices do **not yet** drive approval/render output,
+  so current legacy renders remain vertical until the deferred approval-snapshot
+  and worker propagation work lands.
+
+Evidence: `packages/creator-domain/creator_domain/models/duration_preset.py`,
+`packages/creator-domain/creator_domain/models/project_settings.py`,
+`packages/creator-domain/creator_domain/models/output_spec.py`,
+`apps/studio-web/src/__tests__/IdeaFormDuration.test.tsx`,
+`packages/creator-service/tests/test_output_preset_ffmpeg.py` (square and
+landscape across all three selectable encodings), and
+[`docs/adr/008-typed-project-settings.md`](docs/adr/008-typed-project-settings.md).
 
 ### Product direction
 
 **Short-first product, long-form-ready architecture.** Short form is a product
 constraint, not a core domain constraint. We focus on real assets, scene editing,
 a simple timeline, AI editing, and easy OSS setup. Long-form UI, chapters, sequences,
-and chunk rendering are not current deliverables; the repository name stays unchanged.
+and chunk rendering are not current deliverables.
 
 - [Product direction](docs/PRODUCT_DIRECTION.md) — scope, target experience, and success criteria
 - [Roadmap](docs/ROADMAP.md) — planned P0–P3 work and milestone acceptance criteria

@@ -23,13 +23,29 @@ The target audience makes YouTube Shorts, Instagram Reels, TikTok videos, produc
 shorts, story shorts, knowledge and educational shorts, promotional shorts, and
 social clips.
 
-- Planned duration choices: **15, 30, 45, 60, 90 seconds, and Custom**.
-- The initial UI should promote videos up to approximately **3 minutes**.
-- This is a product presentation boundary, not a hard duration limit in the core.
-  Longer durations are not promoted, and generic models do not promise tested
-  long-form rendering performance or support.
-- Planned outputs: vertical 9:16, square 1:1, and landscape 16:9. A 60-second
-  landscape social video is still short-form work.
+- Shipped duration choices are **15, 30, 45, 60, 90 seconds, and Custom**.
+- The UI guides Custom users toward approximately **3 minutes or less**, but hard
+  validation only requires a finite value greater than zero. It has no maximum.
+- Target duration is intent, not guaranteed achieved render duration. Longer
+  values remain valid at the domain/settings boundary but do not establish tested
+  long-form rendering performance or product support.
+- Typed settings accept vertical 9:16 (`short_vertical`), square 1:1
+  (`short_square`), and landscape 16:9 (`short_landscape`). They are persisted;
+  square and landscape are real-FFmpeg tested across selectable encodings, but
+  settings are not yet propagated through approval to current project
+  renders; the compatibility render remains vertical. A landscape social video
+  is not, by geometry alone, long-form work.
+- Selectable encoding profiles are `preview`, `standard`, and `high_quality`.
+  `legacy_default` is a read-only result for projects without stored settings and
+  is not equivalent to `standard`.
+
+These statements are backed by `packages/creator-domain/creator_domain/models/project_settings.py`,
+`packages/creator-domain/creator_domain/models/output_spec.py`,
+`apps/studio-web/src/__tests__/IdeaFormDuration.test.tsx`, and
+`packages/creator-service/tests/test_output_preset_ffmpeg.py`. End-to-end
+long-form support remains tracked by [#884](https://github.com/yeongseon/short-form-studio/issues/884),
+[#885](https://github.com/yeongseon/short-form-studio/issues/885), and
+[#905](https://github.com/yeongseon/short-form-studio/issues/905).
 
 Focus on **real assets, scene editing, a simple timeline, AI editing, and easy OSS setup**.
 
