@@ -10,18 +10,21 @@ import pytest
 
 from creator_domain.exceptions import ChunkManifestValidationError
 from creator_domain.models import (
+    ApprovalIdentity,
     ChunkManifest,
+    ChunkPlanningInput,
     ChunkPolicy,
     EncodingProfile,
     OutputSpec,
     RenderPlan,
     RenderSegment,
     RenderSegmentKind,
+    SourceAssetIdentity,
     plan_chunks,
 )
 
 
-def _plan(durations: list[Fraction], fps: int = 30) -> RenderPlan:
+def _render_plan(durations: list[Fraction], fps: int = 30) -> RenderPlan:
     start = Fraction()
     segments: list[RenderSegment] = []
     for index, duration in enumerate(durations):
@@ -33,11 +36,22 @@ def _plan(durations: list[Fraction], fps: int = 30) -> RenderPlan:
                 duration_seconds=float(duration),
             )
         )
-        start += duration
+        start += Fraction.from_float(float(duration)).limit_denominator(1_000_000_000)
     return RenderPlan(
         segments=segments,
         output_spec=OutputSpec(width=1920, height=1080, fps=fps),
         encoding_profile=EncodingProfile.standard(),
+    )
+
+
+def _plan(durations: list[Fraction], fps: int = 30) -> ChunkPlanningInput:
+    return ChunkPlanningInput(
+        render_plan=_render_plan(durations, fps),
+        approval=ApprovalIdentity(timeline_id="timeline-test", revision=1),
+        source_assets=tuple(
+            SourceAssetIdentity(asset_id=index + 1, content_revision=1)
+            for index in range(len(durations))
+        ),
     )
 
 
