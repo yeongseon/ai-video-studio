@@ -1,83 +1,35 @@
 from __future__ import annotations
 
 import os
-import subprocess
-from datetime import datetime, timezone
-from functools import partial
 from pathlib import Path
-from typing import Final, Literal
+from typing import Final
 
 import anyio
 import pytest
 from creator_domain.models import (
-    EncodingProfile,
-    MediaAsset,
-    MediaOrigin,
-    MediaType,
     OutputSpec,
-    RenderPlan,
-    Timeline,
 )
-from creator_service.ffmpeg_service import FFmpegService, RenderInput
 from creator_service.media_integrity import MediaExpectation, validate_media
-from creator_service.render_profile import RenderProfile
-from creator_service.render_segments import render_input_from_plan
-from creator_service.timeline_compiler import compile_timeline_to_render_plan
-from pydantic import BaseModel, ConfigDict
+from creator_service.stage_review_service import (
+    InMemoryStageReviewStorage,
+    StageReviewService,
+)
+from tasks.render_materializer import RenderSourceError
+from tasks.timeline_render import render_saved_timeline
 from tasks.legacy_render_contract import build_render_plan
-from tasks.timeline_render import TimelineFFmpegService
+from tests.render_output_parity_support import (
+    RenderedAdapterPaths,
+    render_through_production_adapters,
+)
+from tests.render_output_probe_support import audio as _audio
+from tests.render_output_probe_support import frame_luma as _frame_luma
+from tests.render_output_probe_support import probe as _probe
+from tests.render_output_probe_support import run_ffmpeg as _run
+from tests.render_output_probe_support import video as _video
 
 _DURATION: Final = 1.0
 _FPS: Final = 30
 _SAMPLE_RATE: Final = 48_000
-
-
-class _VideoStream(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    codec_type: Literal["video"]
-    codec_name: str
-    profile: str
-    width: int
-    height: int
-    pix_fmt: str
-    r_frame_rate: str
-    avg_frame_rate: str
-    nb_frames: int
-    bit_rate: int
-
-
-class _AudioStream(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    codec_type: Literal["audio"]
-    codec_name: str
-    sample_rate: int
-    channels: int
-
-
-class _Format(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    format_name: str
-    duration: float
-
-
-class _Probe(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    streams: tuple[_VideoStream | _AudioStream, ...]
-    format: _Format
-
-
-class _AssetResolver:
-    def __init__(self, asset: MediaAsset) -> None:
-        self._asset = asset
-
-    async def get_asset(self, asset_id: int, workspace_id: int) -> MediaAsset | None:
-        if asset_id == self._asset.id and workspace_id == self._asset.workspace_id:
-            return self._asset
-        return None
 
 
 def _portable_validate_media(path: Path, expectation: MediaExpectation) -> None:
@@ -85,71 +37,10 @@ def _portable_validate_media(path: Path, expectation: MediaExpectation) -> None:
     if hasattr(os, "waitid"):
         validate_media(path, expectation)
 
-
-def _run(command: list[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(
-        command,
-        capture_output=True,
-        check=True,
-        text=True,
-        timeout=60,
-    )
-
-
-def _probe(path: Path) -> _Probe:
-    result = _run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-print_format",
-            "json",
-            "-show_streams",
-            "-show_format",
-            str(path),
-        ]
-    )
-    return _Probe.model_validate_json(result.stdout)
-
-
-def _video(probe: _Probe) -> _VideoStream:
-    return next(stream for stream in probe.streams if isinstance(stream, _VideoStream))
-
-
-def _audio(probe: _Probe) -> _AudioStream:
-    return next(stream for stream in probe.streams if isinstance(stream, _AudioStream))
-
-
-def _frame_luma(path: Path, *, subtitle_region: bool = False) -> float:
-    video_filter = "crop=400:180:(iw-400)/2:ih-480,scale=1:1,format=gray"
-    if not subtitle_region:
-        video_filter = "scale=1:1,format=gray"
-    result = subprocess.run(
-        [
-            "ffmpeg",
-            "-v",
-            "error",
-            "-i",
-            str(path),
-            "-frames:v",
-            "1",
-            "-vf",
-            video_filter,
-            "-f",
-            "rawvideo",
-            "-",
-        ],
-        capture_output=True,
-        check=True,
-        timeout=60,
-    )
-    return float(result.stdout[0])
-
-
 @pytest.fixture(scope="module")
 def rendered_paths(
     tmp_path_factory: pytest.TempPathFactory,
-) -> tuple[Path, Path, RenderPlan, RenderProfile]:
+) -> RenderedAdapterPaths:
     monkeypatch = pytest.MonkeyPatch()
     monkeypatch.setattr("creator_service.ffmpeg_service.validate_media", _portable_validate_media)
     root = tmp_path_factory.mktemp("render-output-parity")
@@ -195,70 +86,29 @@ def rendered_paths(
         "MarginV, Effect, Text\n"
         "Dialogue: 0,0:00:00.00,0:00:00.90,Default,,0,0,0,,PARITY\n"
     )
-    profile = RenderProfile.default()
-    legacy_plan = build_render_plan([image], [_DURATION], None, profile)
-    legacy = root / "legacy.mp4"
-    FFmpegService(profile).render(
-        render_input_from_plan(legacy_plan, audio_path=audio, subtitle_path=subtitles),
-        legacy,
-    )
-
-    asset = MediaAsset(
-        id=1,
-        workspace_id=1,
-        project_id=1,
-        media_type=MediaType.IMAGE,
-        origin=MediaOrigin.UPLOADED,
-        storage_key=str(image),
-        created_at=datetime.now(timezone.utc),
-    )
-    timeline = Timeline.model_validate(
-        {
-            "id": "saved-timeline",
-            "project_id": 1,
-            "revision": 1,
-            "segments": [
-                {
-                    "id": "segment-1",
-                    "scene_id": "scene-1",
-                    "asset_id": 1,
-                    "timeline_start_seconds": 0.0,
-                    "duration_seconds": _DURATION,
-                }
-            ],
-        }
-    )
-    plan = anyio.run(
-        partial(
-            compile_timeline_to_render_plan,
-            timeline,
-            workspace_id=1,
-            output_spec=OutputSpec.short_vertical(),
-            encoding_profile=EncodingProfile.from_render_profile(profile),
-            asset_resolver=_AssetResolver(asset),
-        )
-    )
-    timeline_output = root / "timeline.mp4"
-    TimelineFFmpegService(plan, profile).render(
-        RenderInput(
-            image_paths=[image],
-            audio_path=audio,
-            subtitle_path=subtitles,
-            scene_durations=[_DURATION],
-            scene_transitions=[segment.transition or "cut" for segment in plan.segments],
-        ),
-        timeline_output,
+    rendered = anyio.run(
+        render_through_production_adapters,
+        root,
+        monkeypatch,
+        image,
+        audio,
+        subtitles,
     )
     monkeypatch.undo()
-    return legacy, timeline_output, plan, profile
+    return rendered
 
 
 def test_generated_script_and_saved_timeline_output_facts_match(
-    rendered_paths: tuple[Path, Path, RenderPlan, RenderProfile],
+    rendered_paths: RenderedAdapterPaths,
 ) -> None:
     # Given: the same image, narration, subtitles, duration, and shorts_default profile
     # rendered through the generated-script and saved-Timeline adapters.
-    legacy, timeline, plan, profile = rendered_paths
+    legacy, timeline, profile = (
+        rendered_paths.legacy,
+        rendered_paths.timeline,
+        rendered_paths.profile,
+    )
+    plan = build_render_plan([Path("scene.png")], [_DURATION], None, profile)
     probes = (_probe(legacy), _probe(timeline))
 
     # When: their real MP4 artifacts are inspected with ffprobe.
@@ -286,13 +136,23 @@ def test_generated_script_and_saved_timeline_output_facts_match(
         (sound.codec_name, sound.sample_rate, sound.channels) == ("aac", _SAMPLE_RATE, 2)
         for sound in audio
     )
+    assert rendered_paths.legacy_metadata == {
+        "render_profile": "shorts_default",
+        "storage_provider": "local",
+        "storage_key": "1/render/output.mp4",
+    }
+    assert rendered_paths.timeline_metadata == {
+        "render_profile": "shorts_default",
+        "storage_provider": "local",
+        "storage_key": "2/render/output.mp4",
+    }
 
 
 def test_generated_script_and_saved_timeline_burn_the_same_subtitle(
-    rendered_paths: tuple[Path, Path, RenderPlan, RenderProfile],
+    rendered_paths: RenderedAdapterPaths,
 ) -> None:
     # Given/When: both paths burn the same visible caption over a white source.
-    legacy, timeline, _, _ = rendered_paths
+    legacy, timeline = rendered_paths.legacy, rendered_paths.timeline
     legacy_luma = _frame_luma(legacy, subtitle_region=True)
     timeline_luma = _frame_luma(timeline, subtitle_region=True)
 
@@ -302,12 +162,78 @@ def test_generated_script_and_saved_timeline_burn_the_same_subtitle(
 
 
 def test_divergence_generated_script_fades_while_saved_timeline_defaults_to_cut(
-    rendered_paths: tuple[Path, Path, RenderPlan, RenderProfile],
+    rendered_paths: RenderedAdapterPaths,
 ) -> None:
     # Characterization owned by #922/#923: an absent transition reaches the legacy
     # profile's fade default, while saved-Timeline rendering substitutes an explicit cut.
-    legacy, timeline, _, _ = rendered_paths
+    legacy, timeline = rendered_paths.legacy, rendered_paths.timeline
     legacy_luma = _frame_luma(legacy)
     timeline_luma = _frame_luma(timeline)
 
     assert legacy_luma + 20 < timeline_luma
+
+
+def test_saved_timeline_rejects_stale_approved_revision(
+    rendered_paths: RenderedAdapterPaths,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: the already-rendered production context is changed to claim a stale approval.
+    stale_context = rendered_paths.timeline_context
+    stale_context.run = {
+        "metadata": {"render_source": "timeline", "render_timeline_revision": 2}
+    }
+    monkeypatch.setattr(
+        "creator_service.timeline_service.timeline_service",
+        rendered_paths.timeline_service,
+    )
+    monkeypatch.setattr(
+        "creator_service.stage_review_service.stage_review_service",
+        rendered_paths.review_service,
+    )
+
+    async def record_stale_approval() -> None:
+        await rendered_paths.review_service.record_approval(
+            rendered_paths.timeline_context.run_id,
+            "TIMELINE_REVIEW",
+            notes='{"timeline_id":"saved-timeline","revision":2}',
+        )
+
+    anyio.run(record_stale_approval)
+
+    # When/Then: the production adapter rejects it before materialization or FFmpeg.
+    with pytest.raises(RenderSourceError, match="revision changed after approval"):
+        anyio.run(
+            render_saved_timeline,
+            stale_context,
+            rendered_paths.profile,
+            tmp_path / "stale.mp4",
+        )
+
+
+def test_saved_timeline_requires_persisted_approval(
+    rendered_paths: RenderedAdapterPaths,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given: the saved revision is current but its persisted approval is absent.
+    monkeypatch.setattr(
+        "creator_service.timeline_service.timeline_service",
+        rendered_paths.timeline_service,
+    )
+    monkeypatch.setattr(
+        "creator_service.stage_review_service.stage_review_service",
+        StageReviewService(InMemoryStageReviewStorage()),
+    )
+    rendered_paths.timeline_context.run = {
+        "metadata": {"render_source": "timeline", "render_timeline_revision": 1}
+    }
+
+    # When/Then: the production adapter fails before materialization or FFmpeg.
+    with pytest.raises(RenderSourceError, match="valid persisted approval"):
+        anyio.run(
+            render_saved_timeline,
+            rendered_paths.timeline_context,
+            rendered_paths.profile,
+            tmp_path / "unapproved.mp4",
+        )
