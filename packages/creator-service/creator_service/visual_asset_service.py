@@ -11,10 +11,20 @@ VisualPlanService and ScriptService.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Awaitable, Callable
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
 from creator_domain.models.visual_asset import VisualAsset
+
+
+@dataclass(frozen=True, slots=True)
+class SceneAssetAcceptanceRejected(RuntimeError):
+    run_id: int
+
+    def __str__(self) -> str:
+        return f"scene asset acceptance rejected for run {self.run_id}"
 
 # ---------------------------------------------------------------------------
 # Storage Protocol
@@ -71,11 +81,15 @@ class VisualAssetStorageBackend(Protocol):
 class InMemoryVisualAssetStorage:
     """In-memory storage with atomic per-(run_id, scene_id) version allocation."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        acceptance_guard: Callable[[int], Awaitable[bool]] | None = None,
+    ) -> None:
         self._assets: list[dict[str, Any]] = []
         self._next_id = 1
         self._scene_locks: dict[tuple[int, str], asyncio.Lock] = {}
         self._by_idempotency_key: dict[str, dict[str, Any]] = {}
+        self._acceptance_guard = acceptance_guard
 
     async def save_asset(self, row: dict[str, Any]) -> dict[str, Any]:
         run_id = row["run_id"]
@@ -83,6 +97,8 @@ class InMemoryVisualAssetStorage:
         key = (run_id, scene_id)
         lock = self._scene_locks.setdefault(key, asyncio.Lock())
         async with lock:
+            if self._acceptance_guard is not None and not await self._acceptance_guard(run_id):
+                raise SceneAssetAcceptanceRejected(run_id=run_id)
             idem_key = row.get("idempotency_key")
             if isinstance(idem_key, str) and idem_key in self._by_idempotency_key:
                 return dict(self._by_idempotency_key[idem_key])
@@ -289,7 +305,21 @@ def _create_storage() -> VisualAssetStorageBackend:
         from .postgres_visual_asset_storage import PostgresVisualAssetStorage
 
         return PostgresVisualAssetStorage()
-    return InMemoryVisualAssetStorage()
+
+    async def accepts(run_id: int) -> bool:
+        from .project_service import project_service
+        from .run_service import run_service
+
+        run = await run_service.storage.get_run(run_id)
+        if run is None or run.get("status") == "cancelled":
+            return False
+        project_id = run.get("project_id")
+        if not isinstance(project_id, int):
+            return False
+        project = await project_service.storage.fetch_project(project_id)
+        return project is not None and project.get("status") != "deleting"
+
+    return InMemoryVisualAssetStorage(acceptance_guard=accepts)
 
 
 visual_asset_service = VisualAssetService(_create_storage())

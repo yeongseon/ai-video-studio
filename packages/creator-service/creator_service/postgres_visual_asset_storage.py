@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .db import fetch_all, fetch_one, get_pool
+from .visual_asset_service import SceneAssetAcceptanceRejected
 
 
 class PostgresVisualAssetStorage:
@@ -22,6 +23,22 @@ class PostgresVisualAssetStorage:
 
         pool = await get_pool()
         async with pool.acquire() as connection, connection.transaction():
+            acceptance = await connection.fetchrow(
+                """
+                SELECT p.status AS project_status, r.status AS run_status
+                FROM creator_runs r
+                JOIN creator_projects p ON p.id = r.project_id
+                WHERE r.id = $1
+                FOR SHARE OF p, r
+                """,
+                run_id,
+            )
+            if (
+                acceptance is None
+                or acceptance["project_status"] == "deleting"
+                or acceptance["run_status"] == "cancelled"
+            ):
+                raise SceneAssetAcceptanceRejected(run_id=run_id)
             await connection.execute(
                 "SELECT pg_advisory_xact_lock($1::int, hashtext($2))",
                 run_id,
