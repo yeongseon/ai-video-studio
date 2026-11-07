@@ -13,6 +13,7 @@ class PostgresVisualAssetStorage:
         scene_id = row["scene_id"]
         is_active = bool(row.get("is_active", False))
         idempotency_key = row.get("idempotency_key")
+        upload_intent_id = row.get("upload_intent_id")
 
         if isinstance(idempotency_key, str):
             existing = await fetch_one(
@@ -40,6 +41,21 @@ class PostgresVisualAssetStorage:
                 or acceptance["run_status"] == "cancelled"
             ):
                 raise SceneAssetAcceptanceRejected(run_id=run_id)
+            if isinstance(upload_intent_id, int):
+                # Lock order is project/run FOR SHARE, then upload intent, then scene advisory lock.
+                # Project/run deletion takes its fence before artifact cleanup, so this order
+                # prevents acceptance and deletion from forming a lock cycle.
+                claimed_intent = await connection.fetchval(
+                    "DELETE FROM creator_artifacts "
+                    "WHERE id = $1 AND run_id = $2 AND storage_key = $3 "
+                    "AND metadata_json = $4 RETURNING id",
+                    upload_intent_id,
+                    run_id,
+                    row.get("storage_key"),
+                    SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
+                )
+                if claimed_intent is None:
+                    raise SceneAssetAcceptanceRejected(run_id=run_id)
             await connection.execute(
                 "SELECT pg_advisory_xact_lock($1::int, hashtext($2))",
                 run_id,
@@ -103,7 +119,11 @@ class PostgresVisualAssetStorage:
                     "SELECT * FROM creator_scene_assets WHERE idempotency_key = $1",
                     idempotency_key,
                 )
-            if saved is not None and isinstance(row.get("storage_key"), str):
+            if (
+                upload_intent_id is None
+                and saved is not None
+                and isinstance(row.get("storage_key"), str)
+            ):
                 await connection.execute(
                     "DELETE FROM creator_artifacts "
                     "WHERE run_id = $1 AND storage_key = $2 "

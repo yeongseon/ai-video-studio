@@ -8,6 +8,10 @@ from creator_service.artifact_download_service import (
     InMemoryArtifactDownloadStorage,
 )
 from creator_service.rejected_scene_cleanup import SCENE_UPLOAD_CLEANUP_INTENT_MARKER
+from creator_service.visual_asset_service import (
+    InMemoryVisualAssetStorage,
+    SceneAssetAcceptanceRejected,
+)
 
 
 class AcceptedSceneConnection:
@@ -80,6 +84,34 @@ async def test_retry_stale_intent_preserves_accepted_scene_in_memory_path(
     assert deleted_keys == []
     assert local_path.read_bytes() == b"accepted"
     assert any("DELETE FROM creator_artifacts" in query for query, _args in connection.queries)
+
+
+@pytest.mark.asyncio
+async def test_intent_backed_in_memory_acceptance_rejects_lost_ownership() -> None:
+    # Given an upload whose cleanup intent was already claimed by retry.
+    async def accept_run(_run_id: int) -> bool:
+        return True
+
+    async def claim_intent(_intent_id: int, _storage_key: str) -> bool:
+        return False
+
+    storage = InMemoryVisualAssetStorage(
+        acceptance_guard=accept_run,
+        upload_intent_claim=claim_intent,
+    )
+
+    # When intent-backed acceptance attempts to save the uploaded key.
+    with pytest.raises(SceneAssetAcceptanceRejected):
+        await storage.save_asset({
+            "run_id": 17,
+            "scene_id": "lost-intent",
+            "asset_path": "/tmp/lost-intent.png",
+            "storage_key": "17/scenes/lost-intent.png",
+            "upload_intent_id": 701,
+        })
+
+    # Then no dangling scene version is recorded.
+    assert await storage.list_assets_by_run(17) == []
 
 
 @pytest.mark.asyncio

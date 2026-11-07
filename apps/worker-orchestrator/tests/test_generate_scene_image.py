@@ -178,6 +178,7 @@ class FakeVisualAssetService:
         storage_key: str | None = None,
         is_active: bool | None = None,
         idempotency_key: str | None = None,
+        upload_intent_id: int | None = None,
     ) -> FakeVisualAsset:
         call_data = {
             "run_id": run_id,

@@ -250,6 +250,7 @@ def generate_scene_image(
                         storage_key=uploaded.key,
                         is_active=is_active,
                         idempotency_key=f"{ctx.task_id}:{target_scene.scene_id}",
+                        upload_intent_id=batch.upload_cleanup_intents.get(uploaded.key),
                     )
                 except SceneAssetAcceptanceRejected:
                     await batch.discard_rejected_upload(target_path, uploaded)
