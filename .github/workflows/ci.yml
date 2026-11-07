@@ -255,7 +255,48 @@ jobs:
           PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/test_project_settings_rollback.py apps/api/tests/test_project_settings_migration.py packages/creator-service/tests/test_project_settings_storage.py -v --basetemp=/tmp/project-settings-runtime
           python3 -m pytest packages/creator-service/tests/test_stale_pending_reconciler_fencing.py packages/creator-service/tests/test_reconciler_cleanup_claims.py packages/creator-service/tests/test_broker_recovery_resume.py -v --basetemp=/tmp/reconciler-fencing-runtime
           PYTHONPATH=tests/integration python3 -m pytest packages/creator-service/tests/test_postgres_media_asset_storage.py packages/creator-service/tests/test_temp_byte_lease.py tests/integration/test_first_short_runtime.py tests/integration/test_studio_proxy_runtime.py tests/integration/test_authorized_media_runtime.py -v --basetemp=/tmp/first-short-runtime
-          PYTHONPATH=tests/integration python3 -m pytest tests/integration/test_studio_upload_browser.py tests/integration/test_timeline_preview_browser.py -v --basetemp=/tmp/studio-browser-runtime
+          set +e
+          browser_test="tests/integration/test_timeline_preview_browser.py::test_first_trimmed_video_approval_only_exposes_the_decoded_trim_start"
+          normal_passed=0
+          normal_failed=0
+          for iteration in $(seq 1 30); do
+            echo "NORMAL iteration ${iteration}/30"
+            if PYTHONPATH=tests/integration python3 -m pytest "$browser_test" -v -s --basetemp="/tmp/studio-browser-normal-${iteration}"; then
+              normal_passed=$((normal_passed + 1))
+              echo "NORMAL iteration ${iteration}/30: PASS"
+            else
+              normal_failed=$((normal_failed + 1))
+              echo "NORMAL iteration ${iteration}/30: FAIL"
+            fi
+          done
+          echo "NORMAL TALLY: passed=${normal_passed} failed=${normal_failed} total=30"
+
+          contention_pids=()
+          for _ in $(seq 1 "$(getconf _NPROCESSORS_ONLN)"); do
+            yes > /dev/null &
+            contention_pids+=("$!")
+          done
+          contended_passed=0
+          contended_failed=0
+          for iteration in $(seq 1 30); do
+            echo "CONTENDED iteration ${iteration}/30"
+            if PYTHONPATH=tests/integration python3 -m pytest "$browser_test" -v -s --basetemp="/tmp/studio-browser-contended-${iteration}"; then
+              contended_passed=$((contended_passed + 1))
+              echo "CONTENDED iteration ${iteration}/30: PASS"
+            else
+              contended_failed=$((contended_failed + 1))
+              echo "CONTENDED iteration ${iteration}/30: FAIL"
+            fi
+          done
+          kill "${contention_pids[@]}"
+          wait "${contention_pids[@]}" 2>/dev/null
+          echo "CONTENDED TALLY: passed=${contended_passed} failed=${contended_failed} total=30"
+          total_failed=$((normal_failed + contended_failed))
+          echo "FINAL TALLY: normal_passed=${normal_passed} normal_failed=${normal_failed} contended_passed=${contended_passed} contended_failed=${contended_failed} total_failed=${total_failed}"
+          if [ "$total_failed" -ne 0 ]; then
+            exit 1
+          fi
+          set -e
           PYTHONPATH=tests/integration python3 -m pytest tests/integration/test_postgres_project_deletion.py tests/integration/test_postgres_project_deletion_cascade.py tests/integration/test_postgres_project_scene_cleanup.py tests/integration/test_postgres_project_deletion_barrier.py tests/integration/test_postgres_scene_acceptance_fence.py tests/integration/test_postgres_artifact_deletion_retry_fence.py tests/integration/test_postgres_project_deletion_fail_closed.py tests/integration/test_project_status_migration.py tests/integration/test_postgres_enum_check_drift.py tests/integration/test_project_deletion_prerequisites.py -v --basetemp=/tmp/project-deletion-runtime
           python3 -m pytest packages/creator-service/tests/test_spend_reservations.py packages/creator-service/tests/test_owned_quota_lifecycle.py packages/creator-service/tests/test_postgres_spend_lifecycle.py packages/creator-service/tests/test_task_claim_ownership.py -v --basetemp=/tmp/spend-lifecycle-runtime
           PYTHONPATH=apps/worker-orchestrator python3 -m pytest apps/worker-orchestrator/tests/test_terminal_validation_guards.py apps/worker-orchestrator/tests/test_terminal_validation_failure.py apps/worker-orchestrator/tests/test_visual_plan_terminal_validation.py -v --basetemp=/tmp/terminal-validation-runtime
