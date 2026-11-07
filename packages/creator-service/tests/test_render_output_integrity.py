@@ -207,6 +207,46 @@ def test_validator_rejects_untrusted_probe_or_decoder_results(tmp_path: Path, ru
         validate_media(fixture, MediaExpectation(RenderProfile(width=128, height=128), 5, True))
 
 
+@pytest.mark.parametrize("validation_call", ["ffprobe", "ffmpeg"])
+@pytest.mark.parametrize("error_type", [FileNotFoundError, PermissionError, OSError])
+def test_spawn_failure_rejects_render_without_publication_or_residue(
+    tmp_path: Path,
+    service: FFmpegService,
+    validation_call: str,
+    error_type: type[OSError],
+) -> None:
+    # Given: encoding completed, but a validation executable cannot be spawned.
+    fixture = tmp_path / "encoded.mp4"
+    fixture.write_bytes(b"x" * 2048)
+    output = tmp_path / "output" / "video.mp4"
+
+    def run(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        if cmd[0] == validation_call:
+            raise error_type("validation executable unavailable")
+        if cmd[0] == "ffprobe":
+            document = {
+                "streams": [{
+                    "codec_type": "video", "codec_name": "h264", "width": 128,
+                    "height": 128, "avg_frame_rate": "30/1", "r_frame_rate": "30/1",
+                    "duration": 5, "nb_frames": 150,
+                }],
+                "format": {"duration": 5, "size": 2048},
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(document), "")
+        return subprocess.CompletedProcess(cmd, 0, "0, frame\n", "")
+
+    # When
+    with patch("creator_service.media_integrity.run_validation", side_effect=run), pytest.raises(
+        MediaIntegrityError,
+    ) as error:
+        copy_render(service, fixture, output)
+
+    # Then
+    assert error.value.rule == "validation_unavailable"
+    assert not output.exists()
+    assert list(output.parent.iterdir()) == []
+
+
 @pytest.mark.parametrize("duration", [0.4, 5.03])
 def test_validator_accepts_frame_and_audio_rounding(tmp_path: Path, duration: float) -> None:
     # Given: real output rounded by the encoder, within documented plan tolerance.

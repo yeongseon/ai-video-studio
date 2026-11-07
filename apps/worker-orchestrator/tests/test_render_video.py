@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,6 +11,7 @@ import shutil
 import subprocess
 from unittest.mock import Mock
 from creator_service.ffmpeg_service import FFmpegService
+from creator_service.media_integrity import MediaIntegrityError
 from creator_service.render_profile import RenderProfile
 from creator_service.quality_profile import get_quality_profile
 from tasks import render_video as render_video_module
@@ -598,6 +600,83 @@ def test_render_video_partial_output_never_published(
     assert renders.create_calls == []
     assert storage.calls == [(204, {"current_stage": "FAILED", "status": "failed"})]
     assert list((tmp_path / "204" / "render").iterdir()) == []
+
+
+@pytest.mark.parametrize("validation_call", ["ffprobe", "ffmpeg"])
+@pytest.mark.parametrize("error_type", [FileNotFoundError, PermissionError, OSError])
+def test_render_video_validation_spawn_failure_never_records_success(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    no_pacing_split: None,
+    validation_call: str,
+    error_type: type[OSError],
+) -> None:
+    # Given: encoding succeeds without real media, but validation cannot spawn its tool.
+    fixture = tmp_path / "encoded.mp4"
+    fixture.write_bytes(b"x" * 2048)
+    storage = _make_storage(run_id=204)
+    manifest = _manifest(
+        204,
+        scenes=[{"scene_id": "scene-1", "asset_path": str(fixture)}],
+        audio_path=None,
+        subtitle_path=None,
+        max_duration_seconds=5,
+    )
+    renders = FakeRenderService(manifest=manifest)
+    _patch_services(
+        monkeypatch,
+        storage=storage,
+        fake_render_service=renders,
+        fake_vas=FakeVisualAssetService(),
+        fake_audio=FakeAudioService(),
+        fake_subtitle=FakeSubtitleService(),
+        fake_ffmpeg=FakeFFmpegService(),
+    )
+    monkeypatch.setattr(render_video_module, "_ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        render_video_module,
+        "FFmpegService",
+        lambda profile=None: FFmpegService(RenderProfile(width=128, height=128)),
+    )
+
+    def encode(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        shutil.copyfile(fixture, cmd[-1])
+        return subprocess.CompletedProcess(cmd, 0, "", "")
+
+    def validate(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
+        if cmd[0] == validation_call:
+            raise error_type("validation executable unavailable")
+        if cmd[0] == "ffprobe":
+            document: dict[str, object] = {
+                "streams": [{
+                    "codec_type": "video", "codec_name": "h264", "width": 128,
+                    "height": 128, "avg_frame_rate": "30/1", "r_frame_rate": "30/1",
+                    "duration": 5, "nb_frames": 150,
+                }],
+                "format": {"duration": 5, "size": 2048},
+            }
+            return subprocess.CompletedProcess(cmd, 0, json.dumps(document), "")
+        return subprocess.CompletedProcess(cmd, 0, "0, frame\n", "")
+
+    monkeypatch.setattr("creator_service.ffmpeg_service._run_ffmpeg", encode)
+    monkeypatch.setattr("creator_service.media_integrity.run_validation", validate)
+    upload = Mock()
+    usage = Mock()
+    monkeypatch.setattr("creator_service.artifact_storage_integration.store_artifact_file", upload)
+    monkeypatch.setattr(render_video_module, "record_provider_call", usage)
+
+    # When
+    with pytest.raises(render_video_module.ProviderError, match="Provider failed video render") as error:
+        _invoke_task(run_id=204)
+
+    # Then
+    assert type(error.value.__cause__) is MediaIntegrityError
+    assert error.value.__cause__.rule == "validation_unavailable"
+    upload.assert_not_called()
+    usage.assert_not_called()
+    assert renders.create_calls == []
+    assert list((tmp_path / "204" / "render").iterdir()) == []
+    assert storage.calls == [(204, {"current_stage": "FAILED", "status": "failed"})]
 
 
 def test_render_video_without_audio_subtitles(monkeypatch: pytest.MonkeyPatch) -> None:
