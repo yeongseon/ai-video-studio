@@ -10,7 +10,7 @@ from typing import Final, TypedDict
 from creator_provider.exceptions import ProviderError
 
 FORMAT: Final = "short-form-studio/tts-word-timings"
-VERSION: Final = 1
+VERSION: Final = 2
 
 
 class WordTimingRow(TypedDict):
@@ -25,6 +25,7 @@ class WordTimingEnvelope(TypedDict):
     version: int
     audio_sha256: str
     script_sha256: str
+    script_text: str
     words: list[WordTimingRow]
 
 
@@ -61,8 +62,69 @@ def envelope(audio_path: Path, script: str, words: list[WordTimingRow]) -> WordT
         "version": VERSION,
         "audio_sha256": sha256_bytes(audio_path.read_bytes()),
         "script_sha256": sha256_text(script),
+        "script_text": script,
         "words": words,
     }
+
+
+def read_envelope(
+    path: Path,
+    audio_path: Path,
+    expected_script: str | None = None,
+) -> WordTimingEnvelope:
+    try:
+        value = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(value, dict):
+            raise TypeError
+        if value["format"] != FORMAT or value["version"] != VERSION:
+            raise ValueError
+        if value["audio_sha256"] != sha256_bytes(audio_path.read_bytes()):
+            raise ProviderError("TTS word timing audio digest does not match audio")
+        script_text = value["script_text"]
+        if not isinstance(script_text, str) or value["script_sha256"] != sha256_text(script_text):
+            raise ProviderError("TTS word timing script digest does not match persisted script")
+        if expected_script is not None and script_text != expected_script:
+            raise ProviderError("TTS word timing script digest does not match script")
+        raw_rows = value["words"]
+        if not isinstance(raw_rows, list):
+            raise TypeError
+        rows: list[WordTimingRow] = []
+        previous_end = 0
+        for raw_row in raw_rows:
+            if not isinstance(raw_row, dict) or raw_row.get("type") != "WordBoundary":
+                raise TypeError
+            offset = int(raw_row["offset"])
+            duration = int(raw_row["duration"])
+            text = raw_row["text"]
+            if not isinstance(text, str) or not text or offset < previous_end or duration <= 0:
+                raise ValueError
+            rows.append(
+                {
+                    "type": "WordBoundary",
+                    "offset": offset,
+                    "duration": duration,
+                    "text": text,
+                }
+            )
+            previous_end = offset + duration
+    except ProviderError:
+        raise
+    except (json.JSONDecodeError, KeyError, OSError, TypeError, ValueError) as exc:
+        raise ProviderError(f"Invalid TTS word timing metadata: {path}") from exc
+    if not rows:
+        raise ProviderError(f"No TTS word timing metadata found in {path}")
+    return {
+        "format": FORMAT,
+        "version": VERSION,
+        "audio_sha256": value["audio_sha256"],
+        "script_sha256": value["script_sha256"],
+        "script_text": script_text,
+        "words": rows,
+    }
+
+
+def read_bound_script(audio_path: Path) -> str:
+    return read_envelope(Path(f"{audio_path}.words.jsonl"), audio_path)["script_text"]
 
 
 def write_atomic(path: Path, value: WordTimingEnvelope) -> None:

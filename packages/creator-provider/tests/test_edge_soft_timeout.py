@@ -11,7 +11,8 @@ from creator_provider.tts.edge_tts_provider import EdgeTTSProvider
 
 @pytest.mark.asyncio
 async def test_edge_sdk_soft_timeout_is_not_wrapped(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given an Edge SDK save interrupted by the worker soft deadline.
     calls: list[tuple[str, str | None]] = []
@@ -24,13 +25,16 @@ async def test_edge_sdk_soft_timeout_is_not_wrapped(
             calls.append((path, metadata_path))
             raise SoftTimeLimitExceeded()
 
-    monkeypatch.setattr("creator_provider.tts.edge_tts_provider.edge_tts.Communicate", FakeCommunicate)
+    monkeypatch.setattr(
+        "creator_provider.tts.edge_tts_provider.edge_tts.Communicate", FakeCommunicate
+    )
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
     output = tmp_path / "timeout.mp3"
     # When the adapter awaits the real SDK boundary.
     with pytest.raises(SoftTimeLimitExceeded):
         await EdgeTTSProvider(endpoint="", model_key="edge-tts").generate(
-            "hello", params={"output_path": str(output)},
+            "hello",
+            params={"output_path": str(output)},
         )
     # Then the caller receives the timeout identity and only one save was attempted.
     assert len(calls) == 1
@@ -43,7 +47,8 @@ async def test_edge_sdk_soft_timeout_is_not_wrapped(
 
 @pytest.mark.asyncio
 async def test_edge_other_sdk_failures_remain_provider_errors(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given an unrelated SDK failure.
     class FakeCommunicate:
@@ -53,18 +58,22 @@ async def test_edge_other_sdk_failures_remain_provider_errors(
         async def save(self, path: str, _metadata_path: str | None = None) -> None:
             raise RuntimeError("SDK failed")
 
-    monkeypatch.setattr("creator_provider.tts.edge_tts_provider.edge_tts.Communicate", FakeCommunicate)
+    monkeypatch.setattr(
+        "creator_provider.tts.edge_tts_provider.edge_tts.Communicate", FakeCommunicate
+    )
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
     # When generation fails.
     with pytest.raises(ProviderError):
         await EdgeTTSProvider(endpoint="", model_key="edge-tts").generate(
-            "hello", params={"output_path": str(tmp_path / "other.mp3")},
+            "hello",
+            params={"output_path": str(tmp_path / "other.mp3")},
         )
 
 
 @pytest.mark.asyncio
 async def test_edge_tts_saves_word_boundaries_next_to_audio(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Given Edge TTS generation for an artifact path.
     saved_paths: list[tuple[str, str | None]] = []
@@ -82,13 +91,16 @@ async def test_edge_tts_saves_word_boundaries_next_to_audio(
                 encoding="utf-8",
             )
 
-    monkeypatch.setattr("creator_provider.tts.edge_tts_provider.edge_tts.Communicate", FakeCommunicate)
+    monkeypatch.setattr(
+        "creator_provider.tts.edge_tts_provider.edge_tts.Communicate", FakeCommunicate
+    )
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
     output = tmp_path / "audio.mp3"
 
     # When audio is generated.
     result = await EdgeTTSProvider(endpoint="", model_key="edge-tts").generate(
-        "정확한 대본", params={"output_path": str(output)},
+        "정확한 대본",
+        params={"output_path": str(output)},
     )
 
     # Then provider-native word timings are retained beside that exact audio.
@@ -100,9 +112,10 @@ async def test_edge_tts_saves_word_boundaries_next_to_audio(
     envelope = json.loads(metadata_path.read_text(encoding="utf-8"))
     assert envelope == {
         "format": "short-form-studio/tts-word-timings",
-        "version": 1,
+        "version": 2,
         "audio_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
         "script_sha256": hashlib.sha256("정확한 대본".encode()).hexdigest(),
+        "script_text": "정확한 대본",
         "words": [
             {
                 "type": "WordBoundary",

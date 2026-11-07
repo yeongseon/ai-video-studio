@@ -16,9 +16,10 @@ def _write_envelope(audio_path: Path, script: str) -> Path:
         json.dumps(
             {
                 "format": "short-form-studio/tts-word-timings",
-                "version": 1,
+                "version": 2,
                 "audio_sha256": hashlib.sha256(audio_path.read_bytes()).hexdigest(),
                 "script_sha256": hashlib.sha256(script.encode()).hexdigest(),
+                "script_text": script,
                 "words": [
                     {
                         "type": "WordBoundary",

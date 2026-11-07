@@ -25,11 +25,12 @@ def _write_boundaries(
         json.dumps(
             {
                 "format": "short-form-studio/tts-word-timings",
-                "version": 1,
+                "version": 2,
                 "audio_sha256": hashlib.sha256(audio_path.read_bytes()).hexdigest(),
                 "script_sha256": hashlib.sha256(
                     (script or " ".join(str(row["text"]) for row in rows)).encode()
                 ).hexdigest(),
+                "script_text": script or " ".join(str(row["text"]) for row in rows),
                 "words": rows,
             },
             ensure_ascii=False,
@@ -118,9 +119,7 @@ async def test_alignment_preserves_known_script_and_readable_cues(
 
 
 @pytest.mark.asyncio
-async def test_alignment_writes_valid_vtt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+async def test_alignment_writes_valid_vtt(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Given exact provider timings for the approved script.
     audio_path = tmp_path / "narration.mp3"
     audio_path.write_bytes(b"audio")
@@ -186,8 +185,18 @@ async def test_alignment_rejects_mismatched_script_and_audio(tmp_path: Path) -> 
     [
         (
             [
-                {"type": "WordBoundary", "offset": 10_000_000, "duration": 10_000_000, "text": "one"},
-                {"type": "WordBoundary", "offset": 5_000_000, "duration": 10_000_000, "text": "two"},
+                {
+                    "type": "WordBoundary",
+                    "offset": 10_000_000,
+                    "duration": 10_000_000,
+                    "text": "one",
+                },
+                {
+                    "type": "WordBoundary",
+                    "offset": 5_000_000,
+                    "duration": 10_000_000,
+                    "text": "two",
+                },
             ],
             2.0,
         ),
@@ -207,7 +216,10 @@ async def test_alignment_rejects_invalid_timing_boundaries(
     with pytest.raises(ProviderError, match="timing"):
         await ScriptTimestampAligner(model_key="script-timestamps").transcribe(
             str(audio_path),
-            params={"script_text": "one two" if len(rows) == 2 else "one", "audio_duration_seconds": duration},
+            params={
+                "script_text": "one two" if len(rows) == 2 else "one",
+                "audio_duration_seconds": duration,
+            },
         )
 
 
