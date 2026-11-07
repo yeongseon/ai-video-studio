@@ -20,6 +20,98 @@ submit nonempty patches. These contracts are exercised against both adapters,
 including a disposable migrated PostgreSQL schema, in
 `packages/creator-service/tests/test_run_adapter_parity.py`.
 
+## Project deletion lifecycle (migration 051)
+
+`DELETE /api/creator/projects/{id}` first persists `status='deleting'` in the
+owning workspace. Migration 051 relaxes `ck_creator_projects_status` to admit
+that existing domain value; no route, response, or storage retention policy is
+changed. Missing or foreign projects remain 404; missing/invalid credentials
+remain 401. Run creation and script imports reject deleting projects with 409.
+PostgreSQL run creation locks the project and checks the barrier in the same
+statement as the INSERT, including requests with a stale pre-barrier access check.
+
+Cleanup cancels runs before task revocation, then removes artifact objects before
+removing their metadata. Cancellation/revocation failure aborts cleanup; object
+deletion failure returns 503, retains failed artifact rows with retry metadata,
+and leaves the project deleting and its runs cancelled. Retrying DELETE remains
+possible: marking deleting is idempotent, and the existing owner get/list/title
+update paths do **not** filter this status. This visibility is characterized,
+not changed to 404 (which would prevent retry). Error responses do not contain
+provider exception text. Completed deletions are not idempotent: a later DELETE
+returns 404 because the project no longer exists.
+
+The final project DELETE cascades runs, run tasks, script drafts, visual plans,
+legacy scene assets, stage reviews, Timeline rows, and normalized approval asset
+mapping/resolution rows. Artifact rows have a run cascade and a project FK;
+normal cleanup removes them first. Canonical workspace media is reusable:
+`creator_media_assets.project_id` and `run_id` use **SET NULL**, not CASCADE, so
+metadata and its object remain workspace-owned. Usage events have no project/run
+FK and remain billing history; quota owner/attempt ledgers belong to workspace
+and task identities, not project/run FKs, and are retained. Project deletion is
+not a workspace-wide erasure or accounting-history deletion operation.
+
+For rolling deploys/app-only rollback, retain schema 051: the CHECK relaxation
+is compatible with the previous release's queries and domain decoder. The CI
+release-lifecycle docker job runs origin/main against the upgraded schema and
+verifies project/media reads. A **schema** downgrade to 050 maps deleting rows to
+`archived` before restoring the old CHECK; this preserves rows but loses the
+barrier (archived is not a write prohibition). Quiesce writers before schema
+downgrade, and finish pending cleanup after upgrading again. Neither downgrade
+nor app rollback restores deleted objects or completed project deletions.
+
+The real-PostgreSQL deletion, retry, stale-request and rollback proofs live in
+`tests/integration/test_postgres_project_deletion*.py` and
+`tests/integration/test_project_status_migration.py`; they run unconditionally
+in the required `first-short-runtime` CI job, fail rather than skip on GitHub
+Actions when PostgreSQL is absent, and have mutation-sensitive CI wiring guards.
+
+### Persisted enum / CHECK audit
+
+`tests/integration/test_postgres_enum_check_drift.py` compares the migrated
+PostgreSQL catalog with runtime model definitions, with exact sets in both
+directions. New unmapped enum CHECKs also fail the guard. At 050 the only
+constrained-domain drift was Project.status missing deleting; 051 resolves it.
+
+| Persisted column | Domain owner / values | CHECK |
+|---|---|---|
+| creator_projects.status | Project.status: draft, active, completed, archived, deleting | ck_creator_projects_status |
+| creator_projects.source_type | Project.source_type: idea, markdown, url, pasted_json | ck_creator_projects_source_type |
+| creator_runs.status | PipelineRun.status: pending, running, paused, completed, failed, cancelled | ck_creator_runs_status |
+| creator_run_tasks.status | RunTask.status: queued, pending, running, success, failed, revoked, rejected | ck_creator_run_tasks_status |
+| creator_media_assets.media_type | MediaType: IMAGE, VIDEO, AUDIO, LOGO, GRAPHIC | ck_media_assets_type |
+| creator_media_assets.origin | MediaOrigin: UPLOADED, IMPORTED, EXTERNAL_URL, STOCK, GENERATED | ck_media_assets_origin |
+| usage_events.operation_type | UsageEvent.operation_type: llm, image_gen, tts, stt, render | ck_usage_events_operation_type |
+| workspace_quota_reservation_owners.operation_type | UsageEvent.operation_type (same operations) | ck_quota_owner_operation |
+| creator_media_upload_intents.state | UploadIntentState: pending, uploaded, cleanup_pending, reclaiming, late_upload_watch, completed, reclaimed, exhausted | ck_media_upload_intents_state |
+| creator_stage_reviews.review_status | Storage-only strings: pending, approved, rejected, skipped | ck_creator_stage_reviews_review_status |
+| creator_artifacts.artifact_type | Storage-only strings: idea, script, visual_plan, visual_asset, audio, subtitle, video, render_manifest | ck_creator_artifacts_artifact_type |
+| workspace_quota_reservation_owners.status | Storage-only strings: reserved, consumed, settled, cancelled, billable_unknown | ck_quota_owner_status |
+| workspace_quota_reservation_attempts.status | Storage-only strings: authorized, accounted, unknown | ck_quota_attempt_status |
+
+The following persisted types have **no enum-valued CHECK**, so there is no
+existing allowed DB set to compare. The audit does not silently claim otherwise
+or add restrictive constraints during a rollback-compatible deletion fix:
+
+| Persisted representation | Domain type | Existing boundary |
+|---|---|---|
+| creator_runs.current_stage, review_stage, restart_from | RunStage (nullable) | Service/domain parsing; unconstrained text columns |
+| creator_stage_reviews.stage_name | RunStage values used by services | Unconstrained text column, no typed review model |
+| creator_script_drafts.source_type | ScriptDraft.source_type | Domain parsing; unconstrained text column |
+| workspace_members.role | WorkspaceMember.role | Domain parsing; unconstrained text column |
+| creator_visual_plans.scenes_json | VisualScene.prompt_source, generation_status | Nested JSON domain parsing |
+| creator_script_drafts.structured_script_json | VisualOverride.type | Nested JSON domain parsing |
+| creator_artifacts.metadata_json | SubtitleArtifact.format | Nested artifact metadata parsing |
+| creator_timelines.segments_json | MediaSegment (no Literal/StrEnum fields) | Nested Timeline domain parsing |
+
+Numeric/shape/conditional CHECKs (dimensions, revisions, owned object key,
+visual_asset scene ID, JSON object shape, singleton and nonnegative budgets)
+are not enum allowed-set constraints. Editor command discriminators, deletion
+policies and output presets are request commands, not dedicated persisted SQL
+enum columns. No further constrained-domain mismatch remains at head 051.
+BillingOutcome is a computed service result, not a persisted column.
+RenderSegmentKind, AspectRatio, VideoCodec, AudioCodec and TrackRole belong to
+compiled render/output models, not the saved Timeline table at this head.
+
 ## Media upload ownership and reconciliation
 
 Every workspace media upload has a durable `creator_media_upload_intents` row
