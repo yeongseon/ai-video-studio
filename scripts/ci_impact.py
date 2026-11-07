@@ -13,14 +13,6 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 GATES = ("docs", "code", "restore", "first_short", "worker", "docker")
-FRONTEND_FULL_GATE_WORDS = (
-    "auth", "token", "credential", "secret", "session", "segmentdelete",
-    "delete", "apiclient",
-)
-FRONTEND_RUNTIME_FILES = {
-    "assetdropzone.tsx", "authorizedmedia.tsx", "medialibrary.tsx",
-    "timelinepreview.tsx", "usemediaactions.ts",
-}
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,58 +34,6 @@ def _is_documentation(path: str) -> bool:
     ) or ("/" not in path and path.endswith(".md"))
 
 
-def _is_test_path(path: str) -> bool:
-    return (
-        path.startswith("tests/")
-        or "/tests/" in path
-        or "/__tests__/" in path
-    )
-
-
-def _is_policy_test(path: str) -> bool:
-    path_lower = path.lower()
-    return (
-        path_lower.startswith("tests/integration/")
-        or "/tests/integration/" in path_lower
-        or any(word in PurePosixPath(path_lower).name for word in ("ci_", "policy", "gate"))
-    )
-
-
-def _test_gates(path: str) -> dict[str, bool]:
-    gates = dict.fromkeys(GATES, False)
-    gates["code"] = True
-    if path.startswith("apps/api/tests/"):
-        gates["first_short"] = True
-    elif path.startswith("apps/worker-orchestrator/tests/"):
-        gates["worker"] = True
-    return gates
-
-
-def _frontend_gates(path: str) -> dict[str, bool]:
-    gates = dict.fromkeys(GATES, False)
-    gates["code"] = True
-    path_lower = path.lower()
-    name = PurePosixPath(path_lower).name
-    if (
-        "nginx" in path_lower
-        or "entrypoint" in path_lower
-        or name.startswith("dockerfile")
-        or name == ".dockerignore"
-    ):
-        return dict.fromkeys(GATES, True)
-    if (
-        path_lower.startswith("apps/studio-web/src/api/")
-        or name.startswith("client.")
-        or any(word in path_lower for word in FRONTEND_FULL_GATE_WORDS)
-    ):
-        return dict.fromkeys(GATES, True)
-    if name in FRONTEND_RUNTIME_FILES:
-        gates["first_short"] = True
-    elif not path.startswith("apps/studio-web/src/"):
-        gates["docker"] = True
-    return gates
-
-
 def classify_paths(paths: list[str]) -> dict[str, bool]:
     result = dict.fromkeys(GATES, False)
     if not paths:
@@ -102,15 +42,7 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
         if _is_documentation(raw):
             result["docs"] = True
             continue
-        path = str(PurePosixPath(raw.replace("\\", "/")))
-        if path.startswith("apps/studio-web/"):
-            selected = _frontend_gates(path)
-            result.update({gate: result[gate] or selected[gate] for gate in GATES})
-        elif _is_test_path(path):
-            selected = dict.fromkeys(GATES, True) if _is_policy_test(path) else _test_gates(path)
-            result.update({gate: result[gate] or selected[gate] for gate in GATES})
-        else:
-            result.update({gate: True for gate in GATES})
+        result.update({gate: True for gate in GATES})
     return result
 
 
