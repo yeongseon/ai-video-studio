@@ -11,6 +11,7 @@ from pydantic import TypeAdapter, ValidationError as PydanticValidationError
 from creator_domain.exceptions import ChunkManifestValidationError
 
 from .chunk_identity import ApprovalIdentity
+from .chunk_manifest_validation import ManifestValidationInput, validate_manifest_contract
 from .chunk_policy import (
     ChunkEncodingProfile,
     ChunkOutputSpec,
@@ -132,59 +133,15 @@ class ChunkManifest:
         if self.schema_version != SCHEMA_VERSION:
             raise ChunkManifestValidationError(f"unsupported schema_version: {self.schema_version}")
         self.approval.validate()
-        if self.total_frames < 1 or self.fps < 1 or not self.chunks:
-            raise ChunkManifestValidationError(
-                "manifest timeline must contain positive frames and chunks"
+        validate_manifest_contract(
+            ManifestValidationInput(
+                total_frames=self.total_frames,
+                fps=self.fps,
+                output_spec=self.output_spec,
+                policy=self.policy,
+                chunks=self.chunks,
             )
-        expected_start = 0
-        for expected_index, chunk in enumerate(self.chunks):
-            if chunk.index != expected_index:
-                raise ChunkManifestValidationError(
-                    "chunk indices must be unique, ordered, and zero-based"
-                )
-            if chunk.start_frame < 0 or chunk.end_frame <= chunk.start_frame:
-                raise ChunkManifestValidationError(
-                    "chunk frame ranges must be positive half-open intervals"
-                )
-            if chunk.start_frame != expected_start:
-                raise ChunkManifestValidationError(
-                    "chunk coverage must be contiguous without gaps or overlaps"
-                )
-            if chunk.frame_count > self.policy.max_chunk_frames:
-                raise ChunkManifestValidationError("chunk exceeds the configured frame bound")
-            if chunk.start_s != Fraction(chunk.start_frame, self.fps) or chunk.end_s != Fraction(
-                chunk.end_frame, self.fps
-            ):
-                raise ChunkManifestValidationError(
-                    "chunk seconds must match exact frame boundaries"
-                )
-            expected_start_sample = round(
-                Fraction(chunk.start_frame * self.policy.audio_sample_rate, self.fps)
-            )
-            expected_end_sample = round(
-                Fraction(chunk.end_frame * self.policy.audio_sample_rate, self.fps)
-            )
-            if (chunk.start_sample, chunk.end_sample) != (
-                expected_start_sample,
-                expected_end_sample,
-            ):
-                raise ChunkManifestValidationError(
-                    "audio samples must match exact frame boundaries"
-                )
-            if not chunk.source_refs:
-                raise ChunkManifestValidationError(
-                    "each chunk must reference at least one source segment"
-                )
-            for source_ref in chunk.source_refs:
-                if source_ref.asset_id < 1 or source_ref.content_revision < 0:
-                    raise ChunkManifestValidationError(
-                        "chunk source asset identity is missing or malformed"
-                    )
-            expected_start = chunk.end_frame
-        if expected_start != self.total_frames:
-            raise ChunkManifestValidationError("chunks must cover the full planned frame count")
-        if len(self.chunks) > self.policy.max_chunk_count:
-            raise ChunkManifestValidationError("chunk count exceeds the configured policy")
+        )
 
     def _content(self) -> dict[str, int | dict[str, int | str] | list[_ChunkJson]]:
         return {
