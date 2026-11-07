@@ -192,7 +192,7 @@ async def test_child_exit_after_upload_leaves_durable_intent_for_exact_retry(
     backend = LocalStorageBackend(str(artifact_root))
     backend.upload(alias_key, b"accepted", "image/png")
     target = artifact_root / expected_key
-    target.parent.mkdir(parents=True)
+    target.parent.mkdir(parents=True, exist_ok=True)
     target.write_bytes(b"fresh")
     child_code = """
 import asyncio

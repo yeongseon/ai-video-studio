@@ -30,20 +30,30 @@ async def _seed_accepted_asset_and_stale_intent(
         """
         INSERT INTO creator_scene_assets (
             run_id, scene_id, asset_path, storage_key, storage_provider, is_active
-        ) VALUES (956, 'accepted', $1, $2, 'local', true);
+        ) VALUES (956, 'accepted', $1, $2, 'local', true)
+        """,
+        str(local_path),
+        _KEY,
+    )
+    await database.pool.execute(
+        """
         INSERT INTO creator_artifacts (
             run_id, workspace_id, project_id, artifact_type, scene_id, file_path,
             storage_key, storage_provider, content_type, metadata_json, delete_requested_at
         ) VALUES (
             956, 1, 1, 'visual_asset', 'accepted', $1, $2, 'local', 'image/png',
             'scene_upload_cleanup_intent', NOW()
-        );
-        UPDATE creator_artifacts
-        SET created_at = NOW() - INTERVAL '6 minutes'
-        WHERE run_id = 956;
+        )
         """,
         str(local_path),
         _KEY,
+    )
+    await database.pool.execute(
+        """
+        UPDATE creator_artifacts
+        SET created_at = NOW() - INTERVAL '6 minutes'
+        WHERE run_id = 956
+        """,
     )
 
 
