@@ -71,13 +71,14 @@ class ProviderRegistryTests(unittest.TestCase):
     def test_create_default_returns_registry_with_default_entries(self) -> None:
         registry = ProviderRegistry.create_default()
 
-        self.assertEqual(len(registry.list_models()), 22)
+        self.assertEqual(len(registry.list_models()), 23)
         self.assertEqual(registry.resolve("qwen3-4b").category, ProviderCategory.LLM)
         self.assertEqual(registry.resolve("sd15").category, ProviderCategory.IMAGE)
         self.assertEqual(registry.resolve("qwen3-tts").category, ProviderCategory.TTS)
         self.assertEqual(registry.resolve("elevenlabs-multilingual-v2").category, ProviderCategory.TTS)
         self.assertEqual(registry.resolve("openai-tts-1").category, ProviderCategory.TTS)
         self.assertEqual(registry.resolve("whisper-small").category, ProviderCategory.STT)
+        self.assertEqual(registry.resolve("script-timestamps").category, ProviderCategory.STT)
         self.assertEqual(registry.resolve("gpt-4o-mini").category, ProviderCategory.LLM)
         self.assertEqual(registry.resolve("claude-sonnet-4-20250514").category, ProviderCategory.LLM)
         self.assertEqual(registry.resolve("gemini-2.0-flash").category, ProviderCategory.LLM)
