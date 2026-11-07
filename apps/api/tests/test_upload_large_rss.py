@@ -18,6 +18,21 @@ from shorts_api.auth import CurrentUser
 from shorts_api.routes import creator_assets
 
 
+def normalize_ru_maxrss_to_kib(value: int, platform: str) -> int:
+    """
+    Normalize resource.getrusage().ru_maxrss to KiB.
+
+    On macOS (darwin), ru_maxrss is in bytes; on Linux, it is in KiB.
+    This function always returns KiB.
+    """
+    if platform == "darwin":
+        return value // 1024
+    elif platform == "linux":
+        return value
+    else:
+        raise ValueError(f"Unsupported platform: {platform}")
+
+
 class RecordingFile(io.BufferedReader):
     def __init__(self, path: Path) -> None:
         super().__init__(io.FileIO(path, "rb"))
@@ -50,7 +65,20 @@ async def measure(root: Path, copies: int) -> None:
     page = await service.list_assets(workspace_id=7)
     assert page.total == copies
     assert all(asset.metadata["size_bytes"] == expected_size for asset in page.items)
-    print(json.dumps({"delta_kib": peak - baseline, "peak_kib": peak, "bytes": expected_size, "copies": copies}))
+    delta_normalized = normalize_ru_maxrss_to_kib(peak - baseline, sys.platform)
+    peak_normalized = normalize_ru_maxrss_to_kib(peak, sys.platform)
+    print(json.dumps({"delta_kib": delta_normalized, "peak_kib": peak_normalized, "bytes": expected_size, "copies": copies}))
+
+
+@pytest.mark.parametrize("platform,value,expected", [
+    ("darwin", 1024 * 1024, 1024),  # macOS: 1 MiB in bytes → 1024 KiB
+    ("darwin", 67108864, 65536),  # macOS: 64 MiB in bytes → 65536 KiB
+    ("linux", 1024, 1024),  # Linux: already in KiB
+    ("linux", 65536, 65536),  # Linux: 64 MiB → 65536 KiB
+])
+def test_normalize_ru_maxrss_to_kib_converts_platform_units(platform: str, value: int, expected: int) -> None:
+    """Given platform-specific ru_maxrss units, normalize to KiB."""
+    assert normalize_ru_maxrss_to_kib(value, platform) == expected
 
 
 @pytest.mark.parametrize("size_mib,copies", [(500, 1), (128, 5)])
