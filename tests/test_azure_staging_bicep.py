@@ -26,11 +26,22 @@ JsonScalar: TypeAlias = str | int | float | bool | None
 JsonValue: TypeAlias = JsonScalar | list["JsonValue"] | dict[str, "JsonValue"]
 
 
+def _bicep_build_command(cli: list[str], output: Path) -> list[str]:
+    match cli:
+        case ["az", "bicep"]:
+            input_arguments = ["--file", str(MAIN_BICEP)]
+        case [standalone] if Path(standalone).name == "bicep":
+            input_arguments = [str(MAIN_BICEP)]
+        case _:
+            pytest.fail(f"Unsupported Bicep CLI command: {cli}")
+    return [*cli, "build", *input_arguments, "--outfile", str(output)]
+
+
 @pytest.fixture(scope="module")
 def compiled_template(tmp_path_factory: pytest.TempPathFactory) -> dict[str, JsonValue]:
     output = tmp_path_factory.mktemp("azure-staging-bicep") / "main.json"
     subprocess.run(
-        [*BICEP_COMMAND, "build", "--file", str(MAIN_BICEP), "--outfile", str(output)],
+        _bicep_build_command(BICEP_COMMAND, output),
         cwd=ROOT,
         check=True,
         env={**os.environ, "AZURE_BICEP_DISABLE_UPDATE_CHECK": "true"},
@@ -67,6 +78,26 @@ def _resources_of_type(
 
 def test_bicep_cli_is_available() -> None:
     assert shutil.which(BICEP_COMMAND[0]) is not None, "CI must install the pinned Bicep prerequisite"
+
+
+@pytest.mark.parametrize(
+    ("cli", "expected_input_arguments"),
+    [
+        (["/tmp/tools/bicep"], [str(MAIN_BICEP)]),
+        (["az", "bicep"], ["--file", str(MAIN_BICEP)]),
+    ],
+)
+def test_build_command_uses_cli_specific_input_grammar(
+    cli: list[str], expected_input_arguments: list[str]
+) -> None:
+    # Given a standalone or Azure CLI Bicep command
+    output = Path("main.json")
+
+    # When the build command is assembled
+    command = _bicep_build_command(cli, output)
+
+    # Then the input arguments follow that CLI's grammar
+    assert command == [*cli, "build", *expected_input_arguments, "--outfile", str(output)]
 
 
 def test_foundation_builds_without_secret_outputs(compiled_template: dict[str, JsonValue]) -> None:
