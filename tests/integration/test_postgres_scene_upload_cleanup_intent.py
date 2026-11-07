@@ -231,6 +231,10 @@ asyncio.run(main())
         **os.environ,
         "DATABASE_URL": deletion_database.url,
         "PGOPTIONS": f"-c search_path={deletion_database.schema}",
+        "PYTHONPATH": os.pathsep.join((
+            str(Path(__file__).resolve().parents[2] / "apps/worker-orchestrator"),
+            os.environ.get("PYTHONPATH", ""),
+        )),
         "STORAGE_BACKEND": "local",
         "ARTIFACT_ROOT": str(artifact_root),
         "SCENE_TARGET": str(target),
