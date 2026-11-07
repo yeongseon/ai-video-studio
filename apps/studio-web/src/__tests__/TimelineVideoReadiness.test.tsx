@@ -3,6 +3,8 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import TimelinePreview from "../components/creator/TimelinePreview";
 
 let decodedFrameCallbacks = new WeakMap<HTMLVideoElement, VideoFrameRequestCallback[]>();
+let decodedFrameRequests = new Map<number, { readonly video: HTMLVideoElement; readonly callback: VideoFrameRequestCallback }>();
+let nextDecodedFrameRequest = 1;
 
 afterEach(() => {
   vi.useRealTimers();
@@ -11,17 +13,29 @@ afterEach(() => {
 
 beforeEach(() => {
   decodedFrameCallbacks = new WeakMap();
+  decodedFrameRequests = new Map();
+  nextDecodedFrameRequest = 1;
   Object.defineProperty(HTMLVideoElement.prototype, "requestVideoFrameCallback", {
     configurable: true,
     value: vi.fn(function (this: HTMLVideoElement, callback: VideoFrameRequestCallback) {
       const callbacks = decodedFrameCallbacks.get(this) ?? [];
       callbacks.push(callback);
       decodedFrameCallbacks.set(this, callbacks);
-      return callbacks.length;
+      const request = nextDecodedFrameRequest;
+      nextDecodedFrameRequest += 1;
+      decodedFrameRequests.set(request, { video: this, callback });
+      return request;
     }),
   });
   Object.defineProperty(HTMLVideoElement.prototype, "cancelVideoFrameCallback", {
-    configurable: true, value: vi.fn(),
+    configurable: true,
+    value: vi.fn(function (this: HTMLVideoElement, request: number) {
+      const pending = decodedFrameRequests.get(request);
+      if (!pending || pending.video !== this) return;
+      decodedFrameRequests.delete(request);
+      const callbacks = decodedFrameCallbacks.get(this) ?? [];
+      decodedFrameCallbacks.set(this, callbacks.filter((callback) => callback !== pending.callback));
+    }),
   });
   const times = new WeakMap<HTMLMediaElement, number>();
   vi.spyOn(HTMLMediaElement.prototype, "currentTime", "get").mockImplementation(function (this: HTMLMediaElement) {
@@ -83,7 +97,6 @@ it.each(["wrong source", "internal seek", "browser seeking", "drifted completion
     expect(onReady).not.toHaveBeenCalled();
     Object.defineProperty(media, "seeking", { configurable: true, value: false });
     fireEvent.seeked(media);
-    if (condition === "drifted completion") presentDecodedFrame(media, 2);
     presentDecodedFrame(media, 2);
 
     // Then readiness is released for the matching revision.
@@ -103,6 +116,23 @@ it("arms decoded-frame observation before waiting for seek completion", async ()
 
   // Then frame observation is already armed so the first presented target frame cannot be missed.
   expect(media.requestVideoFrameCallback).toHaveBeenCalledOnce();
+});
+
+it("refreshes unresolved frame observation after seek completion", async () => {
+  // Given frame observation was armed before the trimmed seek completed.
+  renderTrimmedVideo(vi.fn());
+  const media = await screen.findByTestId("preview-media");
+  if (!(media instanceof HTMLVideoElement)) throw new Error("Expected video placement");
+  Object.defineProperty(media, "readyState", { configurable: true, value: 1 });
+  fireEvent.loadedMetadata(media);
+  expect(media.requestVideoFrameCallback).toHaveBeenCalledOnce();
+
+  // When the seek settles while that pre-seek request is still unresolved.
+  Object.defineProperty(media, "readyState", { configurable: true, value: 2 });
+  fireEvent.seeked(media);
+
+  // Then observation is refreshed for the settled target frame.
+  expect(media.requestVideoFrameCallback).toHaveBeenCalledTimes(2);
 });
 
 it("withholds readiness until a callback observes the decoded trim target", async () => {

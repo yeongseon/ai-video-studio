@@ -101,6 +101,10 @@ export function TimelineVideo(props: Props) {
       return;
     }
     if (typeof video.requestVideoFrameCallback === "function") {
+      if (decodedFrameRequest.current !== null) {
+        if ("cancelVideoFrameCallback" in video) video.cancelVideoFrameCallback(decodedFrameRequest.current);
+        decodedFrameRequest.current = null;
+      }
       observeDecodedTarget(video, target, generation);
       return;
     }
