@@ -75,25 +75,51 @@ async def test_cancelled_waiter_takes_precedence_over_worker_value_error():
         await task
 
 
-@pytest.mark.parametrize("error_type", ["KeyboardInterrupt", "SystemExit", "MemoryError"])
-def test_worker_base_exception_does_not_corrupt_completion(error_type):
+@pytest.mark.asyncio
+async def test_worker_exception_is_transported_to_waiter():
+    error = MemoryError("private-worker-marker")
+
+    def failed():
+        raise error
+
+    with pytest.raises(MemoryError) as raised:
+        await media_streaming._run(failed)
+    assert raised.value is error
+
+
+@pytest.mark.parametrize("error_type", ["KeyboardInterrupt", "SystemExit"])
+def test_worker_control_exception_cancels_waiter_without_transport(error_type):
     script = '''
 import asyncio, builtins, sys
-from shorts_api.media_streaming import _run
+from concurrent.futures import ThreadPoolExecutor
+from shorts_api.media_thread_io import MediaThreadIO
 error_type = getattr(builtins, sys.argv[1])
+class RecordingExecutor(ThreadPoolExecutor):
+    def __init__(self):
+        super().__init__(max_workers=1)
+        self.submitted = []
+    def submit(self, function, *args, **kwargs):
+        future = super().submit(function, *args, **kwargs)
+        self.submitted.append(future)
+        return future
+io = MediaThreadIO()
+io.executor.shutdown()
+io.executor = RecordingExecutor()
 def failed():
     raise error_type("private-worker-marker")
 async def main():
     try:
-        await _run(failed)
-    except error_type:
+        await io.run(failed)
+    except asyncio.CancelledError:
         pass
     else:
-        raise AssertionError("worker exception was lost")
-    assert await _run(lambda: 42) == 42
+        raise AssertionError("pending waiter was not cancelled")
+    assert isinstance(io.executor.submitted[0].exception(), error_type)
+    assert await io.run(lambda: 42) == 42
+    assert io.borrowed_tokens == 0
 asyncio.run(main())
+io.executor.shutdown()
 '''
     result = subprocess.run([sys.executable, "-c", script, error_type], capture_output=True, text=True, timeout=8,
                             env={**os.environ, "PYTHONPATH": str(Path(media_streaming.__file__).parents[1])})
     assert result.returncode == 0, result.stderr
-    assert "private-worker-marker" not in result.stderr

@@ -22,9 +22,9 @@ class Completion(Generic[T]):
         self.finished = False
         self.discarded = False
         self.value: T | None = None
-        self.error: BaseException | None = None
+        self.error: Exception | None = None
 
-    def complete(self, future: Future[tuple[T | None, BaseException | None]]) -> None:
+    def complete(self, future: Future[tuple[T | None, Exception | None]]) -> None:
         with self.lock:
             self.value, self.error = future.result()
             self.finished = True
@@ -59,36 +59,47 @@ class MediaThreadIO:
         self._limiter.set(self)
         completion = Completion(discard)
         context = copy_context()
+        loop = asyncio.get_running_loop()
+        notified = loop.create_future()
 
-        def worker() -> tuple[T | None, BaseException | None]:
+        def worker() -> tuple[T | None, Exception | None]:
             with self.lock:
                 self.borrowed_tokens += 1
             try:
                 return context.run(function), None
-            except BaseException as error:
-                # Thread boundary: carry even process-control exceptions as data,
-                # not asyncio Task exceptions that can terminate the event loop.
+            except Exception as error:
                 return None, error
 
         future = self.executor.submit(worker)
 
-        def completed(done: Future[tuple[T | None, BaseException | None]]) -> None:
+        def completed(done: Future[tuple[T | None, Exception | None]]) -> None:
+            error = done.exception()
             try:
-                completion.complete(done)
+                if error is None:
+                    completion.complete(done)
             finally:
                 with self.lock:
                     self.borrowed_tokens -= 1
 
+            def notify() -> None:
+                if notified.done():
+                    return
+                if error is None:
+                    notified.set_result(None)
+                else:
+                    notified.cancel()
+
+            loop.call_soon_threadsafe(notify)
+
         future.add_done_callback(completed)
-        wrapped = asyncio.wrap_future(future)
         cancelled = False
         with anyio.CancelScope(shield=True):
-            while not wrapped.done():
+            while not notified.done():
                 try:
-                    await asyncio.shield(wrapped)
+                    await asyncio.shield(notified)
                 except asyncio.CancelledError:
                     cancelled = True
                     completion.abandon()
-            if cancelled:
+            if cancelled or notified.cancelled():
                 raise asyncio.CancelledError() from None
             return completion.claim()
