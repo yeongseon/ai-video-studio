@@ -49,7 +49,7 @@ class FakeStorage:
         run_id: int,
         updates: dict[str, object],
         expected_stages: frozenset[str],
-    rejected_statuses: frozenset[str] | None = None,
+        rejected_statuses: frozenset[str] | None = None,
     ) -> tuple[bool, dict[str, object] | None]:
         self.cas_calls.append((run_id, updates, expected_stages))
         row = self._runs.get(run_id)
@@ -173,9 +173,10 @@ def test_merge_word_timing_sidecars_rebases_section_offsets(tmp_path: Path) -> N
             json.dumps(
                 {
                     "format": "short-form-studio/tts-word-timings",
-                    "version": 1,
+                    "version": 2,
                     "audio_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
                     "script_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                    "script_text": text,
                     "words": [
                         {
                             "type": "WordBoundary",
@@ -207,9 +208,60 @@ def test_merge_word_timing_sidecars_rebases_section_offsets(tmp_path: Path) -> N
     rows = envelope["words"]
     assert [row["offset"] for row in rows] == [0, 15_000_000]
     assert envelope["format"] == "short-form-studio/tts-word-timings"
-    assert envelope["version"] == 1
+    assert envelope["version"] == 2
     assert envelope["audio_sha256"] == hashlib.sha256(b"concatenated").hexdigest()
     assert envelope["script_sha256"] == hashlib.sha256("하나\n둘".encode()).hexdigest()
+
+
+@pytest.mark.parametrize("replacement", ["audio", "script"])
+def test_merge_word_timing_sidecars_rejects_replaced_section_before_publish(
+    tmp_path: Path,
+    replacement: str,
+) -> None:
+    # Given one section sidecar bound to the section's original audio and exact TTS input.
+    section = tmp_path / "section.mp3"
+    section.write_bytes(b"original audio")
+    section_text = "same"
+    Path(f"{section}.words.jsonl").write_text(
+        json.dumps(
+            {
+                "format": "short-form-studio/tts-word-timings",
+                "version": 2,
+                "audio_sha256": hashlib.sha256(section.read_bytes()).hexdigest(),
+                "script_sha256": hashlib.sha256(section_text.encode()).hexdigest(),
+                "script_text": section_text,
+                "words": [
+                    {
+                        "type": "WordBoundary",
+                        "offset": 0,
+                        "duration": 10_000_000,
+                        "text": "same",
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+    if replacement == "audio":
+        section.write_bytes(b"replacement audio")
+    else:
+        section_text = "different script"
+
+    class FakeFFmpeg:
+        def get_audio_duration(self, _path: str) -> float:
+            return 1.0
+
+    output = tmp_path / "full.mp3"
+    output.write_bytes(b"concatenated")
+    final_sidecar = Path(f"{output}.words.jsonl")
+    final_sidecar.write_text("stale", encoding="utf-8")
+
+    # When merge sees substituted section provenance, then no trusted final sidecar is published.
+    with pytest.raises(generate_audio_module.ProviderError):
+        generate_audio_module._merge_word_timing_sidecars(
+            [(str(section), section_text)], str(output), FakeFFmpeg()
+        )
+    assert not final_sidecar.exists()
 
 
 def test_invalidate_word_timing_sidecar_removes_stale_alignment(tmp_path: Path) -> None:
@@ -434,7 +486,7 @@ class _CASSkipStorage(FakeStorage):
         run_id: int,
         updates: dict[str, object],
         expected_stages: frozenset[str],
-    rejected_statuses: frozenset[str] | None = None,
+        rejected_statuses: frozenset[str] | None = None,
     ) -> tuple[bool, dict[str, object] | None]:
         self.cas_calls.append((run_id, updates, expected_stages))
         row = self._runs.get(run_id)

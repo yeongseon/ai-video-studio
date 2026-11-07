@@ -4,8 +4,6 @@
 from __future__ import annotations
 
 import logging
-import json
-import hashlib
 import os
 import shutil
 import wave
@@ -20,7 +18,12 @@ from creator_domain.models.stage import RunStage
 from creator_domain.sanitize import sanitize_path_component
 from creator_provider.exceptions import ProviderError, ProviderTimeoutError, RateLimitError
 from creator_provider.registry import get_default_registry
-from creator_provider.word_timing_envelope import FORMAT, VERSION
+from creator_provider.word_timing_envelope import (
+    WordTimingRow,
+    envelope,
+    read_envelope,
+    write_atomic,
+)
 from creator_service.audio_service import audio_service as _audio_service
 from creator_service.cost_config import COST_AUDIO_GENERATION
 from creator_service.script_service import script_service as _script_service
@@ -50,12 +53,12 @@ def _strip_markdown_for_tts(text: str) -> str:
     - Empty lines collapse to single newline
     """
     # First, remove inline [beat: X] [emotion: Y] markers
-    text = re.sub(r'\[beat:\s*[^\]]*\]', '', text)
-    text = re.sub(r'\[emotion:\s*[^\]]*\]', '', text)
+    text = re.sub(r"\[beat:\s*[^\]]*\]", "", text)
+    text = re.sub(r"\[emotion:\s*[^\]]*\]", "", text)
     # Remove parenthetical stage directions (Korean or English)
-    text = re.sub(r'\([^)]*(?:마지막|여운|마무리|beat|pause|silence|direction)[^)]*\)', '', text)
+    text = re.sub(r"\([^)]*(?:마지막|여운|마무리|beat|pause|silence|direction)[^)]*\)", "", text)
     # If LLM self-corrected (e.g. "수정된 버전"), only keep content BEFORE the revision marker
-    revision_markers = ['수정된 버전', '다시 작성', '수정:', 'revised version', 'corrected version']
+    revision_markers = ["수정된 버전", "다시 작성", "수정:", "revised version", "corrected version"]
     for marker in revision_markers:
         idx = text.lower().find(marker.lower())
         if idx > 50:  # Only cut if we have substantial content before the marker
@@ -74,20 +77,34 @@ def _strip_markdown_for_tts(text: str) -> str:
         if stripped.startswith("※"):
             continue
         # Skip lines that are only emojis/symbols
-        if stripped and all(c in '🤯📝🙏❤️💔👆👉✨⭐🔥💡🎯' or ord(c) > 0x1F000 for c in stripped.replace(' ', '')):
+        if stripped and all(
+            c in "🤯📝🙏❤️💔👆👉✨⭐🔥💡🎯" or ord(c) > 0x1F000 for c in stripped.replace(" ", "")
+        ):
             continue
         # Skip meta-instruction lines the LLM may have regurgitated
-        if any(kw in stripped for kw in ('어절', '나레이션 텍스트', '이내여야', '띄어쓰기 기준', '단어 수', '이내', '단어')):
+        if any(
+            kw in stripped
+            for kw in (
+                "어절",
+                "나레이션 텍스트",
+                "이내여야",
+                "띄어쓰기 기준",
+                "단어 수",
+                "이내",
+                "단어",
+            )
+        ):
             continue
         # Skip lines matching instruction patterns (N초 이내, N-N 단어, etc.)
-        if re.search(r'\d+초\s*이내|\d+-\d+\s*단어|\d+~\d+어절', stripped):
+        if re.search(r"\d+초\s*이내|\d+-\d+\s*단어|\d+~\d+어절", stripped):
             continue
         # Skip lines that are purely metadata after stripping
-        if stripped and re.match(r'^[\s,]*$', stripped):
+        if stripped and re.match(r"^[\s,]*$", stripped):
             continue
         if stripped:
             lines.append(stripped)
     return "\n".join(lines)
+
 
 def _get_audio_duration_seconds(path: str) -> float | None:
     """Get audio duration. Supports WAV natively; estimates MP3 from file size."""
@@ -111,38 +128,40 @@ def _merge_word_timing_sidecars(
     sections: list[tuple[str, str]], output_path: str, ffmpeg_service: object
 ) -> None:
     merged_path = Path(f"{output_path}.words.jsonl")
+    merged_path.unlink(missing_ok=True)
     offset_ticks = 0
-    merged_rows: list[dict[str, object]] = []
+    merged_rows: list[WordTimingRow] = []
     spoken_sections: list[str] = []
     for audio_path, section_text in sections:
         sidecar = Path(f"{audio_path}.words.jsonl")
         if not sidecar.is_file():
             raise ProviderError(f"Missing Edge TTS word timing metadata: {sidecar}")
-        document = json.loads(sidecar.read_text(encoding="utf-8"))
+        document = read_envelope(sidecar, Path(audio_path), section_text)
         for row in document["words"]:
-            row["offset"] = int(row["offset"]) + offset_ticks
-            merged_rows.append(row)
+            merged_rows.append(
+                {
+                    **row,
+                    "offset": row["offset"] + offset_ticks,
+                }
+            )
         spoken_sections.append(section_text)
         duration = ffmpeg_service.get_audio_duration(audio_path)
         offset_ticks += round(duration * _TICKS_PER_SECOND)
-    payload = {
-        "format": FORMAT,
-        "version": VERSION,
-        "audio_sha256": hashlib.sha256(Path(output_path).read_bytes()).hexdigest(),
-        "script_sha256": hashlib.sha256("\n".join(spoken_sections).encode()).hexdigest(),
-        "words": merged_rows,
-    }
-    temporary_path = merged_path.with_name(f".{merged_path.name}.tmp")
-    temporary_path.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
-    os.replace(temporary_path, merged_path)
+    write_atomic(
+        merged_path,
+        envelope(Path(output_path), "\n".join(spoken_sections), merged_rows),
+    )
 
 
 def _invalidate_word_timing_sidecar(audio_path: str) -> None:
     Path(f"{audio_path}.words.jsonl").unlink(missing_ok=True)
 
+
 @celery_app.task(
     bind=True,
-    base=production_task(frozenset({RunStage.VISUAL_ASSET_REVIEW.value, RunStage.AUDIO_GENERATING.value})),
+    base=production_task(
+        frozenset({RunStage.VISUAL_ASSET_REVIEW.value, RunStage.AUDIO_GENERATING.value})
+    ),
     autoretry_for=(ProviderTimeoutError, RateLimitError),
     retry_backoff=30,
     retry_jitter=True,
@@ -185,7 +204,9 @@ def generate_audio(
         # Strip markdown formatting that should not be read aloud
         script_text = _strip_markdown_for_tts(script_text)
         if not script_text:
-            raise TaskInputError(f"Script for run {run_id} has no speakable content after stripping markdown")
+            raise TaskInputError(
+                f"Script for run {run_id} has no speakable content after stripping markdown"
+            )
 
         registry = get_default_registry()
         entry = registry.resolve(tts_model)
@@ -203,8 +224,14 @@ def generate_audio(
 
         # Use .mp3 for edge-tts, .wav for others
         ext = ".mp3" if entry.provider_type == "edge_tts" else ".wav"
-        delivery_dir = Path(_ARTIFACT_ROOT) / str(run_id) / "audio" / sanitize_path_component(
-            ctx.task_id, label="task_id",
+        delivery_dir = (
+            Path(_ARTIFACT_ROOT)
+            / str(run_id)
+            / "audio"
+            / sanitize_path_component(
+                ctx.task_id,
+                label="task_id",
+            )
         )
         audio_path = str(delivery_dir / f"audio{ext}")
         try:
@@ -217,6 +244,7 @@ def generate_audio(
             if entry.provider_type == "edge_tts" and draft.structured_script:
                 try:
                     from creator_service.recipe_profile import resolve_quality_profile
+
                     qp = resolve_quality_profile("shorts_default")
                     sections = draft.structured_script
                     section_audio_paths: list[str] = []
@@ -240,10 +268,6 @@ def generate_audio(
                             rate = qp.tts_rate_climax
                         else:
                             rate = qp.tts_rate_body
-
-                        # Add dramatic pause before climax
-                        if idx == len(sections) - 2 and len(sections) >= 4:
-                            section_text = "..." + section_text
 
                         section_path = str(delivery_dir / f"section_{idx}{ext}")
                         section_params = dict(entry.default_params or {})
@@ -278,6 +302,7 @@ def generate_audio(
                             )
                         # Also create concatenated full audio as fallback
                         from creator_service.ffmpeg_service import FFmpegService
+
                         _ffmpeg = FFmpegService()
                         _ffmpeg.concatenate_audio(section_audio_paths, audio_path)
                         _merge_word_timing_sidecars(
@@ -288,7 +313,8 @@ def generate_audio(
                         per_section_generated = True
                         logger.info(
                             "Per-section TTS generated for run %d (%d sections)",
-                            run_id, len(section_audio_paths)
+                            run_id,
+                            len(section_audio_paths),
                         )
                 except SoftTimeLimitExceeded:
                     raise
@@ -298,7 +324,8 @@ def generate_audio(
                     _invalidate_word_timing_sidecar(audio_path)
                     logger.warning(
                         "Per-section TTS failed for run %d, falling back to single-pass: %s",
-                        run_id, sec_exc
+                        run_id,
+                        sec_exc,
                     )
                     per_section_generated = False
 
@@ -310,9 +337,10 @@ def generate_audio(
                 if entry.provider_type == "edge_tts":
                     try:
                         from creator_service.recipe_profile import resolve_quality_profile
+
                         qp = resolve_quality_profile("shorts_default")
                         params.update(qp.to_tts_params())
-                        logger.info("Applied TTS rate=%s for run %d", params.get('rate'), run_id)
+                        logger.info("Applied TTS rate=%s for run %d", params.get("rate"), run_id)
                     except Exception:
                         pass
                 try:
@@ -335,11 +363,17 @@ def generate_audio(
                     raise
                 except Exception as exc:
                     message = str(exc).lower()
-                    if "429" in message or "rate limit" in message or "too many requests" in message:
+                    if (
+                        "429" in message
+                        or "rate limit" in message
+                        or "too many requests" in message
+                    ):
                         raise RateLimitError(
                             f"Provider rate limited audio generation for run {run_id}"
                         ) from exc
-                    raise ProviderError(f"Provider failed audio generation for run {run_id}") from exc
+                    raise ProviderError(
+                        f"Provider failed audio generation for run {run_id}"
+                    ) from exc
         except BaseException:
             if delivery_dir.is_dir() and not delivery_dir.is_symlink():
                 try:
@@ -361,7 +395,8 @@ def generate_audio(
                 audio_seconds=audio_seconds,
                 cost_usd=(
                     Decimal(str(audio_seconds)) * Decimal("0.0003")
-                    if audio_seconds is not None else delivery_cost
+                    if audio_seconds is not None
+                    else delivery_cost
                 ),
                 workspace_id=ctx.workspace_id,
                 project_id=ctx.project_id,
