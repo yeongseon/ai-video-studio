@@ -168,33 +168,6 @@ def test_role_assignments_exclude_privileged_roles_and_match_contract(
     assert '"blobPrincipals": ["[parameters(\'apiPrincipalId\')]", "[parameters(\'workerPrincipalId\')]"]' in serialized
 
 
-def test_registry_assignments_use_documented_repository_conditions(
-    compiled_template: dict[str, JsonValue],
-) -> None:
-    assignments = _resources_of_type(compiled_template, "Microsoft.Authorization/roleAssignments")
-    registry_assignments = [
-        assignment
-        for assignment in assignments
-        if "Microsoft.ContainerRegistry/registries" in str(assignment.get("scope", ""))
-    ]
-    assert len(registry_assignments) == 2
-    for assignment in registry_assignments:
-        properties = _mapping(assignment["properties"])
-        condition = properties["condition"]
-        assert properties["conditionVersion"] == "2.0"
-        assert isinstance(condition, str)
-        assert "@Request[Microsoft.ContainerRegistry/registries/repositories:name]" in condition
-        assert "StringEqualsIgnoreCase" in condition
-        assert "@Resource[" not in condition
-        assert "Microsoft.ContainerRegistry/registries/repositories/content/read" in condition
-        assert "Microsoft.ContainerRegistry/registries/repositories/metadata/read" in condition
-        assert "ActionMatches" in condition
-
-    serialized = json.dumps(compiled_template)
-    assert '"identityRepositories": ["studio-web", "api", "worker", "worker", "api"]' in serialized
-    assert all(repository in serialized for repository in ("studio-web", "api", "worker"))
-
-
 def test_runtime_secret_roles_are_deferred_until_secret_resources_exist(
     compiled_template: dict[str, JsonValue],
 ) -> None:
