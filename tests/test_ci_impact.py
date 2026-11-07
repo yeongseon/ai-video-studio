@@ -7,7 +7,13 @@ from pathlib import Path
 
 import pytest
 
-from scripts.ci_impact import GATES, classify_paths
+from scripts.ci_impact import (
+    GATES,
+    PROTECTED_PRODUCTION_PATHS,
+    _parse_raw_diff,
+    classify_changes,
+    classify_paths,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -181,6 +187,23 @@ def test_protected_governance_boundaries_require_every_gate(path: str) -> None:
     assert all(gates.values()), (path, gates)
 
 
+@pytest.mark.parametrize("entry", PROTECTED_PRODUCTION_PATHS)
+def test_protected_production_registry_is_tracked_and_requires_every_gate(
+    entry: str,
+) -> None:
+    tracked = _git(ROOT, "ls-files")
+    tracked_paths = tracked.splitlines()
+    matches = (
+        [path for path in tracked_paths if path.startswith(entry)]
+        if entry.endswith("/")
+        else [entry] if entry in tracked_paths else []
+    )
+
+    assert matches, entry
+    for path in matches:
+        assert all(classify_paths([path]).values()), path
+
+
 def test_markdown_is_docs_only_only_in_docs_or_repository_root() -> None:
     # Given markdown in the two reviewed documentation locations and in code.
     root_docs = classify_paths(["REVIEWING.md", "docs/operations/CI.md"])
@@ -251,6 +274,64 @@ def test_docs_executable_mode_change_fails_closed(tmp_path: Path) -> None:
     head = _commit(repo, "make docs executable")
 
     assert all(_classify_git(repo, base, head, tmp_path).values())
+
+
+def test_docs_gitlink_add_fails_closed(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _git(repo, "update-index", "--add", "--cacheinfo", "160000", base, "docs/module.md")
+    head = _git(repo, "commit", "-m", "add docs gitlink") and _git(repo, "rev-parse", "HEAD")
+
+    assert all(_classify_git(repo, base, head, tmp_path).values())
+
+
+def test_regular_docs_file_replaced_by_gitlink_fails_closed(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    _git(repo, "rm", "--cached", "docs/guide.md")
+    (repo / "docs/guide.md").unlink()
+    _git(repo, "update-index", "--add", "--cacheinfo", "160000", base, "docs/guide.md")
+    head = _git(repo, "commit", "-m", "replace docs file with gitlink") and _git(repo, "rev-parse", "HEAD")
+
+    assert all(_classify_git(repo, base, head, tmp_path).values())
+
+
+def test_protected_source_copy_to_docs_keeps_source_boundary(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    (repo / "docs/auth-copy.md").write_text(
+        (repo / "apps/api/src/shorts_api/auth.py").read_text(),
+    )
+    head = _commit(repo, "copy protected source into docs")
+
+    assert all(_classify_git(repo, base, head, tmp_path).values())
+
+
+def test_docs_copy_with_regular_modes_remains_docs_only(tmp_path: Path) -> None:
+    repo, base = _repository(tmp_path)
+    (repo / "docs/guide-copy.md").write_text((repo / "docs/guide.md").read_text())
+    head = _commit(repo, "copy docs")
+
+    gates = _classify_git(repo, base, head, tmp_path)
+    assert gates["docs"] and sum(gates.values()) == 1
+
+
+@pytest.mark.parametrize("name", ["space name.md", "한글.md", "line\nbreak.md"])
+def test_docs_names_with_special_characters_remain_docs_only(
+    tmp_path: Path,
+    name: str,
+) -> None:
+    repo, base = _repository(tmp_path)
+    (repo / "docs" / name).write_text("# Safe name\n")
+    head = _commit(repo, "add specially named docs")
+
+    gates = _classify_git(repo, base, head, tmp_path)
+    assert gates["docs"] and sum(gates.values()) == 1
+
+
+@pytest.mark.parametrize("status", ["X", "R", "C100extra"])
+def test_malformed_or_unknown_raw_status_fails_closed(status: str) -> None:
+    raw = f":100644 100644 {'0' * 40} {'1' * 40} {status}\0docs/guide.md\0"
+
+    with pytest.raises(SystemExit, match="Malformed git diff --raw"):
+        classify_changes(_parse_raw_diff(raw))
 
 
 def test_gate_names_are_stable() -> None:

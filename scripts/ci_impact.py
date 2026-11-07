@@ -26,6 +26,34 @@ PROTECTED_PREFIXES = (
     "apps/worker-orchestrator/",
     "apps/api/migrations/",
 )
+PROTECTED_PRODUCTION_PATHS = (
+    "apps/api/src/shorts_api/auth.py", "apps/api/src/shorts_api/auth_lookup.py",
+    "apps/api/src/shorts_api/lifecycle.py", "apps/api/src/shorts_api/middleware/",
+    "apps/api/src/shorts_api/routes/", "apps/api/migrations/",
+    "apps/worker-orchestrator/",
+    "packages/creator-domain/creator_domain/models/project.py", "packages/creator-domain/creator_domain/models/pipeline_run.py",
+    "packages/creator-domain/creator_domain/models/run_task.py", "packages/creator-domain/creator_domain/models/user.py",
+    "packages/creator-provider/creator_provider/api_keys.py", "packages/creator-provider/creator_provider/base.py",
+    "packages/creator-provider/creator_provider/registry.py", "packages/creator-provider/creator_provider/exceptions.py",
+    "packages/creator-service/creator_service/postgres_workspace_storage.py",
+    "packages/creator-service/creator_service/postgres_project_storage.py",
+    "packages/creator-service/creator_service/object_storage.py", "packages/creator-service/creator_service/storage_policy.py",
+    "packages/creator-service/creator_service/artifact_storage_integration.py",
+    "packages/creator-service/creator_service/postgres_media_retention_storage.py",
+    "packages/creator-service/creator_service/dispatch_quota.py", "packages/creator-service/creator_service/dispatch_calls.py",
+    "packages/creator-service/creator_service/dispatch_cas.py", "packages/creator-service/creator_service/dispatch_reconciler.py",
+    "packages/creator-service/creator_service/dispatch_runtime.py",
+    "packages/creator-service/creator_service/task_dispatch_service.py",
+    "packages/creator-service/creator_service/media_retention.py", "packages/creator-service/creator_service/artifact_download_service.py",
+    "packages/creator-service/creator_service/broker_recovery.py", "packages/creator-service/creator_service/celery_dlq_fallback.py",
+    "docker-compose.yml", "docker-compose.dev.yml", "docker-compose.e2e.yml",
+    "docker-compose.local-server.yml", "docker-compose.scaled-workers.yml",
+    "apps/api/Dockerfile", "apps/studio-web/Dockerfile", "apps/worker-orchestrator/Dockerfile",
+    "apps/studio-web/nginx.conf.template",
+    "apps/studio-web/docker-entrypoint.d/40-release-identity.sh",
+    "scripts/build_release_manifest.py", "scripts/release_manifest.py",
+    "scripts/cutover_runtime_acceptance.sh", "scripts/release_lifecycle_acceptance.sh",
+)
 PROTECTED_SERVICE_WORDS = (
     "storage", "dispatch", "quota", "delet", "owner", "broker", "celery",
     "claim", "reconcile", "retention", "artifact", "upload",
@@ -45,7 +73,8 @@ FULL_GATE_FILES = {
 class GitChange:
     old_mode: str
     new_mode: str
-    path: str
+    status: str
+    paths: tuple[str, ...]
 
 
 def _is_documentation(path: str) -> bool:
@@ -59,11 +88,19 @@ def _is_documentation(path: str) -> bool:
     ) or ("/" not in path and path.endswith(".md"))
 
 
+def _is_protected_production_path(path: str) -> bool:
+    return any(
+        path.startswith(entry) if entry.endswith("/") else path == entry
+        for entry in PROTECTED_PRODUCTION_PATHS
+    )
+
+
 def _is_full_gate_path(path: str) -> bool:
     path_lower = path.lower()
     name = PurePosixPath(path).name.lower()
     return (
-        path_lower.startswith(PROTECTED_PREFIXES)
+        _is_protected_production_path(path)
+        or path_lower.startswith(PROTECTED_PREFIXES)
         or path_lower.startswith("apps/api/src/shorts_api/auth")
         or (
             path_lower.startswith("packages/creator-service/")
@@ -168,29 +205,42 @@ def _parse_raw_diff(raw: str) -> tuple[GitChange, ...]:
     fields = raw.split("\0")
     if fields[-1] == "":
         fields.pop()
-    if len(fields) % 2:
-        raise SystemExit("Malformed git diff --raw output")
     changes = []
-    for index in range(0, len(fields), 2):
-        metadata, path = fields[index:index + 2]
+    index = 0
+    while index < len(fields):
+        metadata = fields[index]
+        index += 1
         parts = metadata.split()
         if len(parts) != 5 or not parts[0].startswith(":"):
             raise SystemExit("Malformed git diff --raw metadata")
-        changes.append(GitChange(parts[0][1:], parts[1], path))
+        status = parts[4]
+        status_letter = status[:1]
+        if status_letter not in {"A", "C", "D", "M", "R", "T"}:
+            raise SystemExit("Malformed git diff --raw status")
+        if status_letter in {"R", "C"}:
+            if not status[1:].isdigit() or index + 1 >= len(fields):
+                raise SystemExit("Malformed git diff --raw status")
+            paths = (fields[index], fields[index + 1])
+            index += 2
+        else:
+            if len(status) != 1 or index >= len(fields):
+                raise SystemExit("Malformed git diff --raw status")
+            paths = (fields[index],)
+            index += 1
+        if not all(paths):
+            raise SystemExit("Malformed git diff --raw path")
+        changes.append(GitChange(parts[0][1:], parts[1], status, paths))
     return tuple(changes)
 
 
 def _has_unsafe_docs_mode(change: GitChange) -> bool:
-    if "120000" in {change.old_mode, change.new_mode}:
-        return True
-    old_exec = int(change.old_mode, 8) & 0o111
-    new_exec = int(change.new_mode, 8) & 0o111
-    return old_exec != new_exec
+    return any(mode not in {"000000", "100644"} for mode in (change.old_mode, change.new_mode))
 
 
 def classify_changes(changes: tuple[GitChange, ...]) -> dict[str, bool]:
-    gates = classify_paths([change.path for change in changes])
-    if any(_is_documentation(change.path) and _has_unsafe_docs_mode(change) for change in changes):
+    paths = [path for change in changes for path in change.paths]
+    gates = classify_paths(paths)
+    if any(_has_unsafe_docs_mode(change) for change in changes):
         return dict.fromkeys(GATES, True)
     return gates
 
@@ -200,7 +250,7 @@ def main() -> None:
         raise SystemExit("Usage: ci_impact.py BASE_SHA HEAD_SHA")
     raw_diff = subprocess.run(
         [
-            "git", "diff", "--raw", "-z", "--no-renames",
+            "git", "diff", "--raw", "-z", "--find-renames", "--find-copies-harder",
             "--diff-filter=ACDMRT", sys.argv[1], sys.argv[2],
         ],
         check=True, text=True, capture_output=True,
