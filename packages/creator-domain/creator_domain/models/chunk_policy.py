@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Final
+from typing import Callable, Final
+
+from pydantic import BaseModel, ValidationError as PydanticValidationError
 
 from creator_domain.exceptions import ChunkManifestValidationError
 
@@ -10,6 +12,13 @@ from .output_spec import AudioCodec, EncodingProfile, OutputSpec, VideoCodec
 DEFAULT_MAX_CHUNK_SECONDS: Final = 90
 DEFAULT_MAX_CHUNK_COUNT: Final = 1_000
 DEFAULT_AUDIO_SAMPLE_RATE: Final = 48_000
+
+
+def validate_snapshot(factory: Callable[[], BaseModel]) -> None:
+    try:
+        _ = factory()
+    except PydanticValidationError as error:
+        raise ChunkManifestValidationError("invalid chunk manifest snapshot") from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -54,6 +63,9 @@ class ChunkOutputSpec:
     height: int
     fps: int
 
+    def __post_init__(self) -> None:
+        validate_snapshot(lambda: OutputSpec(width=self.width, height=self.height, fps=self.fps))
+
     @classmethod
     def from_output_spec(cls, value: OutputSpec) -> ChunkOutputSpec:
         return cls(width=value.width, height=value.height, fps=value.fps)
@@ -66,6 +78,17 @@ class ChunkEncodingProfile:
     audio_codec: AudioCodec
     crf: int
     preset: str
+
+    def __post_init__(self) -> None:
+        validate_snapshot(
+            lambda: EncodingProfile(
+                name=self.name,
+                video_codec=self.video_codec,
+                audio_codec=self.audio_codec,
+                crf=self.crf,
+                preset=self.preset,
+            )
+        )
 
     @classmethod
     def from_encoding_profile(cls, value: EncodingProfile) -> ChunkEncodingProfile:

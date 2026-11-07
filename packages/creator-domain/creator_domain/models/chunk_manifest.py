@@ -16,8 +16,10 @@ from .chunk_policy import (
     ChunkEncodingProfile,
     ChunkOutputSpec,
     ResolvedChunkPolicy,
+    validate_snapshot,
 )
 from .output_spec import AudioCodec, VideoCodec
+from .render_segment import RenderSegment, RenderSegmentKind
 
 SCHEMA_VERSION: Final = 1
 
@@ -95,6 +97,16 @@ class ChunkSourceRef:
     content_revision: int
     start_frame: int
     end_frame: int
+
+    def __post_init__(self) -> None:
+        validate_snapshot(
+            lambda: RenderSegment(
+                kind=RenderSegmentKind.IMAGE,
+                source=self.source,
+                timeline_start_seconds=0,
+                duration_seconds=1,
+            )
+        )
 
 
 @dataclass(frozen=True, slots=True)
