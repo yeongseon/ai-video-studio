@@ -1,13 +1,19 @@
 """Real scene uploads at the cancellation/asset-acceptance boundary."""
 
 from pathlib import Path
+from datetime import datetime, timezone
 from typing import BinaryIO
 
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 from creator_service import artifact_storage_integration as integration
 from creator_service import object_storage
-from creator_service.object_storage import LocalStorageBackend, StorageResult
+from creator_service.rejected_scene_cleanup import rejected_scene_cleanup_service
+from creator_service.object_storage import LocalStorageBackend, StorageDeletionError, StorageResult
+from creator_service.visual_asset_service import SceneAssetAcceptanceRejected
 from tasks.scene_batch_lifecycle import SceneBatch
+from tasks.task_runner import TaskContext
+from tasks import generate_scene_image as images
 from worker_loop import run_in_worker_loop
 
 from .scene_cancellation_support import SceneCase, scene_case as scene_case
@@ -15,6 +21,26 @@ from .terminal_postgres_support import terminal_pool as terminal_pool
 from .terminal_validation_support import runner_case as runner_case
 
 REAL_UPLOAD = integration.store_artifact_file
+
+
+@pytest.fixture
+def rejected_cleanup_records(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+    records: list[tuple[str, str]] = []
+
+    async def record(**fields: object) -> int:
+        records.append((str(fields["storage_key"]), str(fields["local_path"])))
+        return len(records)
+
+    async def cleanup(_record_id: int, storage_key: str, local_path: str) -> None:
+        try:
+            object_storage.get_storage_backend().delete(storage_key)
+            Path(local_path).unlink(missing_ok=True)
+        except Exception:
+            return
+
+    monkeypatch.setattr(rejected_scene_cleanup_service, "record", record)
+    monkeypatch.setattr(rejected_scene_cleanup_service, "cleanup", cleanup)
+    return records
 
 
 class RemoteStorage(LocalStorageBackend):
@@ -111,3 +137,155 @@ def test_save_boundary_preserves_media_when_commit_may_be_accepted(
     assets = run_in_worker_loop(case.assets.storage.list_assets_by_run(case.runner.run_id))
     assert len(assets) == (0 if save_outcome == "error_before_commit" else 1)
     assert result["succeeded"] == (1 if save_outcome == "accepted" else 0)
+
+
+@pytest.mark.parametrize("shared_key", [False, True])
+def test_rejected_acceptance_removes_only_fresh_batch_owned_upload(
+    scene_case: SceneCase,
+    upload_backend: LocalStorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    shared_key: bool,
+    rejected_cleanup_records: list[tuple[str, str]],
+) -> None:
+    case = scene_case
+    case.provider.released.set()
+    prior_key = f"{case.runner.run_id}/scenes/prior.png"
+    upload_backend.upload(prior_key, b"accepted")
+    uploaded: list[StorageResult] = []
+    usage_calls: list[int] = []
+
+    def upload(run_id: int, path: str, content_type: str) -> StorageResult:
+        result = REAL_UPLOAD(run_id, path, content_type)
+        if shared_key:
+            result.key = prior_key
+        uploaded.append(result)
+        return result
+
+    async def reject(_row: dict[str, object]) -> dict[str, object]:
+        raise SceneAssetAcceptanceRejected(run_id=case.runner.run_id)
+
+    async def usage(*_args: object, **_kwargs: object) -> None:
+        usage_calls.append(1)
+
+    monkeypatch.setattr(integration, "store_artifact_file", upload)
+    monkeypatch.setattr(case.assets.storage, "save_asset", reject)
+    monkeypatch.setattr(images, "record_provider_call", usage)
+
+    result = case.invoke()
+
+    assert result["status"] == "cancelled"
+    assert result["succeeded"] == 0
+    assert result["failed"] == 0
+    assert usage_calls == []
+    if not shared_key:
+        assert not upload_backend.exists(uploaded[0].key)
+    assert upload_backend.download_bytes(prior_key) == b"accepted"
+    assets = run_in_worker_loop(case.assets.storage.list_assets_by_run(case.runner.run_id))
+    assert assets == []
+
+
+@pytest.mark.parametrize("failure", [StorageDeletionError(key="fresh"), RuntimeError("down")])
+def test_rejected_acceptance_records_exact_key_before_failed_cleanup(
+    scene_case: SceneCase,
+    upload_backend: LocalStorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    failure: Exception,
+    rejected_cleanup_records: list[tuple[str, str]],
+) -> None:
+    case = scene_case
+    case.provider.released.set()
+    async def reject(_row: dict[str, object]) -> dict[str, object]:
+        raise SceneAssetAcceptanceRejected(run_id=case.runner.run_id)
+
+    def fail_delete(_key: str) -> bool:
+        raise failure
+
+    monkeypatch.setattr(case.assets.storage, "save_asset", reject)
+    monkeypatch.setattr(upload_backend, "delete", fail_delete)
+
+    result = case.invoke()
+
+    expected_key = f"{case.runner.run_id}/scenes/{case.provider.paths[0].name}"
+    assert result["status"] == "cancelled"
+    assert rejected_cleanup_records == [(expected_key, str(case.provider.paths[0]))]
+    assert case.provider.paths[0] in case.provider.paths
+
+
+def test_rejected_acceptance_never_records_alias_key(
+    scene_case: SceneCase,
+    upload_backend: LocalStorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    rejected_cleanup_records: list[tuple[str, str]],
+) -> None:
+    case = scene_case
+    case.provider.released.set()
+    alias_key = f"{case.runner.run_id}/scenes/shared.png"
+    upload_backend.upload(alias_key, b"accepted")
+
+    def upload(run_id: int, path: str, content_type: str) -> StorageResult:
+        result = REAL_UPLOAD(run_id, path, content_type)
+        result.key = alias_key
+        return result
+
+    async def reject(_row: dict[str, object]) -> dict[str, object]:
+        raise SceneAssetAcceptanceRejected(run_id=case.runner.run_id)
+
+    monkeypatch.setattr(integration, "store_artifact_file", upload)
+    monkeypatch.setattr(case.assets.storage, "save_asset", reject)
+
+    result = case.invoke()
+
+    assert result["status"] == "cancelled"
+    assert rejected_cleanup_records == []
+    assert upload_backend.download_bytes(alias_key) == b"accepted"
+
+
+@pytest.mark.parametrize("interrupt", [SoftTimeLimitExceeded(), KeyboardInterrupt()])
+def test_rejected_cleanup_interruption_leaves_durable_record(
+    scene_case: SceneCase,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    interrupt: BaseException,
+) -> None:
+    case = scene_case
+    path = tmp_path / "fresh.png"
+    path.write_bytes(b"fresh")
+    key = f"{case.runner.run_id}/scenes/{path.name}"
+    records: list[str] = []
+
+    async def record(**fields: object) -> int:
+        records.append(str(fields["storage_key"]))
+        return 703
+
+    async def cleanup(_record_id: int, _storage_key: str, _local_path: str) -> None:
+        raise interrupt
+
+    monkeypatch.setattr(rejected_scene_cleanup_service, "record", record)
+    monkeypatch.setattr(rejected_scene_cleanup_service, "cleanup", cleanup)
+    batch = SceneBatch(
+        TaskContext(
+            run_id=case.runner.run_id,
+            task_id=case.task_id,
+            run={},
+            workspace_id=1,
+            project_id=1,
+            start_time=datetime.now(timezone.utc),
+        ),
+        case.runner.runs,
+    )
+    batch.local_outputs.add(path)
+    uploaded = StorageResult(key, 5, "image/png", "abc", "s3")
+
+    with pytest.raises(type(interrupt)):
+        run_in_worker_loop(batch.discard_rejected_upload(str(path), uploaded))
+
+    assert records == [key]
+    assert path in batch.local_outputs
+
+    async def retry_cleanup(_record_id: int, storage_key: str, local_path: str) -> None:
+        assert storage_key == key
+        Path(local_path).unlink(missing_ok=True)
+
+    monkeypatch.setattr(rejected_scene_cleanup_service, "cleanup", retry_cleanup)
+    run_in_worker_loop(rejected_scene_cleanup_service.cleanup(703, key, str(path)))
+    assert not path.exists()

@@ -3,6 +3,7 @@ import asyncio
 import pytest
 from creator_service.visual_asset_service import (
     InMemoryVisualAssetStorage,
+    SceneAssetAcceptanceRejected,
     VisualAssetService,
 )
 
@@ -19,6 +20,23 @@ def storage() -> InMemoryVisualAssetStorage:
 @pytest.fixture
 def service(storage: InMemoryVisualAssetStorage) -> VisualAssetService:
     return VisualAssetService(storage)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("project_status,run_status", [("deleting", "running"), ("draft", "cancelled")])
+async def test_memory_storage_rejects_assets_after_deletion_barrier(
+    project_status: str,
+    run_status: str,
+) -> None:
+    async def accept(_run_id: int) -> bool:
+        return project_status != "deleting" and run_status != "cancelled"
+
+    service = VisualAssetService(InMemoryVisualAssetStorage(acceptance_guard=accept))
+
+    with pytest.raises(SceneAssetAcceptanceRejected):
+        await service.create_asset(1, "scene-1", "/new.png")
+
+    assert await service.list_by_scene(1, "scene-1") == []
 
 
 # -- create_asset ---------------------------------------------------------------

@@ -4,11 +4,32 @@ from pathlib import Path
 
 import httpx
 import pytest
+import anyio
 from creator_service.project_service import ProjectService
 from creator_service.postgres_project_storage import PostgresProjectStorage
 from creator_service.object_storage import LocalStorageBackend
 
 from project_deletion_support import DeletionDatabase, deletion_database, deletion_client
+
+
+@pytest.mark.asyncio
+async def test_two_concurrent_deletes_are_idempotent_without_error_leak(
+    deletion_client: httpx.AsyncClient,
+    deletion_database: DeletionDatabase,
+) -> None:
+    responses: list[httpx.Response] = []
+
+    async def delete() -> None:
+        responses.append(await deletion_client.delete("/api/creator/projects/1"))
+
+    with anyio.fail_after(10):
+        async with anyio.create_task_group() as group:
+            group.start_soon(delete)
+            group.start_soon(delete)
+
+    assert sorted(response.status_code for response in responses) in ([200, 200], [200, 404])
+    assert all("traceback" not in response.text.lower() for response in responses)
+    assert await deletion_database.pool.fetchval("SELECT count(*) FROM creator_projects WHERE id=1") == 0
 
 
 @pytest.mark.asyncio
