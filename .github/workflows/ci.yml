@@ -7,7 +7,44 @@ on:
     branches: [main]
 
 jobs:
+  # Pull-request-only impact classifier. Unknown paths are treated as high risk.
+  # All jobs run unconditionally on main push (release candidate validation).
+  impact:
+    runs-on: ubuntu-latest
+    outputs:
+      code: ${{ steps.detect.outputs.code }}
+      restore: ${{ steps.detect.outputs.restore }}
+      first_short: ${{ steps.detect.outputs.first_short }}
+      worker: ${{ steps.detect.outputs.worker }}
+      docker: ${{ steps.detect.outputs.docker }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Classify PR file impact
+        id: detect
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python3 scripts/ci_impact.py "$BASE_SHA" "$HEAD_SHA"
+
+  hygiene:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Validate changed-file whitespace
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: git diff --check "$BASE_SHA" "$HEAD_SHA"
+
   restore-drill:
+    needs: impact
+    if: ${{ github.event_name != 'pull_request' || needs.impact.outputs.restore == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -38,6 +75,8 @@ jobs:
         run: python3 -m pytest tests/test_restore_drill.py -v -s
 
   lint:
+    needs: impact
+    if: ${{ github.event_name != 'pull_request' || needs.impact.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -72,6 +111,8 @@ jobs:
         run: npm --prefix apps/studio-web run lint
 
   test:
+    needs: impact
+    if: ${{ github.event_name != 'pull_request' || needs.impact.outputs.code == 'true' }}
     runs-on: ubuntu-latest
     services:
       postgres:
@@ -123,6 +164,8 @@ jobs:
         run: npm --prefix apps/studio-web ci
       - name: Test architecture dependency checker
         run: python3 -m pytest tests/test_package_dependency_cli.py tests/test_package_dependency_parser.py tests/test_package_dependency_compliance.py tests/test_architecture_diagrams.py -q
+      - name: Test PR impact classifier fail-closed policy
+        run: python3 -m pytest tests/test_ci_impact.py -q
       - name: Test Packages (with coverage)
         run: |
           git fetch origin main:refs/remotes/origin/main --depth=1
@@ -145,6 +188,8 @@ jobs:
           basedpyright apps packages
 
   first-short-runtime:
+    needs: impact
+    if: ${{ github.event_name != 'pull_request' || needs.impact.outputs.first_short == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -208,6 +253,8 @@ jobs:
         run: docker rm -f first-short-postgres first-short-redis
 
   worker-topology-runtime:
+    needs: impact
+    if: ${{ github.event_name != 'pull_request' || needs.impact.outputs.worker == 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 25
     steps:
@@ -292,6 +339,8 @@ jobs:
           path: /tmp/worker-topology-runtime
 
   docker:
+    needs: impact
+    if: ${{ github.event_name != 'pull_request' || needs.impact.outputs.docker == 'true' }}
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
