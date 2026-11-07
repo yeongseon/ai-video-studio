@@ -41,8 +41,8 @@ def _assert_docs_job_has_no_failure_mask(workflow: dict) -> None:
     docs = workflow["jobs"]["docs"]
     matching = [step for step in docs["steps"] if step.get("name") == DOCS_STEP_NAME]
     assert len(matching) == 1
-    assert docs.get("continue-on-error") is not True
-    assert matching[0].get("continue-on-error") is not True
+    assert "continue-on-error" not in docs
+    assert "continue-on-error" not in matching[0]
 
 
 def test_ci_required_aggregates_every_validation_job() -> None:
@@ -95,15 +95,19 @@ def test_docs_job_runs_documentation_contract_checks() -> None:
 
 
 @pytest.mark.parametrize("scope", ["job", "step"])
-def test_docs_job_rejects_continue_on_error(scope: str) -> None:
+@pytest.mark.parametrize(
+    "value",
+    [True, "${{ true }}", "${{ always() }}", "true", "${{ github.event_name == 'push' }}"],
+)
+def test_docs_job_rejects_continue_on_error(scope: str, value: bool | str) -> None:
     # Given a docs workflow that masks either the whole job or its validation step.
     workflow = deepcopy(_workflow())
     docs = workflow["jobs"]["docs"]
     if scope == "job":
-        docs["continue-on-error"] = True
+        docs["continue-on-error"] = value
     else:
         step = next(step for step in docs["steps"] if step.get("name") == DOCS_STEP_NAME)
-        step["continue-on-error"] = True
+        step["continue-on-error"] = value
 
     # When the docs contract is checked, then masked failures are rejected.
     with pytest.raises(AssertionError):

@@ -14,6 +14,11 @@ from ci_docs_contract_inventory_support import directly_covered_paths, docs_refe
         "python3 -m pytest tests/docs_contract.py --collect-only",
         "python3 -m pytest tests/docs_contract.py || true",
         "python3 -m pytest tests/docs_contract.py | cat",
+        "python3 -m pytest tests/docs_contract.py |& cat",
+        "python3 -m pytest tests/docs_contract.py &",
+        "python3 -m pytest tests/docs_contract.py ; true",
+        "python3 -m pytest tests/docs_contract.py && true",
+        "python3 -m pytest tests/docs_contract.py 2>&1 | cat",
     ],
 )
 def test_docs_job_coverage_rejects_masked_pytest_invocations(command: str) -> None:
@@ -25,6 +30,21 @@ def test_docs_job_coverage_rejects_masked_pytest_invocations(command: str) -> No
 
     # Then a path that is not guaranteed to execute successfully provides no coverage.
     assert not covered
+
+
+def test_docs_job_coverage_accepts_chained_direct_pytest_invocations() -> None:
+    # Given docs tests chained so the second runs only after the first succeeds.
+    candidates = {"tests/docs_a.py", "tests/docs_b.py"}
+    command = (
+        "python3 -m pytest tests/docs_a.py && "
+        "python3 -m pytest tests/docs_b.py"
+    )
+
+    # When docs-job coverage is derived from the command.
+    covered = directly_covered_paths(command, candidates)
+
+    # Then both direct invocations provide coverage.
+    assert covered == candidates
 
 
 @pytest.mark.parametrize(

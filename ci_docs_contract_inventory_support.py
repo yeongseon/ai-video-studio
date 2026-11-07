@@ -28,7 +28,7 @@ EXCLUDED_FILENAMES: Final = {
     "package-lock.json": "generated dependency lock data is not executable",
     "uv.lock": "generated dependency lock data is not executable",
 }
-SHELL_OPERATORS: Final = frozenset({"&&", ";", "||", "|", "&"})
+SHELL_PUNCTUATION: Final = re.compile(r"[;&|<>]+")
 SUPPORTED_PYTEST_OPTIONS: Final = frozenset({"-q"})
 
 
@@ -62,16 +62,17 @@ def docs_reference_matches(files: Iterable[tuple[str, str]]) -> dict[str, tuple[
 
 def directly_covered_paths(command: str, candidates: set[str]) -> set[str]:
     normalized = command.replace("\\\n", " ").replace("\n", " ")
-    lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|")
+    lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|<>")
     lexer.whitespace_split = True
     lexer.commenters = "#"
     tokens = tuple(lexer)
-    if any(token in SHELL_OPERATORS for token in tokens):
+    punctuation = tuple(token for token in tokens if SHELL_PUNCTUATION.fullmatch(token))
+    if any(token != "&&" for token in punctuation):
         return set()
     segments: list[tuple[str, ...]] = []
     start = 0
     for index, token in enumerate(tokens):
-        if token in SHELL_OPERATORS:
+        if token == "&&":
             if start < index:
                 segments.append(tokens[start:index])
             start = index + 1
@@ -88,19 +89,23 @@ def directly_covered_paths(command: str, candidates: set[str]) -> set[str]:
             ("python3", "-m", "pytest"),
         }:
             pytest_arguments = segment[3:]
+        elif len(segment) >= 2 and segment[0] in {"python", "python3", "bash", "sh"}:
+            invoked = segment[1]
+            if invoked in candidates:
+                covered.add(invoked)
+                continue
+            return set()
+        else:
+            return set()
         if any(
             argument.startswith("-") and argument not in SUPPORTED_PYTEST_OPTIONS
             for argument in pytest_arguments
         ):
-            continue
+            return set()
         covered.update(
             path
             for path in candidates
             for argument in pytest_arguments
             if argument == path or argument.startswith(f"{path}::")
         )
-        if len(segment) >= 2 and segment[0] in {"python", "python3", "bash", "sh"}:
-            invoked = segment[1]
-            if invoked in candidates:
-                covered.add(invoked)
     return covered
