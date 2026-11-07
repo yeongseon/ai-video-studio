@@ -9,7 +9,6 @@ import pytest
 
 from scripts.ci_impact import (
     GATES,
-    PROTECTED_PRODUCTION_PATHS,
     _parse_raw_diff,
     classify_changes,
     classify_paths,
@@ -31,6 +30,19 @@ FULL_GATE_PATHS = (
     "docker-compose.scaled-workers.yml",
     "apps/studio-web/nginx.conf.template",
 )
+ALL_GATES = dict.fromkeys(GATES, True)
+REDUCED_GATE_ALLOWLIST = (
+    ("docs", {"docs": True}, "reviewed Markdown with regular file modes"),
+    ("api tests", {"code": True, "first_short": True}, "API runtime executes API tests"),
+    ("worker tests", {"code": True, "worker": True}, "worker runtime executes worker tests"),
+    ("package tests", {"code": True}, "code gate executes package unit tests"),
+    ("frontend", {"code": True}, "code gate executes frontend unit and build checks"),
+    ("frontend runtime", {"code": True, "first_short": True}, "browser runtime covers media UI"),
+)
+
+
+def _gates(**selected: bool) -> dict[str, bool]:
+    return {gate: selected.get(gate, False) for gate in GATES}
 
 
 def _git(repo: Path, *args: str) -> str:
@@ -86,10 +98,7 @@ def test_docs_only_stays_lightweight():
 
 
 def test_frontend_code_uses_standard_test_gate():
-    assert classify_paths(["apps/studio-web/src/components/ui/Badge.tsx"]) == {
-        "docs": False, "code": True, "restore": False, "first_short": False,
-        "worker": False, "docker": False,
-    }
+    assert classify_paths(["apps/studio-web/src/components/ui/Badge.tsx"]) == _gates(code=True)
 
 
 def test_render_storage_triggers_media_and_restore():
@@ -187,21 +196,76 @@ def test_protected_governance_boundaries_require_every_gate(path: str) -> None:
     assert all(gates.values()), (path, gates)
 
 
-@pytest.mark.parametrize("entry", PROTECTED_PRODUCTION_PATHS)
-def test_protected_production_registry_is_tracked_and_requires_every_gate(
-    entry: str,
+def test_every_tracked_backend_production_file_requires_every_gate() -> None:
+    tracked = _git(
+        ROOT,
+        "ls-files",
+        "apps/api/src/**",
+        "apps/api/migrations/**",
+        "apps/worker-orchestrator/**",
+        "packages/*/creator_*/**",
+        "scripts/**",
+    ).splitlines()
+    production = [
+        path for path in tracked
+        if not path.startswith("apps/worker-orchestrator/tests/")
+    ]
+
+    assert len(production) >= 300
+    assert all(classify_paths([path]) == ALL_GATES for path in production)
+
+
+@pytest.mark.parametrize(("category", "expected", "reason"), REDUCED_GATE_ALLOWLIST)
+def test_reduced_gate_allowlist_categories_are_explicit(
+    category: str,
+    expected: dict[str, bool],
+    reason: str,
 ) -> None:
-    tracked = _git(ROOT, "ls-files")
-    tracked_paths = tracked.splitlines()
-    matches = (
-        [path for path in tracked_paths if path.startswith(entry)]
-        if entry.endswith("/")
-        else [entry] if entry in tracked_paths else []
+    examples = {
+        "docs": "docs/QUICKSTART.md",
+        "api tests": "apps/api/tests/test_auth.py",
+        "worker tests": "apps/worker-orchestrator/tests/test_worker_loop.py",
+        "package tests": "packages/creator-domain/tests/test_stage.py",
+        "frontend": "apps/studio-web/src/components/ui/Badge.tsx",
+        "frontend runtime": "apps/studio-web/src/components/creator/TimelinePreview.tsx",
+    }
+
+    assert reason
+    assert classify_paths([examples[category]]) == _gates(**expected)
+
+
+def test_test_only_reduction_is_revoked_by_a_production_path() -> None:
+    paths = [
+        "packages/creator-domain/tests/test_stage.py",
+        "packages/creator-domain/creator_domain/models/stage.py",
+    ]
+
+    assert classify_paths(paths) == ALL_GATES
+
+
+def test_every_tracked_frontend_source_has_an_explicit_risk_class() -> None:
+    tracked = _git(ROOT, "ls-files", "apps/studio-web/src/**").splitlines()
+    runtime_names = {
+        "assetdropzone.tsx", "authorizedmedia.tsx", "medialibrary.tsx",
+        "timelinepreview.tsx", "usemediaactions.ts",
+    }
+    boundary_fragments = (
+        "auth", "token", "credential", "secret", "session", "segmentdelete",
+        "delete", "apiclient",
     )
 
-    assert matches, entry
-    for path in matches:
-        assert all(classify_paths([path]).values()), path
+    for path in tracked:
+        path_lower = path.lower()
+        name = Path(path).name.lower()
+        if path_lower.startswith("apps/studio-web/src/api/") or name.startswith("client.") or any(
+            fragment in path_lower for fragment in boundary_fragments
+        ):
+            expected = ALL_GATES
+        elif name in runtime_names:
+            expected = _gates(code=True, first_short=True)
+        else:
+            expected = _gates(code=True)
+        assert classify_paths([path]) == expected, path
 
 
 def test_markdown_is_docs_only_only_in_docs_or_repository_root() -> None:
@@ -332,6 +396,17 @@ def test_malformed_or_unknown_raw_status_fails_closed(status: str) -> None:
 
     with pytest.raises(SystemExit, match="Malformed git diff --raw"):
         classify_changes(_parse_raw_diff(raw))
+
+
+@pytest.mark.parametrize("status", ["C101", "C999", "R000", "C1", "C0100", "Cxx"])
+def test_invalid_copy_or_rename_similarity_score_fails_closed(status: str) -> None:
+    raw = (
+        f":100644 100644 {'0' * 40} {'1' * 40} {status}\0"
+        "docs/guide.md\0docs/copied.md\0"
+    )
+
+    with pytest.raises(SystemExit, match="Malformed git diff --raw status"):
+        _parse_raw_diff(raw)
 
 
 def test_gate_names_are_stable() -> None:

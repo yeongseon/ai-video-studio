@@ -13,59 +13,13 @@ from dataclasses import dataclass
 from pathlib import PurePosixPath
 
 GATES = ("docs", "code", "restore", "first_short", "worker", "docker")
-HIGH_RISK_WORDS = (
-    "auth", "security", "credential", "session", "workspace", "access",
-    "quota", "dispatch", "broker", "claim", "reconcile", "retention",
-    "storage", "upload", "artifact", "media", "render", "ffmpeg",
-    "timeline", "migration", "idempotenc", "spend", "task", "delete",
-    "deletion", "owner", "identity", "idor", "fenc", "ingress", "secret",
+FRONTEND_FULL_GATE_WORDS = (
+    "auth", "token", "credential", "secret", "session", "segmentdelete",
+    "delete", "apiclient",
 )
-PROTECTED_PREFIXES = (
-    "apps/api/src/shorts_api/routes/",
-    "apps/api/src/shorts_api/middleware",
-    "apps/worker-orchestrator/",
-    "apps/api/migrations/",
-)
-PROTECTED_PRODUCTION_PATHS = (
-    "apps/api/src/shorts_api/auth.py", "apps/api/src/shorts_api/auth_lookup.py",
-    "apps/api/src/shorts_api/lifecycle.py", "apps/api/src/shorts_api/middleware/",
-    "apps/api/src/shorts_api/routes/", "apps/api/migrations/",
-    "apps/worker-orchestrator/",
-    "packages/creator-domain/creator_domain/models/project.py", "packages/creator-domain/creator_domain/models/pipeline_run.py",
-    "packages/creator-domain/creator_domain/models/run_task.py", "packages/creator-domain/creator_domain/models/user.py",
-    "packages/creator-provider/creator_provider/api_keys.py", "packages/creator-provider/creator_provider/base.py",
-    "packages/creator-provider/creator_provider/registry.py", "packages/creator-provider/creator_provider/exceptions.py",
-    "packages/creator-service/creator_service/postgres_workspace_storage.py",
-    "packages/creator-service/creator_service/postgres_project_storage.py",
-    "packages/creator-service/creator_service/object_storage.py", "packages/creator-service/creator_service/storage_policy.py",
-    "packages/creator-service/creator_service/artifact_storage_integration.py",
-    "packages/creator-service/creator_service/postgres_media_retention_storage.py",
-    "packages/creator-service/creator_service/dispatch_quota.py", "packages/creator-service/creator_service/dispatch_calls.py",
-    "packages/creator-service/creator_service/dispatch_cas.py", "packages/creator-service/creator_service/dispatch_reconciler.py",
-    "packages/creator-service/creator_service/dispatch_runtime.py",
-    "packages/creator-service/creator_service/task_dispatch_service.py",
-    "packages/creator-service/creator_service/media_retention.py", "packages/creator-service/creator_service/artifact_download_service.py",
-    "packages/creator-service/creator_service/broker_recovery.py", "packages/creator-service/creator_service/celery_dlq_fallback.py",
-    "docker-compose.yml", "docker-compose.dev.yml", "docker-compose.e2e.yml",
-    "docker-compose.local-server.yml", "docker-compose.scaled-workers.yml",
-    "apps/api/Dockerfile", "apps/studio-web/Dockerfile", "apps/worker-orchestrator/Dockerfile",
-    "apps/studio-web/nginx.conf.template",
-    "apps/studio-web/docker-entrypoint.d/40-release-identity.sh",
-    "scripts/build_release_manifest.py", "scripts/release_manifest.py",
-    "scripts/cutover_runtime_acceptance.sh", "scripts/release_lifecycle_acceptance.sh",
-)
-PROTECTED_SERVICE_WORDS = (
-    "storage", "dispatch", "quota", "delet", "owner", "broker", "celery",
-    "claim", "reconcile", "retention", "artifact", "upload",
-)
-FULL_GATE_NAMES = (
-    "task_dispatch", "release_", "cutover", "rollback", "deploy",
-    "build_release_manifest", "nginx",
-)
-FULL_GATE_FILES = {
-    "constraints.txt", "uv.lock", "pyproject.toml", "Makefile",
-    "docker-compose.yml", "docker-compose.dev.yml", "docker-compose.e2e.yml",
-    "docker-compose.local-server.yml", "docker-compose.scaled-workers.yml",
+FRONTEND_RUNTIME_FILES = {
+    "assetdropzone.tsx", "authorizedmedia.tsx", "medialibrary.tsx",
+    "timelinepreview.tsx", "usemediaactions.ts",
 }
 
 
@@ -88,35 +42,56 @@ def _is_documentation(path: str) -> bool:
     ) or ("/" not in path and path.endswith(".md"))
 
 
-def _is_protected_production_path(path: str) -> bool:
-    return any(
-        path.startswith(entry) if entry.endswith("/") else path == entry
-        for entry in PROTECTED_PRODUCTION_PATHS
+def _is_test_path(path: str) -> bool:
+    return (
+        path.startswith("tests/")
+        or "/tests/" in path
+        or "/__tests__/" in path
     )
 
 
-def _is_full_gate_path(path: str) -> bool:
+def _is_policy_test(path: str) -> bool:
     path_lower = path.lower()
-    name = PurePosixPath(path).name.lower()
     return (
-        _is_protected_production_path(path)
-        or path_lower.startswith(PROTECTED_PREFIXES)
-        or path_lower.startswith("apps/api/src/shorts_api/auth")
-        or (
-            path_lower.startswith("packages/creator-service/")
-            and any(word in path_lower for word in PROTECTED_SERVICE_WORDS)
-        )
-        or any(word in path_lower for word in FULL_GATE_NAMES)
-        or any(
-            word in path_lower
-            for word in ("secret", "credential", "ingress", "segmentdelete")
-        )
-        or path.startswith(".github/workflows/")
-        or path in FULL_GATE_FILES
+        path_lower.startswith("tests/integration/")
+        or "/tests/integration/" in path_lower
+        or any(word in PurePosixPath(path_lower).name for word in ("ci_", "policy", "gate"))
+    )
+
+
+def _test_gates(path: str) -> dict[str, bool]:
+    gates = dict.fromkeys(GATES, False)
+    gates["code"] = True
+    if path.startswith("apps/api/tests/"):
+        gates["first_short"] = True
+    elif path.startswith("apps/worker-orchestrator/tests/"):
+        gates["worker"] = True
+    return gates
+
+
+def _frontend_gates(path: str) -> dict[str, bool]:
+    gates = dict.fromkeys(GATES, False)
+    gates["code"] = True
+    path_lower = path.lower()
+    name = PurePosixPath(path_lower).name
+    if (
+        "nginx" in path_lower
+        or "entrypoint" in path_lower
         or name.startswith("dockerfile")
         or name == ".dockerignore"
-        or (path.startswith("scripts/") and "acceptance" in name)
-    )
+    ):
+        return dict.fromkeys(GATES, True)
+    if (
+        path_lower.startswith("apps/studio-web/src/api/")
+        or name.startswith("client.")
+        or any(word in path_lower for word in FRONTEND_FULL_GATE_WORDS)
+    ):
+        return dict.fromkeys(GATES, True)
+    if name in FRONTEND_RUNTIME_FILES:
+        gates["first_short"] = True
+    elif not path.startswith("apps/studio-web/src/"):
+        gates["docker"] = True
+    return gates
 
 
 def classify_paths(paths: list[str]) -> dict[str, bool]:
@@ -128,75 +103,13 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             result["docs"] = True
             continue
         path = str(PurePosixPath(raw.replace("\\", "/")))
-        path_lower = path.lower()
-        name = PurePosixPath(path).name.lower()
-        result["code"] = True
-        if _is_full_gate_path(path):
-            result.update({gate: True for gate in GATES})
-        elif path.startswith(".github/workflows/") or path in {
-            "scripts/ci_impact.py", "tests/test_ci_impact.py",
-        } or name in {"dockerfile", ".dockerignore"}:
-            result.update({gate: True for gate in GATES})
-        elif path.startswith("apps/studio-web/src/"):
-            # Most UI edits use frontend tests. API boundary and media preview
-            # changes also need the real browser/first-short runtime suite.
-            if path.startswith("apps/studio-web/src/api/") or name in {
-                "timelinepreview.tsx", "authorizedmedia.tsx",
-                "assetdropzone.tsx", "medialibrary.tsx",
-                "usemediaactions.ts",
-            }:
-                result["first_short"] = True
-            if any(word in name for word in ("auth", "token", "session", "credential")):
-                result.update({gate: True for gate in GATES})
-        elif path.startswith("apps/studio-web/"):
-            result["docker"] = True
-            if "nginx" in name or "entrypoint" in path:
-                result.update({gate: True for gate in GATES})
-        elif path.startswith("apps/api/src/"):
-            if any(word in path_lower for word in HIGH_RISK_WORDS):
-                result["first_short"] = True
-            if "auth" in path_lower or "security" in path_lower:
-                result.update({gate: True for gate in GATES})
-        elif path.startswith("apps/api/"):
-            result["first_short"] = True
-            if name.startswith("requirements"):
-                result.update({gate: True for gate in GATES})
-        elif path.startswith("packages/creator-service/"):
-            if any(word in path_lower for word in HIGH_RISK_WORDS):
-                result["first_short"] = True
-            if any(word in name for word in ("postgres", "storage", "db", "retention", "upload", "artifact")):
-                result["restore"] = True
-            if any(word in name for word in ("dispatch", "broker", "quota", "claim", "task", "reconcile")):
-                result["worker"] = True
-        elif path.startswith("packages/creator-domain/"):
-            if any(word in name for word in ("render", "timeline", "asset", "segment", "output", "run", "task")):
-                result["first_short"] = True
-        elif path.startswith("packages/creator-provider/"):
-            if name in {"registry.py", "base.py", "api_keys.py"}:
-                result["first_short"] = True
-        elif path.startswith("tests/"):
-            if name in {"test_ci_impact.py", "test_ci_required.py", "test_ci_required_workflow.py"}:
-                result.update({gate: True for gate in GATES})
-            elif "integration/" in path or any(word in name for word in HIGH_RISK_WORDS):
-                result["first_short"] = True
-            if "restore" in name or "backup" in name:
-                result["restore"] = True
-            if "worker" in name or "topology" in name:
-                result["worker"] = True
-        elif path.startswith("scripts/"):
-            if "restore" in name or "backup" in name:
-                result["restore"] = True
-            elif "release_manifest" in name:
-                # The restore drill builds and verifies the release manifest.
-                result["restore"] = result["docker"] = True
-            elif "release" in name or "cutover" in name or "quickstart" in name:
-                result["docker"] = True
-            else:
-                result.update({gate: True for gate in GATES})
-        elif path.startswith(".github/") or path in {".env.example", ".env.local.example"}:
-            result.update({gate: True for gate in GATES})
+        if path.startswith("apps/studio-web/"):
+            selected = _frontend_gates(path)
+            result.update({gate: result[gate] or selected[gate] for gate in GATES})
+        elif _is_test_path(path):
+            selected = dict.fromkeys(GATES, True) if _is_policy_test(path) else _test_gates(path)
+            result.update({gate: result[gate] or selected[gate] for gate in GATES})
         else:
-            # New directories, top-level configs, and unmatched paths get full CI.
             result.update({gate: True for gate in GATES})
     return result
 
@@ -218,7 +131,13 @@ def _parse_raw_diff(raw: str) -> tuple[GitChange, ...]:
         if status_letter not in {"A", "C", "D", "M", "R", "T"}:
             raise SystemExit("Malformed git diff --raw status")
         if status_letter in {"R", "C"}:
-            if not status[1:].isdigit() or index + 1 >= len(fields):
+            score = status[1:]
+            if (
+                len(score) != 3
+                or not score.isdigit()
+                or not 1 <= int(score) <= 100
+                or index + 1 >= len(fields)
+            ):
                 raise SystemExit("Malformed git diff --raw status")
             paths = (fields[index], fields[index + 1])
             index += 2
