@@ -109,6 +109,14 @@ class PostgresVisualAssetStorage:
     async def get_asset(self, asset_id: int) -> dict[str, Any] | None:
         return await fetch_one("SELECT * FROM creator_scene_assets WHERE id = $1", asset_id)
 
+    async def delete_asset(self, asset_id: int) -> bool:
+        pool = await get_pool()
+        result = await pool.execute(
+            "DELETE FROM creator_scene_assets WHERE id = $1",
+            asset_id,
+        )
+        return result == "DELETE 1"
+
     async def list_assets_by_scene(self, run_id: int, scene_id: str) -> list[dict[str, Any]]:
         return await fetch_all(
             """

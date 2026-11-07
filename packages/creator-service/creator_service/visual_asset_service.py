@@ -53,6 +53,9 @@ class VisualAssetStorageBackend(Protocol):
         """Fetch a single asset by id."""
         ...
 
+    async def delete_asset(self, asset_id: int) -> bool:
+        ...
+
     async def list_assets_by_scene(self, run_id: int, scene_id: str) -> list[dict[str, Any]]:
         """List all asset versions for a scene, newest first."""
         ...
@@ -134,6 +137,16 @@ class InMemoryVisualAssetStorage:
             if a["id"] == asset_id:
                 return dict(a)
         return None
+
+    async def delete_asset(self, asset_id: int) -> bool:
+        for asset in self._assets:
+            if asset["id"] == asset_id:
+                self._assets.remove(asset)
+                idempotency_key = asset.get("idempotency_key")
+                if isinstance(idempotency_key, str):
+                    self._by_idempotency_key.pop(idempotency_key, None)
+                return True
+        return False
 
     async def list_assets_by_scene(self, run_id: int, scene_id: str) -> list[dict[str, Any]]:
         scene_assets = [

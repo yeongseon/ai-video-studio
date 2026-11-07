@@ -255,6 +255,19 @@ def generate_scene_image(
                     batch.discard_rejected_upload(target_path, uploaded)
                     raise Ignore() from None
 
+                scene_result.update(
+                    {
+                        "status": "success",
+                        "asset_id": asset.id,
+                        "asset_path": asset.asset_path,
+                        "version": asset.version,
+                        "gpu_lock_acquired_at": gpu_lock.acquired_at,
+                        "gpu_lock_released_at": gpu_lock.released_at,
+                    }
+                )
+                batch.results.append(scene_result)
+                await batch.checkpoint()
+
                 try:
                     await record_provider_call(
                         run_id,
@@ -269,23 +282,18 @@ def generate_scene_image(
                         reservation_attempt_id=attempt_id,
                     )
                     ctx.mark_provider_accounted()
+                    await batch.checkpoint()
+                except Ignore:
+                    await _visual_asset_service.storage.delete_asset(asset.id)
+                    batch.discard_rejected_upload(target_path, uploaded)
+                    batch.results.remove(scene_result)
+                    raise
                 except Exception as exc:
                     if ctx.reservation_owner_id is not None:
                         usage_error = exc
                         raise
                     logger.warning("Failed to record provider usage", exc_info=True)
 
-                scene_result.update(
-                    {
-                        "status": "success",
-                        "asset_id": asset.id,
-                        "asset_path": asset.asset_path,
-                        "version": asset.version,
-                        "gpu_lock_acquired_at": gpu_lock.acquired_at,
-                        "gpu_lock_released_at": gpu_lock.released_at,
-                    }
-                )
-                batch.results.append(scene_result)
                 await batch.checkpoint()
             except Ignore:
                 batch.cancelled = True

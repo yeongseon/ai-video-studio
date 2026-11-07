@@ -91,8 +91,8 @@ class SceneBatch:
 
     def discard_rejected_upload(self, target_path: str, uploaded: StorageResult) -> None:
         path = Path(target_path)
-        expected = path.resolve().relative_to(artifact_storage_integration._ARTIFACT_ROOT)
-        if uploaded.key == str(expected):
+        expected_key = f"{self.ctx.run_id}/scenes/{path.name}"
+        if uploaded.key == expected_key:
             try:
                 get_storage_backend().delete(uploaded.key)
             except SoftTimeLimitExceeded:
