@@ -12,6 +12,7 @@ jobs:
   impact:
     runs-on: ubuntu-latest
     outputs:
+      docs: ${{ steps.detect.outputs.docs }}
       code: ${{ steps.detect.outputs.code }}
       restore: ${{ steps.detect.outputs.restore }}
       first_short: ${{ steps.detect.outputs.first_short }}
@@ -41,6 +42,28 @@ jobs:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: git diff --check "$BASE_SHA" "$HEAD_SHA"
+
+  docs:
+    needs: impact
+    if: ${{ github.event_name != 'pull_request' || needs.impact.outputs.docs == 'true' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install documentation contract dependencies
+        run: python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt
+      - name: Validate documentation contracts
+        env:
+          PYTHONPATH: apps/api/src:packages/creator-domain:packages/creator-service:packages/creator-provider
+        run: >-
+          python3 -m pytest
+          tests/test_architecture_diagrams.py
+          apps/api/tests/test_quickstart_docs.py
+          apps/api/tests/test_quickstart_execution.py
+          apps/api/tests/test_first_short_walkthrough.py
+          -q
 
   restore-drill:
     needs: impact
@@ -165,7 +188,7 @@ jobs:
       - name: Test architecture dependency checker
         run: python3 -m pytest tests/test_package_dependency_cli.py tests/test_package_dependency_parser.py tests/test_package_dependency_compliance.py tests/test_architecture_diagrams.py -q
       - name: Test PR impact classifier fail-closed policy
-        run: python3 -m pytest tests/test_ci_impact.py -q
+        run: python3 -m pytest tests/test_ci_impact.py tests/test_ci_required.py tests/test_ci_required_workflow.py -q
       - name: Test Packages (with coverage)
         run: |
           git fetch origin main:refs/remotes/origin/main --depth=1
@@ -456,6 +479,7 @@ jobs:
     if: ${{ always() }}
     needs:
       - impact
+      - docs
       - hygiene
       - restore-drill
       - lint
@@ -469,11 +493,13 @@ jobs:
       - name: Require classifier and every selected validation job
         run: >-
           python3 scripts/ci_required.py
+          "${{ github.event_name }}"
           "${{ needs.impact.result }}"
+          "docs=${{ needs.impact.outputs.docs }}=${{ needs.docs.result }}"
           "hygiene=true=${{ needs.hygiene.result }}"
-          "restore-drill=${{ github.event_name != 'pull_request' || needs.impact.outputs.restore == 'true' }}=${{ needs.restore-drill.result }}"
-          "lint=${{ github.event_name != 'pull_request' || needs.impact.outputs.code == 'true' }}=${{ needs.lint.result }}"
-          "test=${{ github.event_name != 'pull_request' || needs.impact.outputs.code == 'true' }}=${{ needs.test.result }}"
-          "first-short-runtime=${{ github.event_name != 'pull_request' || needs.impact.outputs.first_short == 'true' }}=${{ needs.first-short-runtime.result }}"
-          "worker-topology-runtime=${{ github.event_name != 'pull_request' || needs.impact.outputs.worker == 'true' }}=${{ needs.worker-topology-runtime.result }}"
-          "docker=${{ github.event_name != 'pull_request' || needs.impact.outputs.docker == 'true' }}=${{ needs.docker.result }}"
+          "restore-drill=${{ needs.impact.outputs.restore }}=${{ needs.restore-drill.result }}"
+          "lint=${{ needs.impact.outputs.code }}=${{ needs.lint.result }}"
+          "test=${{ needs.impact.outputs.code }}=${{ needs.test.result }}"
+          "first-short-runtime=${{ needs.impact.outputs.first_short }}=${{ needs.first-short-runtime.result }}"
+          "worker-topology-runtime=${{ needs.impact.outputs.worker }}=${{ needs.worker-topology-runtime.result }}"
+          "docker=${{ needs.impact.outputs.docker }}=${{ needs.docker.result }}"
