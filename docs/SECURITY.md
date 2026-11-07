@@ -7,6 +7,12 @@ and deployment constraints for AI Video Studio.
 
 ## Authentication Domains
 
+The proposed shared-browser authentication boundary, threat model, migration
+plan, and implementation split are recorded in
+[ADR-008](adr/008-shared-studio-browser-authentication.md). It is a design only:
+shared/public Studio ingress remains blocked until its implementation and
+real-proxy security evidence are complete.
+
 The system uses **two separate authentication domains**:
 
 | Domain | Path Prefix | Credential | Header |
