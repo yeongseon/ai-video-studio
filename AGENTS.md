@@ -133,6 +133,13 @@ version check, keep the render test, and re-run the full CI. Do not skip the tes
   impact classifier succeeds and every selected gate succeeds; a selected skipped
   job is a failure. Pull-request gate selections must be explicit `true` or `false`;
   malformed or missing classifier outputs fail closed. On `main`, every gate is selected.
+- Backend production, infrastructure, deployment, workflow, and unknown paths select
+  every PR gate. Reduced PR gates are an explicit allowlist limited to regular-file
+  documentation-only changes, test-only changes with no production path in the same
+  diff, and non-boundary Studio frontend changes. Integration and CI/policy/gate tests,
+  plus frontend nginx/ingress/auth/token/credential/secret/session/deletion/API-client
+  boundaries, select every gate. This returns backend PRs to the pre-#916 full matrix;
+  optimization applies only to the reviewed docs/test/frontend categories.
 - Documentation-only changes use content and consistency checks (diff hygiene, links,
   referenced paths and commands) in the dedicated `docs` gate, rather than unrelated
   Python/FFmpeg/Docker gates. Non-canonical paths, symlinks, and executable-mode changes

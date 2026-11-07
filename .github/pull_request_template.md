@@ -12,7 +12,7 @@
 - Risk tier: <!-- docs/config wording, standard, high-risk, release/deployment -->
 - Protected boundaries touched: <!-- auth/identity, ownership/IDOR, migrations, deletion/storage, broker/worker, ingress/secrets, or none -->
 - High-risk negative tests: <!-- commands and covered denial/failure behavior, or N/A -->
-- CI gates triggered: <!-- docs, code, restore, first-short, worker, docker -->
+- CI gates triggered: <!-- Backend/infrastructure defaults to all: docs, code, restore, first-short, worker, docker. Reduced gates require docs-only, test-only with no production path, or non-boundary Studio frontend classification. -->
 - Final head SHA: <!-- exact 40-character commit SHA validated by CI -->
 
 ## Checklist
