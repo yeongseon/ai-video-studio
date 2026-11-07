@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import pytest
@@ -9,10 +10,30 @@ from creator_provider.exceptions import ProviderError
 from creator_provider.stt.script_timestamp_aligner import ScriptTimestampAligner
 
 
-def _write_boundaries(audio_path: Path, rows: list[dict[str, int | str]]) -> Path:
+@pytest.fixture(autouse=True)
+def _artifact_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+
+
+def _write_boundaries(
+    audio_path: Path,
+    rows: list[dict[str, int | str]],
+    script: str | None = None,
+) -> Path:
     metadata_path = audio_path.with_suffix(f"{audio_path.suffix}.words.jsonl")
     metadata_path.write_text(
-        "".join(f"{json.dumps(row, ensure_ascii=False)}\n" for row in rows),
+        json.dumps(
+            {
+                "format": "short-form-studio/tts-word-timings",
+                "version": 1,
+                "audio_sha256": hashlib.sha256(audio_path.read_bytes()).hexdigest(),
+                "script_sha256": hashlib.sha256(
+                    (script or " ".join(str(row["text"]) for row in rows)).encode()
+                ).hexdigest(),
+                "words": rows,
+            },
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     return metadata_path
@@ -61,6 +82,7 @@ async def test_alignment_preserves_known_script_and_readable_cues(
                 "text": "자막이에요",
             },
         ],
+        script,
     )
     output_path = tmp_path / "captions.srt"
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
@@ -105,6 +127,7 @@ async def test_alignment_writes_valid_vtt(
     _write_boundaries(
         audio_path,
         [{"type": "WordBoundary", "offset": 0, "duration": 10_000_000, "text": "Hello"}],
+        "Hello!",
     )
     output_path = tmp_path / "captions.vtt"
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))

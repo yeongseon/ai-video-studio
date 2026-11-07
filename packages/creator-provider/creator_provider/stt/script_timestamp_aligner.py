@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import math
 import os
 import re
@@ -11,6 +12,7 @@ from typing import Final, TypedDict, assert_never, override
 from creator_domain.provider_errors import ProviderError
 from creator_domain.sanitize import validate_artifact_path
 from creator_provider.base import STTProvider, SubtitleResult
+from creator_provider.word_timing_envelope import FORMAT, VERSION
 
 _WORD_PATTERN: Final = re.compile(r"[\w]+(?:-[\w]+)*", re.UNICODE)
 _MAX_CUE_CHARS: Final = 42
@@ -54,19 +56,19 @@ class ScriptTimestampAligner(STTProvider):
     ) -> SubtitleResult:
         merged_params = dict(params or {})
         script_text = str(merged_params.get("script_text", "")).strip()
+        if "word_timestamps_path" in merged_params:
+            raise ProviderError("Script alignment rejects caller-controlled timing metadata paths")
+        artifact_root = os.getenv("ARTIFACT_ROOT") or "data/artifacts"
+        validated_audio = Path(validate_artifact_path(audio_path, artifact_root))
         metadata_path = Path(
-            str(
-                merged_params.get(
-                    "word_timestamps_path", f"{audio_path}.words.jsonl"
-                )
-            )
+            validate_artifact_path(f"{validated_audio}.words.jsonl", artifact_root)
         )
         if not metadata_path.is_file():
             raise ProviderError(
                 f"Script alignment requires TTS word timing metadata: {metadata_path}"
             )
 
-        timed_words = self._read_timed_words(metadata_path)
+        timed_words = self._read_timed_words(metadata_path, validated_audio, script_text)
         script_words = self._script_words(script_text)
         if [self._normalized(word.text) for word in timed_words] != [
             self._normalized(word.text) for word in script_words
@@ -76,7 +78,12 @@ class ScriptTimestampAligner(STTProvider):
         duration_value = merged_params.get("audio_duration_seconds")
         if duration_value is None:
             raise ProviderError("Script alignment requires a measured audio duration")
-        audio_duration = self._as_float(duration_value)
+        try:
+            audio_duration = self._as_float(duration_value)
+        except (TypeError, ValueError) as exc:
+            raise ProviderError(
+                "Script alignment requires a positive finite audio duration"
+            ) from exc
         if not math.isfinite(audio_duration) or audio_duration <= 0:
             raise ProviderError("Script alignment requires a positive finite audio duration")
         self._validate_timing(timed_words, audio_duration)
@@ -99,15 +106,26 @@ class ScriptTimestampAligner(STTProvider):
         )
 
     @staticmethod
-    def _read_timed_words(path: Path) -> list[_TimedWord]:
+    def _read_timed_words(path: Path, audio_path: Path, script_text: str) -> list[_TimedWord]:
         words: list[_TimedWord] = []
         try:
-            for line in path.read_text(encoding="utf-8").splitlines():
-                row = json.loads(line)
-                if not isinstance(row, dict):
+            document = json.loads(path.read_text(encoding="utf-8"))
+            if not isinstance(document, dict):
+                raise TypeError
+            if document["format"] != FORMAT or document["version"] != VERSION:
+                raise ValueError
+            audio_digest = hashlib.sha256(audio_path.read_bytes()).hexdigest()
+            if document["audio_sha256"] != audio_digest:
+                raise ProviderError("TTS word timing audio digest does not match audio")
+            script_digest = hashlib.sha256(script_text.encode()).hexdigest()
+            if document["script_sha256"] != script_digest:
+                raise ProviderError("TTS word timing script digest does not match script")
+            rows = document["words"]
+            if not isinstance(rows, list):
+                raise TypeError
+            for row in rows:
+                if not isinstance(row, dict) or row.get("type") != "WordBoundary":
                     raise TypeError
-                if row.get("type") != "WordBoundary":
-                    continue
                 offset = int(row["offset"])
                 duration = int(row["duration"])
                 words.append(
@@ -117,6 +135,8 @@ class ScriptTimestampAligner(STTProvider):
                         end=(offset + duration) / _TICKS_PER_SECOND,
                     )
                 )
+        except ProviderError:
+            raise
         except (json.JSONDecodeError, KeyError, TypeError, ValueError) as exc:
             raise ProviderError(f"Invalid TTS word timing metadata: {path}") from exc
         if not words:
@@ -128,8 +148,8 @@ class ScriptTimestampAligner(STTProvider):
         match value:
             case int() | float() | str():
                 return float(value)
-            case unreachable:
-                assert_never(unreachable)
+            case _:
+                raise TypeError
 
     @staticmethod
     def _validate_timing(words: list[_TimedWord], audio_duration: float) -> None:
