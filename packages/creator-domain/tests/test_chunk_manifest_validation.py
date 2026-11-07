@@ -50,6 +50,8 @@ def _canonical_without_id(serialized: str, manifest_id: str) -> bytes:
     return compact.replace(f'"manifest_id":"{manifest_id}",', "").encode()
 
 
+
+
 def test_manifest_rejects_source_ref_outside_chunk_on_construction() -> None:
     # Given a source reference with an invalid index and range outside its chunk.
     manifest = _manifest()
@@ -132,3 +134,4 @@ def test_manifest_rejects_nonpositive_resolved_audio_sample_rate() -> None:
     # When constructed, then the serialized resolved policy cannot bypass policy bounds.
     with pytest.raises(ChunkManifestValidationError, match="sample rate"):
         _ = replace(manifest, policy=policy, chunks=(chunk,))
+
