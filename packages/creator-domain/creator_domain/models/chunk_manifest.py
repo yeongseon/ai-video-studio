@@ -10,6 +10,7 @@ from pydantic import TypeAdapter, ValidationError as PydanticValidationError
 
 from creator_domain.exceptions import ChunkManifestValidationError
 
+from .chunk_identity import ApprovalIdentity
 from .chunk_policy import (
     ChunkEncodingProfile,
     ChunkOutputSpec,
@@ -28,6 +29,8 @@ class _FractionJson(TypedDict):
 class _SourceRefJson(TypedDict):
     segment_index: int
     source: str
+    asset_id: int
+    content_revision: int
     start_frame: int
     end_frame: int
 
@@ -63,8 +66,14 @@ class _PolicyJson(TypedDict):
     audio_sample_rate: int
 
 
+class _ApprovalJson(TypedDict):
+    timeline_id: str
+    revision: int
+
+
 class _ManifestJson(TypedDict):
     schema_version: int
+    approval: _ApprovalJson
     total_frames: int
     fps: int
     output_spec: _OutputSpecJson
@@ -81,6 +90,8 @@ _MANIFEST_ADAPTER: Final = TypeAdapter(_ManifestJson)
 class ChunkSourceRef:
     segment_index: int
     source: str
+    asset_id: int
+    content_revision: int
     start_frame: int
     end_frame: int
 
@@ -104,6 +115,7 @@ class RenderChunk:
 @dataclass(frozen=True, slots=True)
 class ChunkManifest:
     schema_version: int
+    approval: ApprovalIdentity
     total_frames: int
     fps: int
     output_spec: ChunkOutputSpec
@@ -119,6 +131,7 @@ class ChunkManifest:
     def _validate(self) -> None:
         if self.schema_version != SCHEMA_VERSION:
             raise ChunkManifestValidationError(f"unsupported schema_version: {self.schema_version}")
+        self.approval.validate()
         if self.total_frames < 1 or self.fps < 1 or not self.chunks:
             raise ChunkManifestValidationError(
                 "manifest timeline must contain positive frames and chunks"
@@ -162,6 +175,11 @@ class ChunkManifest:
                 raise ChunkManifestValidationError(
                     "each chunk must reference at least one source segment"
                 )
+            for source_ref in chunk.source_refs:
+                if source_ref.asset_id < 1 or source_ref.content_revision < 0:
+                    raise ChunkManifestValidationError(
+                        "chunk source asset identity is missing or malformed"
+                    )
             expected_start = chunk.end_frame
         if expected_start != self.total_frames:
             raise ChunkManifestValidationError("chunks must cover the full planned frame count")
@@ -171,6 +189,10 @@ class ChunkManifest:
     def _content(self) -> dict[str, int | dict[str, int | str] | list[_ChunkJson]]:
         return {
             "schema_version": self.schema_version,
+            "approval": {
+                "timeline_id": self.approval.timeline_id,
+                "revision": self.approval.revision,
+            },
             "total_frames": self.total_frames,
             "fps": self.fps,
             "output_spec": {
@@ -205,6 +227,7 @@ class ChunkManifest:
             data = _MANIFEST_ADAPTER.validate_json(value)
             manifest = cls(
                 schema_version=data["schema_version"],
+                approval=ApprovalIdentity(**data["approval"]),
                 total_frames=data["total_frames"],
                 fps=data["fps"],
                 output_spec=ChunkOutputSpec(**data["output_spec"]),
@@ -242,6 +265,8 @@ def _chunk_json(chunk: RenderChunk) -> _ChunkJson:
             {
                 "segment_index": ref.segment_index,
                 "source": ref.source,
+                "asset_id": ref.asset_id,
+                "content_revision": ref.content_revision,
                 "start_frame": ref.start_frame,
                 "end_frame": ref.end_frame,
             }
