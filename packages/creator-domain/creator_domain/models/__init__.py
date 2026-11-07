@@ -7,6 +7,13 @@ from .content_recipe import (
     VisualStrategy,
 )
 from .creative_profile import CreativeProfile
+from .chunk_manifest import (
+    ChunkManifest,
+    ChunkSourceRef,
+    RenderChunk,
+)
+from .chunk_planner import plan_chunks
+from .chunk_policy import ChunkPolicy
 from .duration_preset import (
     DURATION_PRESETS,
     duration_preset_ids,
@@ -78,6 +85,11 @@ __all__ = [
     "RenderSegmentKind",
     "ContentRecipe",
     "CreativeProfile",
+    "ChunkManifest",
+    "ChunkPolicy",
+    "ChunkSourceRef",
+    "RenderChunk",
+    "plan_chunks",
     "DurationRange",
     "DURATION_PRESETS",
     "duration_preset_ids",
