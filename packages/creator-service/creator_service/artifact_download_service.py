@@ -13,7 +13,10 @@ from creator_service.artifact_storage_integration import get_artifact_download_p
 from creator_service.confined_directory_deletion import delete_direct_child_tree
 from creator_service.object_storage import get_storage_backend
 from creator_service.run_object_deletion import delete_run_object
-from creator_service.rejected_scene_cleanup import REJECTED_SCENE_UPLOAD_CLEANUP_MARKER
+from creator_service.rejected_scene_cleanup import (
+    REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+    SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
+)
 
 from .db import execute, fetch_all, fetch_one, transaction
 
@@ -240,10 +243,12 @@ class ArtifactDownloadService:
                     ") "
                     "AND COALESCE(delete_retry_count, 0) < $1 "
                     "AND storage_key IS NOT NULL AND storage_key != '' "
+                    "AND (metadata_json != $3 OR created_at < NOW() - INTERVAL '5 minutes') "
                     "AND NOT (id = ANY($2::int[])) "
                     "ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED",
                     max_retries,
                     attempted_ids,
+                    SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
                 )
                 if row is None:
                     break
@@ -253,7 +258,10 @@ class ArtifactDownloadService:
                 attempted_ids.append(artifact_id)
                 try:
                     get_storage_backend().delete(key)
-                    if artifact.get("metadata_json") == REJECTED_SCENE_UPLOAD_CLEANUP_MARKER:
+                    if artifact.get("metadata_json") in {
+                        REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+                        SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
+                    }:
                         local_path = artifact.get("file_path")
                         if not isinstance(local_path, str):
                             raise OSError("rejected upload cleanup path missing")

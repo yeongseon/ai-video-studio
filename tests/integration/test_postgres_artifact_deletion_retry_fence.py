@@ -3,6 +3,7 @@ import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import threading
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import asyncpg
 import pytest
@@ -38,14 +39,20 @@ class BlockingDeleteBackend:
 async def test_retry_workers_hold_each_row_lock_through_storage_deletion(
     deletion_database: DeletionDatabase,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     # Given one pending artifact and a backend that blocks the first retry worker.
+    local_path = tmp_path / "fresh.png"
+    local_path.write_bytes(b"fresh")
     await deletion_database.pool.execute("""
         INSERT INTO creator_runs (id, project_id, workspace_id) VALUES (1, 1, 1);
         INSERT INTO creator_artifacts (
-            run_id, project_id, artifact_type, file_path, storage_key, delete_requested_at
-        ) VALUES (1, 1, 'video', '1/video.mp4', '1/video.mp4', NOW());
-    """)
+            run_id, project_id, artifact_type, scene_id, file_path, storage_key,
+            metadata_json, delete_requested_at
+        ) VALUES (1, 1, 'visual_asset', 'fresh', $1, '1/scenes/fresh.png',
+                  'scene_upload_cleanup_intent', NOW());
+        UPDATE creator_artifacts SET created_at = NOW() - INTERVAL '6 minutes' WHERE run_id = 1;
+    """, str(local_path))
     backend = BlockingDeleteBackend()
 
     @contextlib.asynccontextmanager
@@ -87,10 +94,11 @@ async def test_retry_workers_hold_each_row_lock_through_storage_deletion(
 
     # Then SKIP LOCKED makes the contender return without invoking deletion.
     assert second_result == 0
-    assert calls_while_first_is_blocked == ["1/video.mp4"]
+    assert calls_while_first_is_blocked == ["1/scenes/fresh.png"]
     assert first_result == 1
 
-    assert backend.calls == ["1/video.mp4"]
+    assert backend.calls == ["1/scenes/fresh.png"]
+    assert not local_path.exists()
     assert await deletion_database.pool.fetchval(
         "SELECT count(*) FROM creator_artifacts WHERE run_id=1",
     ) == 0
