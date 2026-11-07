@@ -22,6 +22,7 @@ Widening reduced classes later requires evidence and Oracle review.
 | [USAGE.md](USAGE.md) | Detailed usage guide and feature walkthrough |
 | [SECURITY.md](SECURITY.md) | Authentication model, trust boundaries, network exposure policy |
 | [CUTOVER.md](CUTOVER.md) | Deployment checklist and operational guide |
+| [ACA_STAGING_TOPOLOGY.md](ACA_STAGING_TOPOLOGY.md) | Secure target ACA staging topology and configuration contract; not deployment evidence |
 | [BACKUP_RESTORE.md](BACKUP_RESTORE.md) | Coordinated database and media backup/restore runbook |
 | [LIGHTWEIGHT.md](LIGHTWEIGHT.md) | Run without Celery/Redis |
 | [LOCAL_DOCKER.md](LOCAL_DOCKER.md) | Local Docker Compose setup with LAN access |
