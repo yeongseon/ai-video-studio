@@ -117,6 +117,16 @@ See [First Short Walkthrough](FIRST_SHORT_WALKTHROUGH.md).
    With the remote keys set, every stage runs without a GPU.
 3. Review the final render and publish.
 
+The Idea form offers 15/30/45/60/90-second presets and Custom. Custom duration is
+hard-validated only as a finite number greater than zero; “approximately 3 minutes
+or less” is short-form guidance, not a 180-second ceiling. A target is planning
+input, not an assertion that the encoded MP4 will have that exact duration. Only
+the short content format is currently accepted; long-form remains unvalidated
+([#884](https://github.com/yeongseon/short-form-studio/issues/884),
+[#885](https://github.com/yeongseon/short-form-studio/issues/885)). See the
+[Usage Guide](USAGE.md#duration-output-and-encoding-contracts) for output and
+encoding details.
+
 ## Optional: local GPU path
 
 If you have an NVIDIA GPU with the Container Toolkit and want fully local
@@ -154,6 +164,17 @@ FIRST_SHORT_TEST_DATABASE_URL=postgresql://review:review-local-only@127.0.0.1:55
 FIRST_SHORT_TEST_REDIS_URL=redis://127.0.0.1:56389/0 \
 python3 -m pytest tests/integration/test_first_short_runtime.py -v
 ```
+
+That runtime test seeds deterministic synthetic PNG fixtures, uses a real Celery
+worker and real FFmpeg, checks an authenticated MP4 download with `ffprobe`, and
+does not call an AI provider. The faster API/demo tests use in-memory services and
+mock render dispatch; worker orchestration tests also mock FFmpeg. Provider adapter
+tests use mocks/fixtures. Configuring a paid-provider key above is an operating
+path, **not evidence of a repository-recorded paid-provider end-to-end smoke**.
+Relevant evidence is in `tests/integration/test_first_short_runtime.py`,
+`packages/creator-service/tests/test_demo_offline.py`,
+`apps/api/tests/timeline_demo_support.py`, and
+`apps/worker-orchestrator/tests/test_render_video.py`.
 
 ## Failure recovery / troubleshooting
 

@@ -56,6 +56,14 @@ review gates, and the next action:
 If a required provider is missing, the onboarding `next_action` guides you to set
 the env var and restart, mirroring the first-run Setup Wizard.
 
+The reported duration choices are 15/30/45/60/90 seconds plus Custom. The API's
+180-second custom hint and the Studio's approximately-three-minute copy are
+guidance only. Hard validation accepts any finite value greater than zero, with
+no maximum; a target is intent and does not guarantee achieved render duration.
+Only `short` is an accepted content format. See
+`packages/creator-domain/tests/test_duration_contract.py::test_finite_long_duration_remains_supported`
+and `apps/api/tests/test_creator_onboarding.py::test_onboarding_no_core_duration_ceiling_in_response`.
+
 ## 3. Create a sample-backed first Short (optional demo flow)
 
 The demo seeds offline synthetic media into a new workspace-owned project. First
@@ -146,3 +154,12 @@ Automated PostgreSQL, FFmpeg, API, and browser regression checks are useful
 engineering evidence, but they must not be reported as a timed first-user result.
 The offline demo does not call paid providers; AI generation still requires
 configured remote providers or a working local model setup.
+
+The strongest automated demo evidence is
+`tests/integration/test_first_short_runtime.py::test_authenticated_demo_survives_restart_and_renders_downloadable_mp4`:
+it exercises real PostgreSQL, Redis, API restart, Celery, FFmpeg, `ffprobe`,
+revision approval, final approval, and authenticated download with deterministic
+synthetic media. It is not a fresh-clone stopwatch, generated-script acceptance,
+long-form test, or paid-provider smoke. Unit/API tests around the same flow use
+in-memory fixtures or mocked dispatch/FFmpeg; the separate real-FFmpeg fixture is
+`apps/worker-orchestrator/tests/test_demo_sample_render.py::test_approved_seed_renders_both_distinct_synthetic_scenes`.
