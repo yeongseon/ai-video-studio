@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -167,32 +168,48 @@ def test_merge_word_timing_sidecars_rebases_section_offsets(tmp_path: Path) -> N
     second = tmp_path / "second.mp3"
     first.write_bytes(b"first")
     second.write_bytes(b"second")
-    Path(f"{first}.words.jsonl").write_text(
-        '{"type":"WordBoundary","offset":0,"duration":10000000,"text":"하나"}\n',
-        encoding="utf-8",
-    )
-    Path(f"{second}.words.jsonl").write_text(
-        '{"type":"WordBoundary","offset":0,"duration":10000000,"text":"둘"}\n',
-        encoding="utf-8",
-    )
+    for path, text in ((first, "하나"), (second, "둘")):
+        Path(f"{path}.words.jsonl").write_text(
+            json.dumps(
+                {
+                    "format": "short-form-studio/tts-word-timings",
+                    "version": 1,
+                    "audio_sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+                    "script_sha256": hashlib.sha256(text.encode()).hexdigest(),
+                    "words": [
+                        {
+                            "type": "WordBoundary",
+                            "offset": 0,
+                            "duration": 10_000_000,
+                            "text": text,
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            ),
+            encoding="utf-8",
+        )
 
     class FakeFFmpeg:
         def get_audio_duration(self, path: str) -> float:
             return 1.5 if path == str(first) else 2.0
 
     output = tmp_path / "full.mp3"
+    output.write_bytes(b"concatenated")
 
     # When timing metadata is merged for the concatenated audio.
     generate_audio_module._merge_word_timing_sidecars(
-        [str(first), str(second)], str(output), FakeFFmpeg()
+        [(str(first), "하나"), (str(second), "둘")], str(output), FakeFFmpeg()
     )
 
     # Then the second section starts after the measured first-section duration.
-    rows = [
-        json.loads(line)
-        for line in Path(f"{output}.words.jsonl").read_text(encoding="utf-8").splitlines()
-    ]
+    envelope = json.loads(Path(f"{output}.words.jsonl").read_text(encoding="utf-8"))
+    rows = envelope["words"]
     assert [row["offset"] for row in rows] == [0, 15_000_000]
+    assert envelope["format"] == "short-form-studio/tts-word-timings"
+    assert envelope["version"] == 1
+    assert envelope["audio_sha256"] == hashlib.sha256(b"concatenated").hexdigest()
+    assert envelope["script_sha256"] == hashlib.sha256("하나\n둘".encode()).hexdigest()
 
 
 def test_invalidate_word_timing_sidecar_removes_stale_alignment(tmp_path: Path) -> None:
