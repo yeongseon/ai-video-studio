@@ -9,7 +9,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
-from playwright.sync_api import Page, expect, sync_playwright
+from playwright.sync_api import Page, TimeoutError as PlaywrightTimeoutError, expect, sync_playwright
 
 from studio_proxy_runtime_support import open_studio_proxy, prerequisites_or_skip
 from timeline_browser_support import seed_mixed_timeline
@@ -149,22 +149,39 @@ def test_first_trimmed_video_approval_only_exposes_the_decoded_trim_start(tmp_pa
                 page.add_init_script("""
                     window.approvalSamples = [];
                     window.approvalBlockedSamples = 0;
+                    let pendingFrame = null;
+                    let decodedFrame = null;
+                    const sampleDecodedFrame = (video, metadata) => {
+                        pendingFrame = null;
+                        const canvas = document.createElement('canvas');
+                        canvas.width = canvas.height = 1;
+                        const context = canvas.getContext('2d');
+                        context.drawImage(video, 0, 0, 1, 1);
+                        const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+                        decodedFrame = {video, mediaTime: metadata.mediaTime, r, g, b};
+                        sample();
+                    };
                     const sample = () => {
                         const button = Array.from(document.querySelectorAll('button'))
                             .find(button => button.textContent === 'Approve timeline & render');
                         const video = document.querySelector('[data-testid="preview-media"]');
                         if (!button) return;
-                        if (button.disabled) { window.approvalBlockedSamples++; return; }
-                        const canvas = document.createElement('canvas');
-                        canvas.width = canvas.height = 1;
-                        const context = canvas.getContext('2d');
-                        if (!(video instanceof HTMLVideoElement) || video.readyState < 2) {
-                            window.approvalSamples.push({valid: false}); return;
+                        if (video instanceof HTMLVideoElement && pendingFrame !== video) {
+                            pendingFrame = video;
+                            video.requestVideoFrameCallback((_, metadata) => sampleDecodedFrame(video, metadata));
                         }
-                        context.drawImage(video, 0, 0, 1, 1);
-                        const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
-                        window.approvalSamples.push({valid: !video.seeking &&
-                            Math.abs(video.currentTime - 1.2) <= 2 / 30 && g > 90 && r < 30 && b < 30});
+                        if (button.disabled) { window.approvalBlockedSamples++; return; }
+                        const decoded = video instanceof HTMLVideoElement && decodedFrame?.video === video
+                            ? decodedFrame : null;
+                        const mediaTime = decoded?.mediaTime ?? null;
+                        const currentTime = video instanceof HTMLVideoElement ? video.currentTime : null;
+                        const seeking = video instanceof HTMLVideoElement ? video.seeking : null;
+                        const readyState = video instanceof HTMLVideoElement ? video.readyState : null;
+                        const rgb = decoded ? [decoded.r, decoded.g, decoded.b] : null;
+                        window.approvalSamples.push({buttonState: 'enabled', mediaTime, currentTime, seeking,
+                            readyState, rgb, valid: decoded !== null && !seeking && readyState >= 2 &&
+                                Math.abs(mediaTime - 1.2) <= 2 / 30 && decoded.g > 90 && decoded.r < 30 &&
+                                decoded.b < 30});
                     };
                     new MutationObserver(sample).observe(document, {subtree: true, childList: true,
                         attributes: true, attributeFilter: ['disabled']});
@@ -175,8 +192,16 @@ def test_first_trimmed_video_approval_only_exposes_the_decoded_trim_start(tmp_pa
                 expect(page.get_by_role("button", name="Approve timeline & render")).to_be_enabled()
                 green = frame(page, 1.2)
                 assert green[1] > 90 and green[0] < 30 and green[2] < 30, green
+                try:
+                    page.wait_for_function("() => window.approvalSamples.some(sample => sample.valid)")
+                except PlaywrightTimeoutError as error:
+                    samples = page.evaluate("() => window.approvalSamples")
+                    raise AssertionError(f"Timed out waiting for a valid approval sample: {samples}") from error
                 samples = page.evaluate("() => window.approvalSamples")
-                assert samples and all(sample["valid"] for sample in samples), samples
+                assert samples and all(sample["valid"] for sample in samples), (
+                    "Approval was enabled without a decoded target frame; samples include button state, "
+                    f"mediaTime, currentTime, seeking, readyState, and RGB: {samples}"
+                )
                 assert page.evaluate("() => window.approvalBlockedSamples") > 0
                 capture(page, "first-video-ready")
             finally:
