@@ -3,20 +3,7 @@ import { useNavigate } from "react-router-dom";
 
 import { apiJson, apiVoid, API_BASE } from "../api/client";
 import ConfirmDialog from "../components/creator/ConfirmDialog";
-
-interface ProjectSummary {
-  id: number;
-  title: string | null;
-  source_type: "idea" | "markdown" | "url" | "pasted_json";
-  status: "draft" | "active" | "completed" | "archived";
-  created_at: string;
-  updated_at: string;
-  latest_run?: {
-    run_id: number;
-    current_stage: string | null;
-    status: string | null;
-  } | null;
-}
+import type { ProjectSummary } from "../types/api";
 
 interface ProjectListResponse {
   projects: ProjectSummary[];

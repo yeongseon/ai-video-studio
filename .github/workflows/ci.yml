@@ -73,6 +73,18 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: review
+          POSTGRES_PASSWORD: review-local-only
+          POSTGRES_DB: settings_test
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready -U review" --health-interval=5s --health-timeout=5s --health-retries=12
+    env:
+      FIRST_SHORT_TEST_DATABASE_URL: postgresql://review:review-local-only@127.0.0.1:5432/settings_test
     steps:
       - uses: actions/checkout@v4
       - name: Install FFmpeg for media tests
@@ -113,6 +125,7 @@ jobs:
         run: python3 -m pytest tests/test_package_dependency_cli.py tests/test_package_dependency_parser.py tests/test_package_dependency_compliance.py tests/test_architecture_diagrams.py -q
       - name: Test Packages (with coverage)
         run: |
+          git fetch origin main:refs/remotes/origin/main --depth=1
           python3 -m pytest packages/creator-domain/tests/ -v --cov=creator_domain --cov-report=term-missing --cov-fail-under=60
           python3 -m pytest packages/creator-provider/tests/ -v --cov=creator_provider --cov-report=term-missing --cov-fail-under=60
           python3 -m pytest packages/creator-service/tests/ -v --cov=creator_service --cov-report=term-missing --cov-fail-under=60
@@ -162,6 +175,8 @@ jobs:
           FIRST_SHORT_TEST_REDIS_URL: redis://127.0.0.1:56389/0
         run: |
           STUDIO_BROWSER_TEST=true npm --prefix apps/studio-web run build
+          git fetch origin main:refs/remotes/origin/main --depth=1
+          PYTHONPATH=apps/api/src python3 -m pytest apps/api/tests/test_project_settings_rollback.py apps/api/tests/test_project_settings_migration.py packages/creator-service/tests/test_project_settings_storage.py -v --basetemp=/tmp/project-settings-runtime
           python3 -m pytest packages/creator-service/tests/test_stale_pending_reconciler_fencing.py packages/creator-service/tests/test_reconciler_cleanup_claims.py packages/creator-service/tests/test_broker_recovery_resume.py -v --basetemp=/tmp/reconciler-fencing-runtime
           PYTHONPATH=tests/integration python3 -m pytest packages/creator-service/tests/test_postgres_media_asset_storage.py packages/creator-service/tests/test_temp_byte_lease.py tests/integration/test_first_short_runtime.py tests/integration/test_studio_proxy_runtime.py tests/integration/test_authorized_media_runtime.py -v --basetemp=/tmp/first-short-runtime
           PYTHONPATH=tests/integration python3 -m pytest tests/integration/test_studio_upload_browser.py tests/integration/test_timeline_preview_browser.py -v --basetemp=/tmp/studio-browser-runtime

@@ -1,6 +1,19 @@
 export const API_BASE = "/api/creator";
 
-export interface ProjectDetail {
+export type ProjectSettings = {
+  readonly content_format: "short";
+  readonly output_preset: "short_vertical" | "short_square" | "short_landscape";
+  readonly encoding_profile: "preview" | "standard" | "high_quality" | "legacy_default";
+  readonly target_duration_seconds: number | null;
+  readonly schema_version: 1;
+};
+
+export type ProjectResponse = {
+  readonly settings: ProjectSettings;
+  readonly settings_source: "explicit" | "legacy_default";
+};
+
+export type ProjectDetail = ProjectResponse & {
   id: number;
   title: string | null;
   source_type: string;
@@ -13,7 +26,21 @@ export interface ProjectDetail {
     current_stage: string | null;
     status: string | null;
   } | null;
-}
+};
+
+export type ProjectSummary = ProjectResponse & {
+  readonly id: number;
+  readonly title: string | null;
+  readonly source_type: "idea" | "markdown" | "url" | "pasted_json";
+  readonly status: "draft" | "active" | "completed" | "archived" | "deleting";
+  readonly created_at: string;
+  readonly updated_at: string;
+  readonly latest_run?: {
+    readonly run_id: number;
+    readonly current_stage: string | null;
+    readonly status: string | null;
+  } | null;
+};
 
 export interface ModelDefaults {
   script_model?: string;

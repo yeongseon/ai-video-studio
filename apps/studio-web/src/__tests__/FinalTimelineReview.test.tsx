@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, expect, it, vi } from "vitest";
 import ReviewPage from "../pages/ReviewPage";
 import ProjectHeader from "../pages/project/ProjectHeader";
+import type { ProjectDetail } from "../types/api";
 
 afterEach(() => { vi.restoreAllMocks(); });
 
@@ -76,7 +77,20 @@ it("does not offer publishing before final review", async () => {
 it.each(["SCRIPT_REVIEW", "VISUAL_PLAN_REVIEW", "VISUAL_ASSET_REVIEW", "TIMELINE_REVIEW", "FINAL_REVIEW"])(
   "hides generic resume at paused %s while retaining failure recovery", (stage) => {
     const props = {
-      project: { id: 7, title: "Sample", source_type: "idea", status: "active" },
+      project: {
+        id: 7,
+        title: "Sample",
+        source_type: "idea",
+        status: "active",
+        settings: {
+          schema_version: 1,
+          content_format: "short",
+          output_preset: "short_vertical",
+          encoding_profile: "legacy_default",
+          target_duration_seconds: null,
+        },
+        settings_source: "legacy_default",
+      } satisfies ProjectDetail,
       run: { id: 41, project_id: 7, current_stage: stage, status: "paused", restart_from: null, model_defaults: null },
       titleDraft: "Sample", setTitleDraft: vi.fn(), savingTitle: false, onTitleSave: vi.fn(),
       stopping: false, resuming: false, deleting: false, confirmAction: null, setConfirmAction: vi.fn(),

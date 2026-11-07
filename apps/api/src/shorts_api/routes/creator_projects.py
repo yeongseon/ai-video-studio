@@ -3,6 +3,7 @@
 import logging
 
 from creator_domain.models.project import Project
+from creator_domain.models.project_settings import ProjectSettings
 from creator_service.artifact_download_service import artifact_download_service
 from creator_service.project_service import project_service
 from creator_service.run_service import run_service
@@ -15,12 +16,14 @@ from shorts_api.auth import (
     workspace_service,
 )
 from shorts_api.routes import creator_runs_utils
+from shorts_api.routes.project_settings_boundary import ProjectSettingsRoute
 from shorts_api.schemas.creator_projects import (
     CreateProjectRequest,
     UpdateProjectRequest,
+    project_response,
 )
 
-router = APIRouter(prefix="/projects", tags=["projects"])
+router = APIRouter(prefix="/projects", tags=["projects"], route_class=ProjectSettingsRoute)
 logger = logging.getLogger(__name__)
 
 
@@ -39,12 +42,14 @@ async def create_project(
         "url_source": request.url_source,
     }
     create_kwargs["workspace_id"] = user_workspace_id
+    if request.settings is not None:
+        create_kwargs["settings"] = request.settings
     try:
         project = await project_service.create_project(**create_kwargs)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
-    return project.model_dump(mode="json")
+    return project_response(project)
 
 
 
@@ -62,7 +67,7 @@ async def update_project(
     )
     if updated_project is None:
         raise HTTPException(status_code=404, detail="Project not found")
-    return updated_project.model_dump(mode="json")
+    return project_response(updated_project)
 
 
 @router.get("/{project_id}")
@@ -71,7 +76,7 @@ async def get_project_detail(
     access: tuple[CurrentUser, Project] = Depends(require_project_access),
 ) -> dict[str, object]:
     user, project = access
-    return project.model_dump(mode="json")
+    return project_response(project)
 
 
 @router.get("")
@@ -91,9 +96,24 @@ async def list_projects(
     )
     total = await count_projects_fn(workspace_id=user_workspace_id)
     return {
-        "projects": [project.model_dump(mode="json") for project in projects],
+        "projects": [project_response(project) for project in projects],
         "total": total,
     }
+
+
+@router.put("/{project_id}/settings")
+async def replace_project_settings(
+    request: ProjectSettings,
+    access: tuple[CurrentUser, Project] = Depends(require_project_access),
+) -> dict[str, object]:
+    user, project = access
+    updated = await project_service.replace_settings(project, request, workspace_id=user.workspace_id)
+    if updated is None:
+        current = await project_service.get_project(project.id, workspace_id=user.workspace_id)
+        if current is None:
+            raise HTTPException(status_code=404, detail="Project not found")
+        raise HTTPException(status_code=409, detail="Project changed; reload before replacing settings")
+    return project_response(updated)
 
 
 async def _cleanup_project_resources(project_id: int, workspace_id: int) -> list[int]:

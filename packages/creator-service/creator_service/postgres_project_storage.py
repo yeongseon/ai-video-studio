@@ -1,12 +1,17 @@
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Any
 
 from .db import fetch_all, fetch_one
+from . import postgres_project_settings
+from creator_domain.models.project_settings import ProjectSettings
 
 
 class PostgresProjectStorage:
     async def insert_project(self, payload: dict[str, Any]) -> dict[str, Any]:
+        if payload.get("settings") is not None:
+            return await postgres_project_settings.insert_with_settings(payload)
         row = await fetch_one(
             """
             INSERT INTO creator_projects (
@@ -35,22 +40,26 @@ class PostgresProjectStorage:
             raise ValueError("Failed to insert project")
         return row
 
+    async def fetch_settings(self, project_id: int, workspace_id: int | None) -> ProjectSettings | None:
+        return await postgres_project_settings.fetch_settings(project_id, workspace_id)
+
     async def fetch_project(
         self, project_id: int, workspace_id: int | None = None
     ) -> dict[str, Any] | None:
         if workspace_id is None:
-            return await fetch_one("SELECT * FROM creator_projects WHERE id = $1", project_id)
-        return await fetch_one(
-            "SELECT * FROM creator_projects WHERE id = $1 AND workspace_id = $2",
-            project_id,
-            workspace_id,
-        )
+            row = await fetch_one("SELECT * FROM creator_projects WHERE id = $1", project_id)
+        else:
+            row = await fetch_one(
+                "SELECT * FROM creator_projects WHERE id = $1 AND workspace_id = $2",
+                project_id, workspace_id,
+            )
+        return row
 
     async def list_projects(
         self, limit: int, offset: int, workspace_id: int | None = None
     ) -> list[dict[str, Any]]:
         if workspace_id is None:
-            return await fetch_all(
+            rows = await fetch_all(
                 """
                 SELECT *
                 FROM creator_projects
@@ -60,18 +69,20 @@ class PostgresProjectStorage:
                 limit,
                 offset,
             )
-        return await fetch_all(
-            """
-            SELECT *
-            FROM creator_projects
-            WHERE workspace_id = $1
-            ORDER BY created_at DESC, id DESC
-            LIMIT $2 OFFSET $3
-            """,
-            workspace_id,
-            limit,
-            offset,
-        )
+        else:
+            rows = await fetch_all(
+                """
+                SELECT *
+                FROM creator_projects
+                WHERE workspace_id = $1
+                ORDER BY created_at DESC, id DESC
+                LIMIT $2 OFFSET $3
+                """,
+                workspace_id,
+                limit,
+                offset,
+            )
+        return rows
 
     async def list_projects_with_latest_run(
         self, limit: int, offset: int, workspace_id: int | None = None
@@ -186,12 +197,18 @@ class PostgresProjectStorage:
         updates: dict[str, Any],
         *,
         workspace_id: int | None = None,
+        expected_updated_at: datetime | None = None,
     ) -> dict[str, Any] | None:
         """Update project fields. Returns updated row or None if not found.
 
         Only columns listed in ``_ALLOWED_COLUMNS`` are accepted; unknown
         keys are silently dropped to prevent SQL injection via dynamic column names.
         """
+        if "settings" in updates:
+            return await postgres_project_settings.replace_settings(
+                project_id, ProjectSettings.model_validate(updates["settings"]),
+                workspace_id=workspace_id, expected_updated_at=expected_updated_at,
+            )
         safe_updates = {k: v for k, v in updates.items() if k in self._ALLOWED_COLUMNS}
         if not safe_updates:
             return await self.fetch_project(project_id, workspace_id=workspace_id)
@@ -208,13 +225,18 @@ class PostgresProjectStorage:
             idx += 1
             params.append(workspace_id)
             where_clause += f" AND workspace_id = ${idx}"
+        if expected_updated_at is not None:
+            idx += 1
+            params.append(expected_updated_at)
+            where_clause += f" AND updated_at = ${idx}"
         query = f"""
             UPDATE creator_projects
             SET {", ".join(set_clauses)}, updated_at = NOW()
             WHERE {where_clause}
             RETURNING *
         """
-        return await fetch_one(query, *params)
+        row = await fetch_one(query, *params)
+        return row
 
     async def delete_project(self, project_id: int, *, workspace_id: int | None = None) -> bool:
         """Delete a project by id. Returns True if deleted.
