@@ -12,15 +12,22 @@ import sys
 from pathlib import PurePosixPath
 
 GATES = ("code", "restore", "first_short", "worker", "docker")
-DOC_NAMES = {
-    "AGENTS.md", "README.md", "CHANGELOG.md", "CONTRIBUTING.md",
-    "CODE_OF_CONDUCT.md", "SECURITY.md",
-}
 HIGH_RISK_WORDS = (
     "auth", "security", "credential", "session", "workspace", "access",
     "quota", "dispatch", "broker", "claim", "reconcile", "retention",
     "storage", "upload", "artifact", "media", "render", "ffmpeg",
-    "timeline", "migration", "idempotenc", "spend", "task",
+    "timeline", "migration", "idempotenc", "spend", "task", "delete",
+    "deletion", "owner", "identity", "idor", "fenc", "ingress", "secret",
+)
+PROTECTED_PREFIXES = (
+    "apps/api/src/shorts_api/routes/",
+    "apps/api/src/shorts_api/middleware",
+    "apps/worker-orchestrator/",
+    "apps/api/migrations/",
+)
+PROTECTED_SERVICE_WORDS = (
+    "storage", "dispatch", "quota", "delet", "owner", "broker", "celery",
+    "claim", "reconcile", "retention", "artifact", "upload",
 )
 
 
@@ -29,18 +36,28 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
     if not paths:
         return dict.fromkeys(GATES, True)  # Do not silently skip a bad/empty diff.
     for raw in paths:
-        path = raw.replace("\\", "/")
+        path = str(PurePosixPath(raw.replace("\\", "/")))
+        path_lower = path.lower()
         name = PurePosixPath(path).name.lower()
-        if (
-            path in DOC_NAMES
-            or path.startswith("docs/")
-            or path.startswith(".github/ISSUE_TEMPLATE/")
-            or path == ".github/pull_request_template.md"
-            or path.endswith(".md")
-        ):
+        if path_lower.startswith("docs/") and path_lower.endswith(".md"):
+            continue
+        if "/" not in path and path_lower.endswith(".md"):
             continue
         result["code"] = True
-        if path.startswith(".github/workflows/") or path in {
+        if (
+            path_lower.startswith(PROTECTED_PREFIXES)
+            or path_lower.startswith("apps/api/src/shorts_api/auth")
+            or (
+                path_lower.startswith("packages/creator-service/")
+                and any(word in path_lower for word in PROTECTED_SERVICE_WORDS)
+            )
+            or any(
+                word in path_lower
+                for word in ("secret", "credential", "ingress", "nginx", "segmentdelete")
+            )
+        ):
+            result.update({gate: True for gate in GATES})
+        elif path.startswith(".github/workflows/") or path in {
             "scripts/ci_impact.py", "tests/test_ci_impact.py",
             "constraints.txt", "uv.lock", "pyproject.toml", "Makefile",
             "docker-compose.yml", "docker-compose.dev.yml",
@@ -63,25 +80,17 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             result["docker"] = True
             if "nginx" in name or "entrypoint" in path:
                 result.update({gate: True for gate in GATES})
-        elif path.startswith("apps/api/migrations/"):
-            result["restore"] = result["first_short"] = True
         elif path.startswith("apps/api/src/"):
-            if any(word in name for word in HIGH_RISK_WORDS):
+            if any(word in path_lower for word in HIGH_RISK_WORDS):
                 result["first_short"] = True
-            if "auth" in name or "security" in name:
+            if "auth" in path_lower or "security" in path_lower:
                 result.update({gate: True for gate in GATES})
         elif path.startswith("apps/api/"):
             result["first_short"] = True
             if name.startswith("requirements"):
                 result.update({gate: True for gate in GATES})
-        elif path.startswith("apps/worker-orchestrator/"):
-            result["worker"] = True
-            if name.startswith("requirements") or name == "dockerfile":
-                result.update({gate: True for gate in GATES})
-            elif any(word in name for word in HIGH_RISK_WORDS):
-                result["first_short"] = True
         elif path.startswith("packages/creator-service/"):
-            if any(word in name for word in HIGH_RISK_WORDS):
+            if any(word in path_lower for word in HIGH_RISK_WORDS):
                 result["first_short"] = True
             if any(word in name for word in ("postgres", "storage", "db", "retention", "upload", "artifact")):
                 result["restore"] = True
