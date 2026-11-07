@@ -13,6 +13,15 @@ Every implementation issue requires TDD and Red/Green evidence.
 Long-form implementation is excluded. Its [extension checklist](architecture/LONG_FORM_EXTENSION.md)
 is neither an active backlog nor a prerequisite for this work.
 
+This historical checklist is not the current support matrix. In particular,
+`OutputSpec`, the three named short output geometries, `EncodingProfile`, and typed
+project-settings persistence now exist. Project-selected settings still do not
+flow through approval/worker rendering; that delivery boundary is documented in
+[`adr/008-typed-project-settings.md`](adr/008-typed-project-settings.md). Long-form
+rendering and acceptance remain open in [#884](https://github.com/yeongseon/short-form-studio/issues/884),
+[#885](https://github.com/yeongseon/short-form-studio/issues/885), and
+[#905](https://github.com/yeongseon/short-form-studio/issues/905).
+
 ## P0 — Short Media Foundation
 
 - [ ] 1. Introduce MediaAsset.
