@@ -43,6 +43,30 @@ export function TimelineVideo(props: Props) {
     fallbackTimer.current = null;
   }, []);
 
+  const markReady = useCallback((video: HTMLVideoElement, target: number, generation: number) => {
+    if (videoRef.current !== video || seekGeneration.current !== generation || seeking.current || video.seeking ||
+      video.readyState < 2 || Math.abs(video.currentTime - target) > MEDIA_DRIFT_SECONDS) return;
+    setDisplayable(true);
+    if (!notified.current) {
+      notified.current = true;
+      latest.current.onReady();
+    }
+    if (!latest.current.playing) latest.current.onHold(false);
+  }, []);
+
+  const observeDecodedTarget = useCallback((video: HTMLVideoElement, target: number, generation: number) => {
+    if (decodedFrameRequest.current !== null || typeof video.requestVideoFrameCallback !== "function") return;
+    decodedFrameRequest.current = video.requestVideoFrameCallback((_, metadata) => {
+      decodedFrameRequest.current = null;
+      if (seekGeneration.current !== generation || videoRef.current !== video) return;
+      if (Math.abs(metadata.mediaTime - target) > MEDIA_DRIFT_SECONDS) {
+        observeDecodedTarget(video, target, generation);
+        return;
+      }
+      markReady(video, target, generation);
+    });
+  }, [markReady]);
+
   const synchronize = useCallback(() => {
     const video = videoRef.current;
     if (!video || video.readyState < 1) return;
@@ -54,20 +78,10 @@ export function TimelineVideo(props: Props) {
       setDisplayable(false);
       latest.current.onHold(true);
       video.pause();
+      observeDecodedTarget(video, target, seekGeneration.current);
       video.currentTime = target;
     }
-  }, [cancelReadinessGate]);
-
-  const markReady = (video: HTMLVideoElement, target: number, generation: number) => {
-    if (videoRef.current !== video || seekGeneration.current !== generation || seeking.current || video.seeking ||
-      video.readyState < 2 || Math.abs(video.currentTime - target) > MEDIA_DRIFT_SECONDS) return;
-    setDisplayable(true);
-    if (!notified.current) {
-      notified.current = true;
-      latest.current.onReady();
-    }
-    if (!latest.current.playing) latest.current.onHold(false);
-  };
+  }, [cancelReadinessGate, observeDecodedTarget]);
 
   const settled = () => {
     const video = videoRef.current;
@@ -79,16 +93,7 @@ export function TimelineVideo(props: Props) {
     }
     const generation = seekGeneration.current;
     if (typeof video.requestVideoFrameCallback === "function") {
-      if (decodedFrameRequest.current !== null) return;
-      decodedFrameRequest.current = video.requestVideoFrameCallback((_, metadata) => {
-        decodedFrameRequest.current = null;
-        if (seekGeneration.current !== generation || videoRef.current !== video) return;
-        if (Math.abs(metadata.mediaTime - target) > MEDIA_DRIFT_SECONDS) {
-          settled();
-          return;
-        }
-        markReady(video, target, generation);
-      });
+      observeDecodedTarget(video, target, generation);
       return;
     }
     if (fallbackTimer.current !== null) return;

@@ -83,12 +83,27 @@ it.each(["wrong source", "internal seek", "browser seeking", "drifted completion
     expect(onReady).not.toHaveBeenCalled();
     Object.defineProperty(media, "seeking", { configurable: true, value: false });
     fireEvent.seeked(media);
+    if (condition === "drifted completion") presentDecodedFrame(media, 2);
     presentDecodedFrame(media, 2);
 
     // Then readiness is released for the matching revision.
     expect(onReady).toHaveBeenCalledWith(17);
   },
 );
+
+it("arms decoded-frame observation before waiting for seek completion", async () => {
+  // Given the first trimmed video has loaded metadata but has not emitted seeked.
+  renderTrimmedVideo(vi.fn());
+  const media = await screen.findByTestId("preview-media");
+  if (!(media instanceof HTMLVideoElement)) throw new Error("Expected video placement");
+  Object.defineProperty(media, "readyState", { configurable: true, value: 1 });
+
+  // When metadata starts the trim-target seek.
+  fireEvent.loadedMetadata(media);
+
+  // Then frame observation is already armed so the first presented target frame cannot be missed.
+  expect(media.requestVideoFrameCallback).toHaveBeenCalledOnce();
+});
 
 it("withholds readiness until a callback observes the decoded trim target", async () => {
   // Given the first placement has settled at a trimmed source target.
