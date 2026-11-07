@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import math
 from dataclasses import dataclass
 from fractions import Fraction
 
@@ -12,7 +11,9 @@ from .chunk_manifest import (
     ChunkSourceRef,
     RenderChunk,
 )
+from .chunk_identity import ChunkPlanningInput, SourceAssetIdentity
 from .chunk_policy import ChunkEncodingProfile, ChunkOutputSpec, ChunkPolicy
+from .frame_budget import cumulative_frame_ends, require_contiguous_placements
 from .render_plan import RenderPlan
 
 
@@ -20,26 +21,35 @@ from .render_plan import RenderPlan
 class _SegmentFrames:
     index: int
     source: str
+    source_asset: SourceAssetIdentity
     start: int
     end: int
 
 
 def plan_chunks(
-    render_plan: RenderPlan,
+    planning_input: ChunkPlanningInput | RenderPlan,
     fps: int | Fraction,
     policy: ChunkPolicy | None = None,
 ) -> ChunkManifest:
     """Plan deterministic chunks on the same cumulative CFR budget as rendering."""
+    match planning_input:
+        case ChunkPlanningInput():
+            identified_input = planning_input
+        case RenderPlan():
+            raise ChunkManifestValidationError("immutable planning identity is required")
+    identified_input.validate()
+    render_plan = identified_input.render_plan
     frame_rate = _integer_fps(fps)
     if render_plan.output_spec.fps != frame_rate:
         raise ChunkManifestValidationError("fps must match the render plan output specification")
     resolved = (policy or ChunkPolicy()).resolve(frame_rate)
-    segments = _allocate_segment_frames(render_plan, frame_rate)
+    segments = _allocate_segment_frames(identified_input, frame_rate)
     chunks = _partition(segments, frame_rate, resolved.max_chunk_frames, resolved.audio_sample_rate)
     if len(chunks) > resolved.max_chunk_count:
         raise ChunkManifestValidationError("chunk count exceeds the configured policy")
     return ChunkManifest(
         schema_version=SCHEMA_VERSION,
+        approval=identified_input.approval,
         total_frames=segments[-1].end,
         fps=frame_rate,
         output_spec=ChunkOutputSpec.from_output_spec(render_plan.output_spec),
@@ -56,14 +66,31 @@ def _integer_fps(value: int | Fraction) -> int:
     return frame_rate.numerator
 
 
-def _allocate_segment_frames(plan: RenderPlan, fps: int) -> tuple[_SegmentFrames, ...]:
-    ordered = sorted(plan.segments, key=lambda segment: segment.timeline_start_seconds)
-    durations = [segment.duration_seconds for segment in ordered]
-    ends = [round(math.fsum(durations[: index + 1]) * fps) for index in range(len(durations))]
+def _allocate_segment_frames(planning_input: ChunkPlanningInput, fps: int) -> tuple[_SegmentFrames, ...]:
+    identified = zip(
+        planning_input.render_plan.segments,
+        planning_input.source_assets,
+        strict=True,
+    )
+    ordered = sorted(identified, key=lambda item: item[0].timeline_start_seconds)
+    durations = [segment.duration_seconds for segment, _ in ordered]
+    require_contiguous_placements(
+        [(segment.timeline_start_seconds, segment.duration_seconds) for segment, _ in ordered],
+        fps,
+    )
+    ends = cumulative_frame_ends(durations, fps)
     starts = [0, *ends[:-1]]
     allocated = tuple(
-        _SegmentFrames(index=index, source=segment.source, start=start, end=end)
-        for index, (segment, start, end) in enumerate(zip(ordered, starts, ends, strict=True))
+        _SegmentFrames(
+            index=index,
+            source=segment.source,
+            source_asset=source_asset,
+            start=start,
+            end=end,
+        )
+        for index, ((segment, source_asset), start, end) in enumerate(
+            zip(ordered, starts, ends, strict=True)
+        )
     )
     if any(segment.end <= segment.start for segment in allocated):
         raise ChunkManifestValidationError(
@@ -108,6 +135,8 @@ def _chunk(
         ChunkSourceRef(
             segment_index=segment.index,
             source=segment.source,
+            asset_id=segment.source_asset.asset_id,
+            content_revision=segment.source_asset.content_revision,
             start_frame=max(start, segment.start),
             end_frame=min(end, segment.end),
         )
