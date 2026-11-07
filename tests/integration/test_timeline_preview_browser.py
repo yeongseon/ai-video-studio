@@ -149,22 +149,33 @@ def test_first_trimmed_video_approval_only_exposes_the_decoded_trim_start(tmp_pa
                 page.add_init_script("""
                     window.approvalSamples = [];
                     window.approvalBlockedSamples = 0;
+                    let pendingFrame = null;
+                    let decodedFrame = null;
+                    const sampleDecodedFrame = (video, metadata) => {
+                        pendingFrame = null;
+                        const canvas = document.createElement('canvas');
+                        canvas.width = canvas.height = 1;
+                        const context = canvas.getContext('2d');
+                        context.drawImage(video, 0, 0, 1, 1);
+                        const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
+                        decodedFrame = {video, mediaTime: metadata.mediaTime, r, g, b};
+                        sample();
+                    };
                     const sample = () => {
                         const button = Array.from(document.querySelectorAll('button'))
                             .find(button => button.textContent === 'Approve timeline & render');
                         const video = document.querySelector('[data-testid="preview-media"]');
                         if (!button) return;
-                        if (button.disabled) { window.approvalBlockedSamples++; return; }
-                        const canvas = document.createElement('canvas');
-                        canvas.width = canvas.height = 1;
-                        const context = canvas.getContext('2d');
-                        if (!(video instanceof HTMLVideoElement) || video.readyState < 2) {
-                            window.approvalSamples.push({valid: false}); return;
+                        if (video instanceof HTMLVideoElement && pendingFrame !== video) {
+                            pendingFrame = video;
+                            video.requestVideoFrameCallback((_, metadata) => sampleDecodedFrame(video, metadata));
                         }
-                        context.drawImage(video, 0, 0, 1, 1);
-                        const [r, g, b] = context.getImageData(0, 0, 1, 1).data;
-                        window.approvalSamples.push({valid: !video.seeking &&
-                            Math.abs(video.currentTime - 1.2) <= 2 / 30 && g > 90 && r < 30 && b < 30});
+                        if (button.disabled) { window.approvalBlockedSamples++; return; }
+                        if (!(video instanceof HTMLVideoElement) || decodedFrame?.video !== video) return;
+                        const {mediaTime, r, g, b} = decodedFrame;
+                        if (Math.abs(mediaTime - 1.2) > 2 / 30) return;
+                        window.approvalSamples.push({valid: !video.seeking && video.readyState >= 2 &&
+                            Math.abs(mediaTime - 1.2) <= 2 / 30 && g > 90 && r < 30 && b < 30});
                     };
                     new MutationObserver(sample).observe(document, {subtree: true, childList: true,
                         attributes: true, attributeFilter: ['disabled']});
@@ -175,6 +186,7 @@ def test_first_trimmed_video_approval_only_exposes_the_decoded_trim_start(tmp_pa
                 expect(page.get_by_role("button", name="Approve timeline & render")).to_be_enabled()
                 green = frame(page, 1.2)
                 assert green[1] > 90 and green[0] < 30 and green[2] < 30, green
+                page.wait_for_function("() => window.approvalSamples.length > 0")
                 samples = page.evaluate("() => window.approvalSamples")
                 assert samples and all(sample["valid"] for sample in samples), samples
                 assert page.evaluate("() => window.approvalBlockedSamples") > 0
