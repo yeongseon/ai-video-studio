@@ -248,8 +248,118 @@ larger secret-management feature.
 ## Artifact Access
 
 Generated artifacts (videos, images, audio) are stored on the local filesystem
-under `ARTIFACT_ROOT`. Access is gated by the creator API — artifacts are never
+under `ARTIFACT_ROOT` or the configured S3/Azure Blob backend. Access is gated
+by the creator API — artifacts are never
 served directly from the filesystem to external clients.
+
+### Timeline project previews
+
+`GET`/`HEAD /api/creator/projects/{project_id}/assets/{asset_id}/content`
+uses project access and a workspace-scoped asset lookup before any object I/O.
+Foreign projects, missing assets, wrong project associations, missing objects,
+unsafe keys and foreign workspace-prefixed keys return 404. Anonymous requests
+return 401. Only stored `image/png`, `image/jpeg`, `image/webp`, `video/mp4` and
+`video/webm` MIME types can be previewed; caller or cloud MIME metadata cannot
+override the allowlist (415). Previews retain inline behavior without a filename
+or storage key in Content-Disposition, declare `nosniff`, and are
+`Cache-Control: private, no-store`.
+
+The asset's recorded `storage_provider` must match both `STORAGE_BACKEND` and
+the initialized singleton's provider. Mismatch returns 409 without reading any
+object; historical assets require an operator-controlled migration/configuration,
+not caller-selected accounts, buckets or keys. GCS/unknown providers return an
+explicit unsupported-provider 409. Local reads use no-follow directory
+descriptors, including every path component, to prevent symlink/traversal races.
+Cloud reads stay under the adapter's configured bucket/container and prefix.
+
+Media streams through the same-origin API, never a signed redirect, SAS, public
+cloud URL or unsigned development fallback. CSP and nginx raw-file policy remain
+unchanged. Each provider read requests at most 64 KiB and releases its response
+before returning. S3 uses `GetObject Range`; Azure uses `download_blob(offset,
+length, max_concurrency=1)` and consumes only that bounded range. Blocking I/O
+runs on the capacity-limited executor. Disconnect/cancellation stops further
+reads; an already-running synchronous SDK call finishes and releases its
+response before cancellation propagates (existing SDK connection/read timeouts
+and retries apply). This is bounded memory, not an instantaneous cancellation
+guarantee for an in-flight network call. A large full GET can incur many cloud
+range requests; cloud cost/latency must be assessed during manual acceptance.
+
+Full GET returns 200; single bounded, open-ended and suffix byte ranges return
+206 with exact Content-Range and Content-Length. Malformed, multi-range and
+unsatisfiable ranges return 416 with `Content-Range: bytes */size`. HEAD ignores
+Range and returns full headers without content reads. If-Range is treated as
+nonmatching (full 200); no ETag/Last-Modified validator support is advertised.
+Missing objects return the same generic 404 as unavailable identities. Provider
+auth/config/network failures return generic 502, recognized read timeouts 503,
+without logging keys or SDK exception/cause text. During adapter stat/conditional
+read operations, context-scoped filters on the SDK's record-producing loggers
+suppress Azure/botocore diagnostics before any handlers receive them, including
+globally enabled DEBUG and explicitly enabled Azure HTTP logging for the pinned
+Azure HTTP/storage policies and botocore endpoint/signing/parser emitters.
+This is not a guarantee for future/lazy/unlisted emitters, SDK root loggers,
+third-party instrumentation or arbitrary warnings. Offline real
+SDK pipelines test stat, range and transport/auth failures at INFO and DEBUG,
+including fresh-interpreter first operations captured through root handlers,
+lastResort, warnings and stderr and formatted with the repository JSON formatter. This guarantee
+is scoped to those adapter read operations, not arbitrary external SDK clients
+or operator instrumentation. Failure after headers terminates
+the response; Content-Length exposes truncation, never JSON embedded in media.
+
+Scene/workspace preview routes remain local-only (remote 409). Run-artifact
+download/expiration behavior is unchanged. Timeline preview JSON still includes
+its authorized internal `source` and identity `media_url`, and preserves revision
+gates. The browser's `source` fallback is not used for responses from this route,
+which always emits `media_url`; no concrete cross-tenant or cloud-capability leak
+was demonstrated. Do not treat internal source keys as public delivery URLs.
+
+Literal legacy keys (including encoded or Unicode dots and uppercase prefixes)
+are not normalized into new namespaces. Key validation is a traversal boundary,
+not a universal ownership proof for non-workspace legacy keys: persisted project
+and workspace identity controls still apply.
+
+Transfers acquire an owned read session. Local reads retain one no-follow
+descriptor and serve its original inode across atomic rename/replacement. Each
+read verifies descriptor size/mtime/ctime/identity before and after I/O as defense
+in depth (atomic unlink changes ctime/link count without mutating retained data).
+Newly created workspace assets use workspace-media keys created once under fresh
+UUID addresses by `media_asset_service.py::MediaAssetService._store_asset`
+(currently `workspaces/<workspace>/assets/<uuid>-<filename>`). It reserves an
+upload intent, uploads bytes, then persists asset metadata; readers cannot
+discover a new asset identity before that metadata exists. The route deliberately
+also accepts authorized legacy non-workspace keys, whose provenance is weaker:
+their writers may reuse keys and the write-once guarantee does not apply. Ownership,
+no-follow confinement and detectable-mutation checks still apply. Platform writers do
+not rewrite these keys. Local upload and other writers retain their original
+in-place semantics; this preview change does not alter writer permissions,
+inodes, groups or ACLs. An atomic rename/replace by any writer leaves the retained
+descriptor serving generation A. Detectable in-place changes abort, but same-inode
+rewrites that restore timestamps or fit inside timestamp granularity are out of
+scope: filesystem write access to the artifact root means full control of served
+bytes, including outright replacement. Metadata checks are not protection from
+such an actor. Network/case-insensitive filesystems are not validated. See the
+[writer-contract audit](TIMELINE_PREVIEW_VERIFICATION.md#writer-contract-audit).
+Cloud sessions capture ETag (S3 VersionId when
+present) and condition every range with S3 IfMatch/VersionId or Azure
+IfNotModified. A failed condition is generic 502 before bytes; after start it
+aborts the incomplete transfer. Short/over-reads also abort and never append JSON.
+HEAD describes the single acquired generation without fetching content.
+
+#### Manual cloud acceptance (not proved by offline tests)
+
+Offline S3 SDK Stubber, injected Azure client and real nginx/API/PostgreSQL tests
+prove request shape, bytes, auth boundaries and range/header behavior, not live
+IAM/RBAC permissions, credential rotation/expiry, cloud transport cleanup or
+provider latency/cost. Before enabling cloud previews, an authorized operator
+must use a private configured bucket/container and verify PNG/MP4 full GET, HEAD,
+seek/suffix ranges, foreign/missing 404, credential-revocation fail-closed behavior,
+disconnect cleanup and memory under a large file, through the normal Studio
+proxy. Confirm no cloud URL/SAS/key appears in browser responses or logs. These
+checks require real credentials and are not performed by CI or this change.
+
+Production cloud enablement remains conditional: shipped API/worker images do
+not currently install boto3/azure-storage-blob. Cloud configuration therefore
+returns generic 502 until SDK provisioning in #895/#898 lands. Offline test
+dependencies do not change shipped runtime images.
 
 For external preview access during development, use the documented loopback
 HTTP server pattern (see `AGENTS.md`). External tunneling requires explicit

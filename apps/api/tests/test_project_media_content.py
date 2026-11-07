@@ -32,6 +32,8 @@ async def test_project_content_requires_owned_asset_and_serves_real_png(
     saved = await storage.save_asset(asset.model_dump(exclude={"id"}))
     monkeypatch.setattr(creator_timeline, "media_asset_service", service)
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    monkeypatch.setattr("creator_service.object_storage._storage_backend", backend)
 
     async def access(project_id: int) -> tuple[CurrentUser, Project]:
         if project_id == 99:

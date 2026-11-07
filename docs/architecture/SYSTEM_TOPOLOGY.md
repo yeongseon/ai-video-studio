@@ -90,11 +90,12 @@ mandatory Compose services**. Beat emits maintenance commands; workers perform
 reconciliation, retention and deletion against DB/storage. API/worker share the
 artifact bind mount; worker/Beat also share the durable DLQ/broker-epoch volume.
 
-Local preview/content is served only after API ownership checks. At this source
-revision, remote inline preview is unavailable; remote artifact download can
-redirect **after authorization** to a backend URL (signed where supported). It is
+Timeline project asset previews stream local/S3/Azure content through the
+authorized same-origin API route. Scene/workspace remote previews remain
+unavailable (409); remote artifact download can redirect **after authorization**
+to a backend URL (signed where supported). It is
 not a raw nginx mount or blanket public bucket grant. The diagram's API→web→browser
-media arrows describe local streaming; backend redirects are the stated alternative.
+media arrows describe authorized streaming; final-artifact redirects remain an alternative.
 
 ### Runtime node to source path map
 

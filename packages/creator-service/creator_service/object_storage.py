@@ -9,6 +9,7 @@ Selects backend based on STORAGE_BACKEND env var:
 from __future__ import annotations
 
 import hashlib
+import errno
 import logging
 import os
 import tempfile
@@ -16,6 +17,14 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import BinaryIO, Final, Protocol, cast
+
+from .object_storage_reads import (
+    ObjectInfo as ObjectInfo,
+    StorageObjectMissing as StorageObjectMissing,
+    StorageReadError as StorageReadError,
+    azure_read, azure_stat, local_read, local_stat, s3_read, s3_stat, validate_key,
+)
+from .storage_read_session import LocalReader, ObjectReader, RemoteReader
 
 logger = logging.getLogger(__name__)
 _STREAM_CHUNK_SIZE = 64 * 1024
@@ -71,6 +80,9 @@ class StorageResult:
 class ArtifactStorageBackend(Protocol):
     """Interface for artifact file storage."""
 
+    @property
+    def provider(self) -> str: ...
+
     def upload(
         self,
         key: str,
@@ -100,12 +112,26 @@ class ArtifactStorageBackend(Protocol):
         """Check if artifact exists."""
         ...
 
+    def stat(self, key: str) -> ObjectInfo:
+        """Read object size without downloading content; missing is normalized."""
+        ...
+
+    def read_range(self, key: str, offset: int, length: int) -> bytes:
+        """Read 1..65536 bytes, releasing the response before returning."""
+        ...
+
+    def open_read(self, key: str) -> ObjectReader:
+        """Acquire metadata and an owned generation-consistent read session."""
+        ...
+
 
 class LocalStorageBackend:
     """Local filesystem storage. Default for development."""
 
     def __init__(self, root: str | None = None) -> None:
         self._root = Path(root or os.getenv("ARTIFACT_ROOT", "data/artifacts"))
+
+    provider = "local"
 
     def _safe_key(self, key: str) -> str:
         """Validate key to prevent path traversal attacks."""
@@ -178,6 +204,24 @@ class LocalStorageBackend:
     def exists(self, key: str) -> bool:
         return (self._root / self._safe_key(key)).is_file()
 
+    def stat(self, key: str) -> ObjectInfo:
+        return local_stat(self._root, key)
+
+    def read_range(self, key: str, offset: int, length: int) -> bytes:
+        return local_read(self._root, key, offset, length)
+
+    def open_read(self, key: str) -> ObjectReader:
+        from .object_storage_reads import local_descriptor
+
+        try:
+            return LocalReader(local_descriptor(self._root, key))
+        except TimeoutError:
+            raise StorageReadError("timeout") from None
+        except OSError as error:
+            if error.errno in {errno.ENOENT, errno.ELOOP, errno.ENOTDIR}:
+                raise StorageObjectMissing() from None
+            raise StorageReadError("unavailable") from None
+
 
 class S3StorageBackend:
     """AWS S3 storage backend.
@@ -212,6 +256,8 @@ class S3StorageBackend:
                 tcp_keepalive=True,
             ),
         )
+
+    provider = "s3"
 
     def _full_key(self, key: str) -> str:
         return f"{self._prefix}/{key}" if self._prefix else key
@@ -278,6 +324,32 @@ class S3StorageBackend:
         except Exception:
             return False
 
+    def stat(self, key: str) -> ObjectInfo:
+        validate_key(key)
+        return s3_stat(lambda: self._client.head_object(Bucket=self._bucket, Key=self._full_key(key)))
+
+    def read_range(self, key: str, offset: int, length: int) -> bytes:
+        validate_key(key)
+        return s3_read(lambda byte_range: self._client.get_object(
+            Bucket=self._bucket, Key=self._full_key(key), Range=byte_range,
+        ), offset, length)
+
+    def open_read(self, key: str) -> ObjectReader:
+        info = self.stat(key)
+        if not info.etag:
+            raise StorageReadError()
+
+        def read(offset: int, length: int) -> bytes:
+            def operation(byte_range: str):
+                parameters = {"Bucket": self._bucket, "Key": self._full_key(key),
+                              "Range": byte_range, "IfMatch": info.etag}
+                if info.version_id is not None:
+                    parameters["VersionId"] = info.version_id
+                return self._client.get_object(**parameters)
+            return s3_read(operation, offset, length)
+
+        return RemoteReader(info, read)
+
 
 class AzureBlobStorageBackend:
     """Azure Blob Storage backend.
@@ -311,11 +383,14 @@ class AzureBlobStorageBackend:
             self._connection_string,
             connection_timeout=PROVIDER_CONNECT_TIMEOUT_SECONDS,
             read_timeout=PROVIDER_READ_TIMEOUT_SECONDS,
+            logging_enable=False,
         )
         self._container_client = self._client.get_container_client(self._container)
         self._content_settings_cls = ContentSettings
         self._blob_sas_permissions_cls = BlobSasPermissions
         self._generate_blob_sas = generate_blob_sas
+
+    provider = "azure_blob"
 
     def _full_key(self, key: str) -> str:
         return f"{self._prefix}/{key}" if self._prefix else key
@@ -415,6 +490,31 @@ class AzureBlobStorageBackend:
     def exists(self, key: str) -> bool:
         blob_client = self._container_client.get_blob_client(self._full_key(key))
         return bool(blob_client.exists())
+
+    def stat(self, key: str) -> ObjectInfo:
+        validate_key(key)
+        return azure_stat(lambda: self._container_client.get_blob_client(self._full_key(key)).get_blob_properties())
+
+    def read_range(self, key: str, offset: int, length: int) -> bytes:
+        validate_key(key)
+        return azure_read(lambda start, count: self._container_client.get_blob_client(self._full_key(key)).download_blob(
+            offset=start, length=count, max_concurrency=1,
+        ).readall(), offset, length)
+
+    def open_read(self, key: str) -> ObjectReader:
+        from azure.core import MatchConditions
+
+        info = self.stat(key)
+        if not info.etag:
+            raise StorageReadError()
+
+        def read(offset: int, length: int) -> bytes:
+            return azure_read(lambda start, count: self._container_client.get_blob_client(self._full_key(key)).download_blob(
+                offset=start, length=count, max_concurrency=1, etag=info.etag,
+                match_condition=MatchConditions.IfNotModified, logging_enable=False,
+            ).readall(), offset, length)
+
+        return RemoteReader(info, read)
 
 
 class GCSStorageBackend:
