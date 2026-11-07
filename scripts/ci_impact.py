@@ -103,7 +103,9 @@ def classify_paths(paths: list[str]) -> dict[str, bool]:
             if name in {"registry.py", "base.py", "api_keys.py"}:
                 result["first_short"] = True
         elif path.startswith("tests/"):
-            if "integration/" in path or any(word in name for word in HIGH_RISK_WORDS):
+            if name in {"test_ci_impact.py", "test_ci_required.py", "test_ci_required_workflow.py"}:
+                result.update({gate: True for gate in GATES})
+            elif "integration/" in path or any(word in name for word in HIGH_RISK_WORDS):
                 result["first_short"] = True
             if "restore" in name or "backup" in name:
                 result["restore"] = True

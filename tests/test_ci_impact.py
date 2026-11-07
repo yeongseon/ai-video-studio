@@ -29,7 +29,13 @@ def test_worker_task_triggers_worker_runtime():
 
 
 def test_auth_or_workflow_changes_are_full_gate():
-    for path in ["apps/api/src/shorts_api/auth.py", ".github/workflows/ci.yml"]:
+    for path in [
+        "apps/api/src/shorts_api/auth.py",
+        ".github/workflows/ci.yml",
+        "scripts/ci_required.py",
+        "tests/test_ci_required.py",
+        "tests/test_ci_required_workflow.py",
+    ]:
         assert all(classify_paths([path]).values())
 
 
