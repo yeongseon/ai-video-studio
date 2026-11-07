@@ -7,10 +7,13 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
+from billiard.exceptions import SoftTimeLimitExceeded
+
 from creator_service.artifact_storage_integration import get_artifact_download_path
 from creator_service.confined_directory_deletion import delete_direct_child_tree
 from creator_service.object_storage import get_storage_backend
 from creator_service.run_object_deletion import delete_run_object
+from creator_service.rejected_scene_cleanup import REJECTED_SCENE_UPLOAD_CLEANUP_MARKER
 
 from .db import execute, fetch_all, fetch_one, transaction
 
@@ -65,10 +68,11 @@ class ArtifactDownloadService:
 
     async def delete_artifacts_for_run(self, run_id: int) -> int:
         artifacts = await fetch_all(
-            "SELECT id, COALESCE(NULLIF(storage_key, ''), file_path) AS storage_key, "
+            "SELECT id, COALESCE(NULLIF(storage_key, ''), file_path) AS storage_key, file_path, metadata_json, "
             "storage_provider AS object_storage_provider FROM creator_artifacts WHERE run_id = $1 "
             "UNION ALL "
             "SELECT NULL::integer AS id, COALESCE(NULLIF(storage_key, ''), asset_path) AS storage_key, "
+            "asset_path AS file_path, NULL::text AS metadata_json, "
             "storage_provider AS object_storage_provider FROM creator_scene_assets WHERE run_id = $1",
             run_id,
         )
@@ -94,7 +98,14 @@ class ArtifactDownloadService:
                 continue
             try:
                 provider = artifact.get("object_storage_provider")
-                delete_run_object(key, provider if isinstance(provider, str) else None, backend)
+                if artifact.get("metadata_json") == REJECTED_SCENE_UPLOAD_CLEANUP_MARKER:
+                    local_path = artifact.get("file_path")
+                    if not isinstance(local_path, str):
+                        raise OSError("rejected upload cleanup path missing")
+                    backend.delete(key)
+                    Path(local_path).unlink(missing_ok=True)
+                else:
+                    delete_run_object(key, provider if isinstance(provider, str) else None, backend)
                 if isinstance(artifact_id, int):
                     deleted_ids.append(artifact_id)
             except Exception as exc:
@@ -159,6 +170,12 @@ class ArtifactDownloadService:
             f"provider={provider}; fingerprint={fingerprint}",
         )
 
+    @staticmethod
+    async def record_rejected_cleanup_failure(artifact_id: int, storage_key: str) -> None:
+        await ArtifactDownloadService._record_delete_failure(
+            artifact_id, "configured", _key_fingerprint(storage_key),
+        )
+
     async def sweep_expired(self, batch_size: int = 500) -> int:
         """Mark expired artifacts for deletion.
 
@@ -220,7 +237,7 @@ class ArtifactDownloadService:
         # Phase 1: Claim rows in a short transaction.
         async with transaction() as conn:
             rows = await conn.fetch(
-                "SELECT id, storage_key, delete_retry_count "
+                "SELECT id, storage_key, file_path, metadata_json, delete_retry_count "
                 "FROM creator_artifacts "
                 "WHERE ("
                 "  delete_failed_at IS NOT NULL"
@@ -250,7 +267,14 @@ class ArtifactDownloadService:
                 continue
             try:
                 backend.delete(key)
+                if artifact.get("metadata_json") == REJECTED_SCENE_UPLOAD_CLEANUP_MARKER:
+                    local_path = artifact.get("file_path")
+                    if not isinstance(local_path, str):
+                        raise OSError("rejected upload cleanup path missing")
+                    Path(local_path).unlink(missing_ok=True)
                 deleted_ids.append(artifact_id)
+            except SoftTimeLimitExceeded:
+                raise
             except Exception as exc:
                 provider = "configured"
                 fingerprint = _key_fingerprint(key)

@@ -3,9 +3,15 @@ import contextlib
 from pathlib import Path
 
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 from creator_service.artifact_download_service import (
     ArtifactDownloadService,
     InMemoryArtifactDownloadStorage,
+)
+from creator_service.object_storage import StorageDeletionError
+from creator_service.rejected_scene_cleanup import (
+    REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+    RejectedSceneCleanupService,
 )
 
 
@@ -326,9 +332,206 @@ class _FakeConnection:
         self.queries.append((query, *args))
         return 0  # no abandoned rows in tests
 
+    async def fetchrow(self, query: str, *args: object) -> dict[str, object]:
+        self.queries.append((query, *args))
+        return {"id": 501}
+
 @contextlib.asynccontextmanager
 async def _fake_transaction(conn: _FakeConnection):
     yield conn
+
+
+@pytest.mark.asyncio
+async def test_rejected_scene_upload_is_recorded_before_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _FakeConnection()
+    monkeypatch.setattr(
+        "creator_service.rejected_scene_cleanup.transaction",
+        lambda: _fake_transaction(conn),
+    )
+    service = RejectedSceneCleanupService()
+
+    record_id = await service.record(
+        run_id=17,
+        workspace_id=3,
+        project_id=9,
+        storage_key="17/scenes/scene-a-1234.png",
+        local_path="/tmp/17/scenes/scene-a-1234.png",
+        storage_provider="s3",
+        content_type="image/png",
+        size_bytes=12,
+        checksum="abc",
+    )
+
+    assert record_id == 501
+    inserts = [query for query in conn.queries if "INSERT INTO creator_artifacts" in query[0]]
+    assert len(inserts) == 1
+    assert inserts[0][6] == "17/scenes/scene-a-1234.png"
+    assert "delete_requested_at" in inserts[0][0]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("failure", [StorageDeletionError(key="17/scenes/fresh.png"), RuntimeError("down")])
+async def test_rejected_scene_cleanup_failure_stays_retryable_then_clears(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    failure: Exception,
+) -> None:
+    key = "17/scenes/fresh.png"
+    local_path = tmp_path / "fresh.png"
+    local_path.write_bytes(b"fresh")
+    conn = _FakeConnection(fetch_rows=[{
+        "id": 502,
+        "storage_key": key,
+        "file_path": str(local_path),
+        "metadata_json": REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+        "delete_retry_count": 0,
+    }])
+    attempts = 0
+
+    class _Backend:
+        def delete(self, candidate: str) -> bool:
+            nonlocal attempts
+            assert candidate == key
+            attempts += 1
+            if attempts == 1:
+                raise failure
+            return True
+
+    monkeypatch.setattr(
+        "creator_service.artifact_download_service.transaction",
+        lambda: _fake_transaction(conn),
+    )
+    monkeypatch.setattr(
+        "creator_service.artifact_download_service.get_storage_backend", lambda: _Backend(),
+    )
+    service = ArtifactDownloadService(InMemoryArtifactDownloadStorage())
+
+    assert await service.retry_failed_deletions() == 0
+    assert not [query for query in conn.queries if "DELETE FROM creator_artifacts" in query[0]]
+    assert local_path.exists()
+    assert await service.retry_failed_deletions() == 1
+    assert not local_path.exists()
+    assert [query for query in conn.queries if "DELETE FROM creator_artifacts" in query[0]]
+
+
+@pytest.mark.asyncio
+async def test_rejected_scene_local_unlink_failure_stays_retryable_then_clears(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    key = "17/scenes/fresh.png"
+    local_path = tmp_path / "fresh.png"
+    local_path.write_bytes(b"fresh")
+    conn = _FakeConnection(fetch_rows=[{
+        "id": 503,
+        "storage_key": key,
+        "file_path": str(local_path),
+        "metadata_json": REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+        "delete_retry_count": 0,
+    }])
+    original_unlink = Path.unlink
+    fail_unlink = True
+
+    class _Backend:
+        def delete(self, candidate: str) -> bool:
+            assert candidate == key
+            return True
+
+    def unlink(path: Path, *, missing_ok: bool = False) -> None:
+        if fail_unlink and path == local_path:
+            raise PermissionError("busy")
+        original_unlink(path, missing_ok=missing_ok)
+
+    monkeypatch.setattr(
+        "creator_service.artifact_download_service.transaction",
+        lambda: _fake_transaction(conn),
+    )
+    monkeypatch.setattr(
+        "creator_service.artifact_download_service.get_storage_backend", lambda: _Backend(),
+    )
+    monkeypatch.setattr(Path, "unlink", unlink)
+    service = ArtifactDownloadService(InMemoryArtifactDownloadStorage())
+
+    assert await service.retry_failed_deletions() == 0
+    assert local_path.exists()
+    fail_unlink = False
+    assert await service.retry_failed_deletions() == 1
+    assert not local_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_rejected_scene_soft_timeout_leaves_pending_record(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    key = "17/scenes/fresh.png"
+    local_path = tmp_path / "fresh.png"
+    local_path.write_bytes(b"fresh")
+    conn = _FakeConnection(fetch_rows=[{
+        "id": 504,
+        "storage_key": key,
+        "file_path": str(local_path),
+        "metadata_json": REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+        "delete_retry_count": 0,
+    }])
+
+    class _Backend:
+        def delete(self, candidate: str) -> bool:
+            assert candidate == key
+            raise SoftTimeLimitExceeded
+
+    monkeypatch.setattr(
+        "creator_service.rejected_scene_cleanup.get_storage_backend", lambda: _Backend(),
+    )
+    service = RejectedSceneCleanupService()
+
+    with pytest.raises(SoftTimeLimitExceeded):
+        await service.cleanup(504, key, str(local_path))
+    assert not [query for query in conn.queries if "DELETE FROM creator_artifacts" in query[0]]
+    assert local_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_project_run_deletion_includes_pending_rejected_upload(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    key = "17/scenes/fresh.png"
+    local_path = tmp_path / "fresh.png"
+    local_path.write_bytes(b"fresh")
+    execute_calls: list[tuple[str, ...]] = []
+
+    class _Backend:
+        def delete(self, candidate: str) -> bool:
+            assert candidate == key
+            return True
+
+    async def fetch_rows(query: str, *args: object) -> list[dict[str, object]]:
+        assert "metadata_json" in query
+        return [{
+            "id": 505,
+            "storage_key": key,
+            "file_path": str(local_path),
+            "metadata_json": REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+            "object_storage_provider": "local",
+        }]
+
+    async def execute(query: str, *args: object) -> str:
+        execute_calls.append((query, *args))
+        return "OK"
+
+    monkeypatch.setattr("creator_service.artifact_download_service.fetch_all", fetch_rows)
+    monkeypatch.setattr("creator_service.artifact_download_service.execute", execute)
+    monkeypatch.setattr(
+        "creator_service.artifact_download_service.get_storage_backend", lambda: _Backend(),
+    )
+    service = ArtifactDownloadService(InMemoryArtifactDownloadStorage())
+
+    assert await service.delete_artifacts_for_run(17) == 0
+    assert not local_path.exists()
+    assert [query for query in execute_calls if "DELETE FROM creator_artifacts" in query[0]]
 
 
 @pytest.mark.asyncio
