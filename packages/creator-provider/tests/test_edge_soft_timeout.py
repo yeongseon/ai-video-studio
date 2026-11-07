@@ -18,7 +18,7 @@ async def test_edge_sdk_soft_timeout_is_not_wrapped(
         def __init__(self, **kwargs: str) -> None:
             assert kwargs["voice"] == "ko-KR-SunHiNeural"
 
-        async def save(self, path: str) -> None:
+        async def save(self, path: str, _metadata_path: str | None = None) -> None:
             calls.append(path)
             raise SoftTimeLimitExceeded()
 
@@ -44,7 +44,7 @@ async def test_edge_other_sdk_failures_remain_provider_errors(
         def __init__(self, **kwargs: str) -> None:
             pass
 
-        async def save(self, path: str) -> None:
+        async def save(self, path: str, _metadata_path: str | None = None) -> None:
             raise RuntimeError("SDK failed")
 
     monkeypatch.setattr("creator_provider.tts.edge_tts_provider.edge_tts.Communicate", FakeCommunicate)
@@ -54,3 +54,39 @@ async def test_edge_other_sdk_failures_remain_provider_errors(
         await EdgeTTSProvider(endpoint="", model_key="edge-tts").generate(
             "hello", params={"output_path": str(tmp_path / "other.mp3")},
         )
+
+
+@pytest.mark.asyncio
+async def test_edge_tts_saves_word_boundaries_next_to_audio(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given Edge TTS generation for an artifact path.
+    saved_paths: list[tuple[str, str | None]] = []
+
+    class FakeCommunicate:
+        def __init__(self, **kwargs: str) -> None:
+            assert kwargs["text"] == "정확한 대본"
+
+        async def save(self, audio_path: str, metadata_path: str | None = None) -> None:
+            saved_paths.append((audio_path, metadata_path))
+            Path(audio_path).write_bytes(b"x" * 101)
+            assert metadata_path is not None
+            Path(metadata_path).write_text(
+                '{"type":"WordBoundary","offset":0,"duration":10000000,"text":"정확한"}\n',
+                encoding="utf-8",
+            )
+
+    monkeypatch.setattr("creator_provider.tts.edge_tts_provider.edge_tts.Communicate", FakeCommunicate)
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    output = tmp_path / "audio.mp3"
+
+    # When audio is generated.
+    result = await EdgeTTSProvider(endpoint="", model_key="edge-tts").generate(
+        "정확한 대본", params={"output_path": str(output)},
+    )
+
+    # Then provider-native word timings are retained beside that exact audio.
+    metadata_path = tmp_path / "audio.mp3.words.jsonl"
+    assert saved_paths == [(str(output), str(metadata_path))]
+    assert metadata_path.exists()
+    assert result.metadata == {"word_timestamps_path": str(metadata_path)}

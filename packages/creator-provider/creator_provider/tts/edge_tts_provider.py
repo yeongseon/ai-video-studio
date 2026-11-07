@@ -70,7 +70,8 @@ class EdgeTTSProvider(TTSProvider):
             communicate = edge_tts.Communicate(
                 text=text, voice=voice_name, rate=rate, pitch=pitch, volume=volume
             )
-            await communicate.save(str(output_path))
+            word_timestamps_path = Path(f"{output_path}.words.jsonl")
+            await communicate.save(str(output_path), str(word_timestamps_path))
         except SoftTimeLimitExceeded:
             raise
         except ConnectionError as exc:
@@ -89,4 +90,5 @@ class EdgeTTSProvider(TTSProvider):
             audio_path=str(output_path),
             duration_seconds=duration,
             model_key=self.model_key,
+            metadata={"word_timestamps_path": str(word_timestamps_path)},
         )
