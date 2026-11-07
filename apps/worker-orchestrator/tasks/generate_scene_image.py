@@ -22,6 +22,7 @@ from creator_service.telemetry import trace_task
 from creator_service.usage_service import authorize_owned_provider_attempt
 from creator_service.usage_service import record_provider_call
 from creator_service.visual_asset_service import visual_asset_service as _visual_asset_service
+from creator_service.visual_asset_service import SceneAssetAcceptanceRejected
 from creator_service.visual_plan_service import visual_plan_service as _visual_plan_service
 from tasks.task_runner import GpuLockContext, TaskContext, TaskResult, TaskRunnerConfig, run_task
 from tasks.hard_timeout import (
@@ -236,6 +237,24 @@ def generate_scene_image(
                     if entry.requires_gpu:
                         gpu_lock.release()
 
+                uploaded = await batch.upload(target_path)
+                try:
+                    asset = await _visual_asset_service.create_asset(
+                        run_id=run_id,
+                        scene_id=target_scene.scene_id,
+                        asset_path=target_path,
+                        prompt_snapshot=effective_prompt,
+                        model_used=model_key,
+                        provider_type=entry.provider_type,
+                        storage_provider=uploaded.storage_provider,
+                        storage_key=uploaded.key,
+                        is_active=is_active,
+                        idempotency_key=f"{ctx.task_id}:{target_scene.scene_id}",
+                    )
+                except SceneAssetAcceptanceRejected:
+                    batch.discard_rejected_upload(target_path, uploaded)
+                    raise Ignore() from None
+
                 try:
                     await record_provider_call(
                         run_id,
@@ -255,20 +274,6 @@ def generate_scene_image(
                         usage_error = exc
                         raise
                     logger.warning("Failed to record provider usage", exc_info=True)
-
-                uploaded = await batch.upload(target_path)
-                asset = await _visual_asset_service.create_asset(
-                    run_id=run_id,
-                    scene_id=target_scene.scene_id,
-                    asset_path=target_path,
-                    prompt_snapshot=effective_prompt,
-                    model_used=model_key,
-                    provider_type=entry.provider_type,
-                    storage_provider=uploaded.storage_provider,
-                    storage_key=uploaded.key,
-                    is_active=is_active,
-                    idempotency_key=f"{ctx.task_id}:{target_scene.scene_id}",
-                )
 
                 scene_result.update(
                     {

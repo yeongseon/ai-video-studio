@@ -7,7 +7,9 @@ import pytest
 from creator_service import artifact_storage_integration as integration
 from creator_service import object_storage
 from creator_service.object_storage import LocalStorageBackend, StorageResult
+from creator_service.visual_asset_service import SceneAssetAcceptanceRejected
 from tasks.scene_batch_lifecycle import SceneBatch
+from tasks import generate_scene_image as images
 from worker_loop import run_in_worker_loop
 
 from .scene_cancellation_support import SceneCase, scene_case as scene_case
@@ -111,3 +113,47 @@ def test_save_boundary_preserves_media_when_commit_may_be_accepted(
     assets = run_in_worker_loop(case.assets.storage.list_assets_by_run(case.runner.run_id))
     assert len(assets) == (0 if save_outcome == "error_before_commit" else 1)
     assert result["succeeded"] == (1 if save_outcome == "accepted" else 0)
+
+
+@pytest.mark.parametrize("shared_key", [False, True])
+def test_rejected_acceptance_removes_only_fresh_batch_owned_upload(
+    scene_case: SceneCase,
+    upload_backend: LocalStorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    shared_key: bool,
+) -> None:
+    case = scene_case
+    case.provider.released.set()
+    prior_key = f"{case.runner.run_id}/scenes/prior.png"
+    upload_backend.upload(prior_key, b"accepted")
+    uploaded: list[StorageResult] = []
+    usage_calls: list[int] = []
+
+    def upload(run_id: int, path: str, content_type: str) -> StorageResult:
+        result = REAL_UPLOAD(run_id, path, content_type)
+        if shared_key:
+            result.key = prior_key
+        uploaded.append(result)
+        return result
+
+    async def reject(_row: dict[str, object]) -> dict[str, object]:
+        raise SceneAssetAcceptanceRejected(run_id=case.runner.run_id)
+
+    async def usage(*_args: object, **_kwargs: object) -> None:
+        usage_calls.append(1)
+
+    monkeypatch.setattr(integration, "store_artifact_file", upload)
+    monkeypatch.setattr(case.assets.storage, "save_asset", reject)
+    monkeypatch.setattr(images, "record_provider_call", usage)
+
+    result = case.invoke()
+
+    assert result["status"] == "cancelled"
+    assert result["succeeded"] == 0
+    assert result["failed"] == 0
+    assert usage_calls == []
+    if not shared_key:
+        assert not upload_backend.exists(uploaded[0].key)
+    assert upload_backend.download_bytes(prior_key) == b"accepted"
+    assets = run_in_worker_loop(case.assets.storage.list_assets_by_run(case.runner.run_id))
+    assert assets == []

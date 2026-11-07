@@ -89,6 +89,22 @@ class SceneBatch:
         self.local_outputs.discard(path)
         return uploaded
 
+    def discard_rejected_upload(self, target_path: str, uploaded: StorageResult) -> None:
+        path = Path(target_path)
+        expected = path.resolve().relative_to(artifact_storage_integration._ARTIFACT_ROOT)
+        if uploaded.key == str(expected):
+            try:
+                get_storage_backend().delete(uploaded.key)
+            except SoftTimeLimitExceeded:
+                raise
+            except Exception:
+                logger.warning(
+                    "Scene rejected upload cleanup failed",
+                    extra={"run_id": self.ctx.run_id},
+                )
+        path.unlink(missing_ok=True)
+        self.local_outputs.discard(path)
+
     async def finish(self, total: int, metadata: dict[str, object]) -> TaskResult:
         status = "failed" if len(self.failures) == total else "partial" if self.failures else "success"
         try:
