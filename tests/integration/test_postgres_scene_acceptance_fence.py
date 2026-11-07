@@ -28,27 +28,32 @@ async def test_acceptance_commits_before_delete_barrier_enumeration(
 ) -> None:
     await seed_run(deletion_database)
     pool = deletion_database.pool
+    barrier_done = anyio.Event()
 
-    async with pool.acquire() as accepting:
-        async with accepting.transaction():
-            await accepting.execute(
-                "SELECT p.id FROM creator_projects p JOIN creator_runs r ON r.project_id=p.id "
-                "WHERE r.id=1 FOR SHARE OF p, r",
-            )
-            await accepting.execute(
-                "INSERT INTO creator_scene_assets (run_id, scene_id, version, asset_path) "
-                "VALUES (1, 'scene-1', 1, '1/scenes/new.png')",
-            )
-            barrier_done = anyio.Event()
+    async def mark_deleting() -> None:
+        await pool.execute("UPDATE creator_projects SET status='deleting' WHERE id=1")
+        barrier_done.set()
 
-            async def mark_deleting() -> None:
-                await pool.execute("UPDATE creator_projects SET status='deleting' WHERE id=1")
-                barrier_done.set()
-
-            with anyio.fail_after(10):
-                async with anyio.create_task_group() as group:
+    with anyio.fail_after(10):
+        async with pool.acquire() as accepting, anyio.create_task_group() as group:
+            async with accepting.transaction():
+                await accepting.execute(
+                    "SELECT p.id FROM creator_projects p JOIN creator_runs r ON r.project_id=p.id "
+                    "WHERE r.id=1 FOR SHARE OF p, r",
+                )
+                await accepting.execute(
+                    "INSERT INTO creator_scene_assets (run_id, scene_id, version, asset_path) "
+                    "VALUES (1, 'scene-1', 1, '1/scenes/new.png')",
+                )
+                blocker = await accepting.fetchval("SELECT pg_backend_pid()")
+                async with pool.acquire() as observer:
                     group.start_soon(mark_deleting)
-                    await anyio.lowlevel.checkpoint()
+                    while not await observer.fetchval(
+                        "SELECT EXISTS (SELECT 1 FROM pg_stat_activity "
+                        "WHERE $1 = ANY(pg_blocking_pids(pid)))",
+                        blocker,
+                    ):
+                        await anyio.lowlevel.checkpoint()
                     assert not barrier_done.is_set()
 
     assert barrier_done.is_set()
@@ -58,10 +63,19 @@ async def test_acceptance_commits_before_delete_barrier_enumeration(
 @pytest.mark.asyncio
 async def test_delete_barrier_commits_before_acceptance_and_rejects_insert(
     deletion_database: DeletionDatabase,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     await seed_run(deletion_database)
     pool = deletion_database.pool
     rejected: list[SceneAssetAcceptanceRejected] = []
+
+    async def get_pool():
+        return pool
+
+    monkeypatch.setattr(
+        "creator_service.postgres_visual_asset_storage.get_pool",
+        get_pool,
+    )
 
     async def accept() -> None:
         try:
