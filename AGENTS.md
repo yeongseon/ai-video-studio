@@ -129,10 +129,27 @@ version check, keep the render test, and re-run the full CI. Do not skip the tes
   negative/regression tests and triggered runtime gates.
 - A green result from an earlier SHA is not evidence for the final head. After each push,
   re-run the checks relevant to changes made since the last green verification.
+- Configure `ci-required` as the single required status check. It fails unless the
+  impact classifier succeeds and every selected gate succeeds; a selected skipped
+  job is a failure. Pull-request gate selections must be explicit `true` or `false`;
+  malformed or missing classifier outputs fail closed. On `main`, every gate is selected.
+- Only documentation-only changes may use reduced PR gates. Canonical case-sensitive
+  `docs/**/*.md` and root-level `*.md` regular files select only the `docs` gate. Every
+  other change, including tests, fixtures, frontend, scripts, config, backend,
+  infrastructure, and unknown paths, selects the full matrix. This deliberate policy
+  narrowing restores pre-#916 behavior outside documentation; widening reduced classes
+  later requires evidence and Oracle review.
 - Documentation-only changes use content and consistency checks (diff hygiene, links,
-  referenced paths and commands), rather than unrelated Python/FFmpeg/Docker gates.
-- Full end-to-end, container, recovery and release checks remain mandatory on
-  `main` and before any release; never deploy based solely on a fast PR gate.
+  referenced paths and commands) in the dedicated `docs` gate, rather than unrelated
+  Python/FFmpeg/Docker gates. Non-canonical paths, symlinks, and executable-mode changes
+  cannot use the documentation-only classification.
+- The documentation-consumer inventory is a conservative static text heuristic, not a
+  proof against contrived dynamic path construction. A PR that adds a documentation
+  consumer must add its invoking test to the `docs` job or add a reviewed allowlist entry
+  with a true reason; reviewers must verify that boundary when new consumers are added.
+- Full end-to-end, container and recovery checks run on `main`; run the same
+  complete workflow on the exact release SHA before deployment. Never deploy
+  based solely on a fast PR gate.
 
 This is a working rule, not automation: it does not add a CI auto-repair bot or unlimited retries.
 

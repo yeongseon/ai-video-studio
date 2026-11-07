@@ -1,5 +1,15 @@
 # Documentation
 
+## Pull-request CI policy
+
+Only documentation-only changes receive a reduced PR matrix. Canonical
+case-sensitive `docs/**/*.md` and root-level `*.md` regular files select the
+`docs` gate. All other changes—including tests, fixtures, frontend, scripts,
+configuration, backend, infrastructure, and unknown paths—run all six gates:
+`docs`, `code`, `restore`, `first_short`, `worker`, and `docker`. This is a
+deliberate narrowing of the optimization, not a weakening of validation.
+Widening reduced classes later requires evidence and Oracle review.
+
 | Document | Description |
 |---|---|
 | [SYSTEM_TOPOLOGY.md](architecture/SYSTEM_TOPOLOGY.md) | Canonical configured execution, static imports, approval flows, and hosted contract; not live-host verification |
