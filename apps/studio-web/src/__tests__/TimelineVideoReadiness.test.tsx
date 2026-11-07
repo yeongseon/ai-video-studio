@@ -121,7 +121,7 @@ it("withholds readiness until a callback observes the decoded trim target", asyn
   expect(onReady).toHaveBeenCalledWith(17);
 });
 
-it("keeps observing when the target frame arrives before browser seeking settles", async () => {
+it("uses a decoded target frame when browser seeking settles afterward", async () => {
   // Given the first target frame is decoded while Chromium still reports an active seek.
   const onReady = vi.fn();
   renderTrimmedVideo(onReady);
@@ -132,11 +132,11 @@ it("keeps observing when the target frame arrives before browser seeking settles
   presentDecodedFrame(video, 2);
   expect(onReady).not.toHaveBeenCalled();
 
-  // When Chromium later presents the target without emitting another media event.
+  // When Chromium later settles the same seek without presenting another frame.
   Object.defineProperty(video, "seeking", { configurable: true, value: false });
-  presentDecodedFrame(video, 2);
+  fireEvent.seeked(video);
 
-  // Then the continued frame observation releases readiness safely.
+  // Then the already-decoded target releases readiness safely.
   expect(onReady).toHaveBeenCalledWith(17);
 });
 

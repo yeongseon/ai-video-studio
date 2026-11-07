@@ -30,6 +30,7 @@ export function TimelineVideo(props: Props) {
   const notified = useRef(false);
   const seekGeneration = useRef(0);
   const decodedFrameRequest = useRef<number | null>(null);
+  const decodedTargetGeneration = useRef<number | null>(null);
   const fallbackTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [displayable, setDisplayable] = useState(false);
 
@@ -64,7 +65,8 @@ export function TimelineVideo(props: Props) {
         observeDecodedTarget(video, target, generation);
         return;
       }
-      if (!markReady(video, target, generation)) observeDecodedTarget(video, target, generation);
+      decodedTargetGeneration.current = generation;
+      markReady(video, target, generation);
     });
   }, [markReady]);
 
@@ -75,6 +77,7 @@ export function TimelineVideo(props: Props) {
     if (Math.abs(video.currentTime - target) > 0.000001) {
       seekGeneration.current += 1;
       cancelReadinessGate();
+      decodedTargetGeneration.current = null;
       seeking.current = true;
       setDisplayable(false);
       latest.current.onHold(true);
@@ -93,6 +96,10 @@ export function TimelineVideo(props: Props) {
       return;
     }
     const generation = seekGeneration.current;
+    if (decodedTargetGeneration.current === generation) {
+      markReady(video, target, generation);
+      return;
+    }
     if (typeof video.requestVideoFrameCallback === "function") {
       observeDecodedTarget(video, target, generation);
       return;
@@ -146,6 +153,7 @@ export function TimelineVideo(props: Props) {
     onSeeked={() => { seeking.current = false; settled(); }}
     onCanPlay={settled}
     onWaiting={() => {
+      decodedTargetGeneration.current = null;
       props.onHold(true);
       setDisplayable(false);
       videoRef.current?.pause();
