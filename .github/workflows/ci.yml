@@ -215,7 +215,7 @@ jobs:
         env:
           BICEP_CLI: bicep
           AZURE_BICEP_DISABLE_UPDATE_CHECK: "true"
-        run: python3 -m pytest tests/test_azure_staging_bicep.py -q
+        run: python3 -m pytest tests/test_azure_staging_bicep*.py -q
       - name: Test Packages (with coverage)
         run: |
           git fetch origin main:refs/remotes/origin/main --depth=1
