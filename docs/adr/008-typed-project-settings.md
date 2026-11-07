@@ -18,7 +18,7 @@ legacy defaults; persisting choices alone must not silently change rendering.
    Preset resolution delegates geometry to `OutputSpec.preset` and encoding to
    `EncodingProfile.by_name`. Duration is optional, strictly numeric, finite and
    positive, with no hard maximum (180 seconds is product guidance, not a cap).
-   Migration 051 creates `creator_project_settings` with required JSON/JSONB and
+   Migration 052 creates `creator_project_settings` with required JSON/JSONB and
    a project-cascading foreign key, without backfill. Ownership derives only from
    the project; no redundant workspace_id exists on settings. No row means legacy. Memory and
    PostgreSQL preserve the same scoped replacement and timestamp CAS contract.
@@ -78,7 +78,7 @@ real release-N app-only rollback gate: old readers select `*`/`p.*` into a
 forbid-extra Project model. Even NULL new columns break those binaries. Additive
 tables, not new columns on those rows, preserve this contract. Settings are read
 separately and composed by the service; raw project rows retain exactly the
-pre-051 column set. A real PostgreSQL regression loads the previous release's
+pre-052 column set. A real PostgreSQL regression loads the previous release's
 actual model and proves both legacy and explicitly configured project reads work.
 No CI fixture or rollback assertion was weakened to accommodate the migration.
 
