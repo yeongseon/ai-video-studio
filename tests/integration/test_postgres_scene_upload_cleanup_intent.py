@@ -1,6 +1,9 @@
 from collections.abc import AsyncIterator
 from datetime import datetime, timezone
+import os
 from pathlib import Path
+import subprocess
+import sys
 from typing import BinaryIO
 
 import asyncpg
@@ -137,11 +140,12 @@ async def test_interrupt_after_upload_leaves_exact_intent_for_production_retry(
 
 @pytest.mark.asyncio
 async def test_intent_insert_failure_prevents_external_upload(
+    deletion_database: DeletionDatabase,
     upload_run: int,
     scene_backend: LocalStorageBackend,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Given persistence fails before a fresh scene upload can begin.
+    # Given PostgreSQL rejects the real cleanup-intent insert.
     expected_key = f"{upload_run}/scenes/fresh-956.png"
     target = artifact_storage_integration._ARTIFACT_ROOT / expected_key
     target.parent.mkdir(parents=True, exist_ok=True)
@@ -151,22 +155,124 @@ async def test_intent_insert_failure_prevents_external_upload(
     upload_calls: list[str] = []
     original_upload = scene_backend.upload
 
-    async def fail_intent(**_fields: str | int | None) -> int:
-        raise asyncpg.PostgresError("intent insert failed")
-
     def observe_upload(key: str, data: bytes | BinaryIO, content_type: str) -> StorageResult:
         upload_calls.append(key)
         return original_upload(key, data, content_type)
 
+    await deletion_database.pool.execute(
+        "ALTER TABLE creator_artifacts ADD CONSTRAINT reject_scene_upload_intent "
+        "CHECK (metadata_json IS DISTINCT FROM 'scene_upload_cleanup_intent')",
+    )
     monkeypatch.setattr(batch, "checkpoint", _passing_checkpoint)
-    monkeypatch.setattr(rejected_scene_cleanup_service, "record_intent", fail_intent)
     monkeypatch.setattr(scene_backend, "upload", observe_upload)
 
-    # When upload is requested, the insert error propagates before provider I/O.
-    with pytest.raises(asyncpg.PostgresError, match="intent insert failed"):
+    # When upload is requested, the database error propagates before provider I/O.
+    with pytest.raises(asyncpg.CheckViolationError, match="reject_scene_upload_intent"):
         await batch.upload(str(target))
 
+    # Then neither provider bytes nor a partial intent row exist.
     assert upload_calls == []
+    assert await deletion_database.pool.fetchval(
+        "SELECT count(*) FROM creator_artifacts WHERE run_id = $1",
+        upload_run,
+    ) == 0
+
+
+@pytest.mark.asyncio
+async def test_child_exit_after_upload_leaves_durable_intent_for_exact_retry(
+    deletion_database: DeletionDatabase,
+    upload_run: int,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a child worker with a fresh scene key and an unrelated alias.
+    artifact_root = tmp_path / "child-artifacts"
+    expected_key = f"{upload_run}/scenes/child.png"
+    alias_key = f"{upload_run}/scenes/shared.png"
+    backend = LocalStorageBackend(str(artifact_root))
+    backend.upload(alias_key, b"accepted", "image/png")
+    target = artifact_root / expected_key
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"fresh")
+    child_code = """
+import asyncio
+import os
+from datetime import datetime, timezone
+from tasks.scene_batch_lifecycle import SceneBatch
+from tasks.task_runner import TaskContext
+
+class UnusedRuns:
+    storage = None
+
+async def checkpoint(self):
+    return None
+
+async def main():
+    SceneBatch.checkpoint = checkpoint
+    target = os.environ["SCENE_TARGET"]
+    batch = SceneBatch(
+        TaskContext(
+            run_id=956,
+            task_id="child-exit",
+            run={},
+            workspace_id=1,
+            project_id=1,
+            start_time=datetime.now(timezone.utc),
+        ),
+        UnusedRuns(),
+    )
+    batch.local_outputs.add(__import__("pathlib").Path(target))
+    await batch.upload(target)
+    os._exit(17)
+
+asyncio.run(main())
+"""
+    env = {
+        **os.environ,
+        "DATABASE_URL": deletion_database.url,
+        "PGOPTIONS": f"-c search_path={deletion_database.schema}",
+        "STORAGE_BACKEND": "local",
+        "ARTIFACT_ROOT": str(artifact_root),
+        "SCENE_TARGET": str(target),
+    }
+
+    # When the child exits after provider upload but before asset acceptance.
+    completed = subprocess.run(
+        [sys.executable, "-c", child_code],
+        cwd=Path(__file__).resolve().parents[2],
+        env=env,
+        check=False,
+        timeout=30,
+    )
+
+    # Then a separate connection sees the committed intent and production retry is exact.
+    assert completed.returncode == 17
+    separate = await asyncpg.connect(
+        deletion_database.url,
+        server_settings={"search_path": deletion_database.schema},
+    )
+    try:
+        row = await separate.fetchrow(
+            "SELECT storage_key, metadata_json FROM creator_artifacts WHERE run_id = $1",
+            upload_run,
+        )
+        assert row is not None
+        assert dict(row) == {
+            "storage_key": expected_key,
+            "metadata_json": SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
+        }
+        await separate.execute(
+            "UPDATE creator_artifacts SET created_at = NOW() - INTERVAL '6 minutes' "
+            "WHERE run_id = $1",
+            upload_run,
+        )
+    finally:
+        await separate.close()
+    monkeypatch.setattr(object_storage, "_storage_backend", backend)
+    assert backend.download_bytes(expected_key) == b"fresh"
+    assert await artifact_download_service.retry_failed_deletions() == 1
+    assert not backend.exists(expected_key)
+    assert backend.download_bytes(alias_key) == b"accepted"
 
 
 async def _passing_checkpoint() -> None:
