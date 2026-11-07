@@ -23,7 +23,7 @@ from .terminal_validation_support import runner_case as runner_case
 REAL_UPLOAD = integration.store_artifact_file
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def rejected_cleanup_records(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
     records: list[tuple[str, str]] = []
 
@@ -39,6 +39,7 @@ def rejected_cleanup_records(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str,
             return
 
     monkeypatch.setattr(rejected_scene_cleanup_service, "record", record)
+    monkeypatch.setattr(rejected_scene_cleanup_service, "record_intent", record)
     monkeypatch.setattr(rejected_scene_cleanup_service, "cleanup", cleanup)
     return records
 
@@ -145,7 +146,6 @@ def test_rejected_acceptance_removes_only_fresh_batch_owned_upload(
     upload_backend: LocalStorageBackend,
     monkeypatch: pytest.MonkeyPatch,
     shared_key: bool,
-    rejected_cleanup_records: list[tuple[str, str]],
 ) -> None:
     case = scene_case
     case.provider.released.set()
@@ -236,7 +236,8 @@ def test_rejected_acceptance_never_records_alias_key(
     result = case.invoke()
 
     assert result["status"] == "cancelled"
-    assert rejected_cleanup_records == []
+    expected_key = f"{case.runner.run_id}/scenes/{case.provider.paths[0].name}"
+    assert rejected_cleanup_records == [(expected_key, str(case.provider.paths[0]))]
     assert upload_backend.download_bytes(alias_key) == b"accepted"
 
 
@@ -261,6 +262,7 @@ def test_rejected_cleanup_interruption_leaves_durable_record(
         raise interrupt
 
     monkeypatch.setattr(rejected_scene_cleanup_service, "record", record)
+    monkeypatch.setattr(rejected_scene_cleanup_service, "record_intent", record)
     monkeypatch.setattr(rejected_scene_cleanup_service, "cleanup", cleanup)
     batch = SceneBatch(
         TaskContext(
@@ -289,3 +291,51 @@ def test_rejected_cleanup_interruption_leaves_durable_record(
     monkeypatch.setattr(rejected_scene_cleanup_service, "cleanup", retry_cleanup)
     run_in_worker_loop(rejected_scene_cleanup_service.cleanup(703, key, str(path)))
     assert not path.exists()
+
+
+def test_scene_upload_intent_failure_prevents_storage_io(
+    scene_case: SceneCase,
+    upload_backend: LocalStorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Given durable intent persistence fails for a fresh scene output.
+    case = scene_case
+    target = tmp_path / str(case.runner.run_id) / "scenes" / "fresh-intent.png"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"fresh")
+    batch = SceneBatch(
+        TaskContext(
+            run_id=case.runner.run_id,
+            task_id=case.task_id,
+            run={},
+            workspace_id=1,
+            project_id=1,
+            start_time=datetime.now(timezone.utc),
+        ),
+        case.runner.runs,
+    )
+    batch.local_outputs.add(target)
+    upload_calls: list[str] = []
+    original_upload = upload_backend.upload
+
+    async def checkpoint() -> None:
+        return None
+
+    async def fail_intent(**_fields: object) -> int:
+        raise ConnectionError("intent insert failed")
+
+    def observe_upload(key: str, data: bytes | BinaryIO, content_type: str) -> StorageResult:
+        upload_calls.append(key)
+        return original_upload(key, data, content_type)
+
+    monkeypatch.setattr(batch, "checkpoint", checkpoint)
+    monkeypatch.setattr(rejected_scene_cleanup_service, "record_intent", fail_intent, raising=False)
+    monkeypatch.setattr(upload_backend, "upload", observe_upload)
+
+    # When the batch attempts to upload the output.
+    with pytest.raises(ConnectionError, match="intent insert failed"):
+        run_in_worker_loop(batch.upload(str(target)))
+
+    # Then no external storage upload occurs without the durable intent.
+    assert upload_calls == []
