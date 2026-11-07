@@ -1,17 +1,21 @@
 from __future__ import annotations
 
-import re
 import subprocess
-from collections.abc import Iterable
-from pathlib import Path, PurePosixPath
+from pathlib import Path
 from typing import Final
 
 import pytest
 import yaml
 
+from ci_docs_contract_inventory_support import (
+    EXCLUDED_FILENAMES,
+    EXCLUDED_SUFFIX_REASONS,
+    directly_covered_paths,
+    is_scanned_code_path,
+    potential_docs_consumers,
+)
+
 ROOT: Final = Path(__file__).resolve().parent.parent
-CODE_SUFFIXES: Final = frozenset({".py", ".sh", ".js", ".ts", ".tsx", ".yml", ".yaml"})
-DOC_TOKEN: Final = re.compile(r"\.md\b|docs/|[\"']docs[\"']|docs\\|README")
 DOCS_STEP_NAME: Final = "Validate documentation contracts"
 
 DOCS_JOB_EXECUTED_SCRIPTS: Final = {
@@ -31,12 +35,32 @@ API_ROUTE_ALLOWLIST: Final = {
     "apps/api/tests/test_auth.py": "tests the FastAPI /docs route; never reads repository docs",
     "apps/studio-web/src/pages/OpsPage.tsx": "links to the FastAPI /docs route; never reads repository docs",
 }
+HISTORICAL_REFERENCE_ALLOWLIST: Final = {
+    "apps/api/migrations/versions/005_expand_artifact_typing_and_indexes.py": (
+        "migration comments cite historical index design notes; runtime never reads documentation"
+    ),
+    "apps/api/migrations/versions/031_artifact_retention_env.py": (
+        "migration prose records documentation updated with the schema; runtime never reads it"
+    ),
+    "apps/worker-orchestrator/celery_app.py": (
+        "module prose points operators to a runbook; worker startup never reads documentation"
+    ),
+    "docker-compose.yml": (
+        "comment points operators to network policy; Compose never loads documentation"
+    ),
+}
+PACKAGE_METADATA_ALLOWLIST: Final = {
+    "pyproject.toml": "package metadata names README.md for build-time display, not runtime behavior",
+}
 INVENTORY_ALLOWLIST: Final = {
+    "ci_docs_contract_inventory_support.py": "implements conservative scanning and shell tokenization",
     "tests/test_ci_docs_contract_inventory.py": "implements this inventory and its regression fixtures",
 }
 ALLOWLIST_BY_CATEGORY: Final = {
     "CI policy classifiers": CI_POLICY_ALLOWLIST,
     "API route identifiers": API_ROUTE_ALLOWLIST,
+    "Historical prose references": HISTORICAL_REFERENCE_ALLOWLIST,
+    "Package metadata": PACKAGE_METADATA_ALLOWLIST,
     "Inventory implementation": INVENTORY_ALLOWLIST,
 }
 ALLOWLIST: Final = {
@@ -44,30 +68,6 @@ ALLOWLIST: Final = {
     for entries in ALLOWLIST_BY_CATEGORY.values()
     for path, reason in entries.items()
 }
-
-
-def _is_scanned_code_path(path: str) -> bool:
-    candidate = PurePosixPath(path)
-    if candidate.suffix not in CODE_SUFFIXES:
-        return False
-    parts = candidate.parts
-    if parts[0] in {"tests", "scripts"}:
-        return True
-    if len(parts) >= 3 and parts[0] in {"apps", "packages"} and parts[2] == "tests":
-        return True
-    if len(parts) >= 3 and parts[0] == "apps" and parts[2] == "src":
-        return True
-    if len(parts) >= 2 and parts[0] == "packages" and "tests" not in parts[2:]:
-        return True
-    return len(parts) == 3 and parts[:2] == (".github", "workflows")
-
-
-def _potential_docs_consumers(files: Iterable[tuple[str, str]]) -> set[str]:
-    return {
-        path
-        for path, text in files
-        if _is_scanned_code_path(path) and DOC_TOKEN.search(text)
-    }
 
 
 def _tracked_files() -> tuple[str, ...]:
@@ -81,11 +81,18 @@ def _tracked_files() -> tuple[str, ...]:
 
 
 def _tracked_code_texts() -> tuple[tuple[str, str], ...]:
-    return tuple(
-        (path, (ROOT / path).read_text(encoding="utf-8"))
-        for path in _tracked_files()
-        if _is_scanned_code_path(path)
-    )
+    texts: list[tuple[str, str]] = []
+    for path in _tracked_files():
+        content = (ROOT / path).read_bytes()
+        if b"\0" in content:
+            continue
+        try:
+            text = content.decode("utf-8")
+        except UnicodeDecodeError:
+            continue
+        if is_scanned_code_path(path, text):
+            texts.append((path, text))
+    return tuple(texts)
 
 
 def _docs_job_command() -> str:
@@ -97,13 +104,24 @@ def _docs_job_command() -> str:
 
 
 def _docs_job_covered_paths(command: str, candidates: set[str]) -> set[str]:
-    covered = {path for path in candidates if path in command}
+    covered = directly_covered_paths(command, candidates)
     covered.update(
         script
         for script, invoking_test in DOCS_JOB_EXECUTED_SCRIPTS.items()
-        if script in candidates and invoking_test in command
+        if script in candidates and invoking_test in covered
     )
     return covered
+
+
+def test_every_excluded_file_type_has_a_reviewed_reason() -> None:
+    # Given the complete explicit set of file types excluded from text scanning.
+    reasons = (*EXCLUDED_SUFFIX_REASONS.values(), *EXCLUDED_FILENAMES.values())
+
+    # When the exclusion contract is reviewed.
+    reviewed = tuple(reason for reason in reasons if reason.strip())
+
+    # Then every exclusion explains why that file type cannot consume documentation.
+    assert reviewed == reasons
 
 
 @pytest.mark.parametrize(
@@ -123,14 +141,93 @@ def test_conservative_detector_flags_every_docs_reference_form(path: str, source
     files = ((path, source),)
 
     # When the conservative detector scans its path and complete text.
-    flagged = _potential_docs_consumers(files)
+    flagged = potential_docs_consumers(files)
 
     # Then syntax shape and earlier docstrings cannot hide the candidate.
     assert flagged == {path}
 
 
+@pytest.mark.parametrize(
+    "path",
+    [
+        "apps/worker-orchestrator/tasks/docs_runtime_contract.py",
+        "root_docs_consumer.py",
+        "apps/api/migrations/docs_contract.py",
+        "apps/studio-web/vite.config.ts",
+        "docker-compose.yml",
+        "bin/docs-check",
+    ],
+)
+def test_conservative_detector_scans_code_like_files_regardless_of_location(path: str) -> None:
+    # Given a code-like tracked file outside the formerly recognized directory shapes.
+    files = ((path, 'Path("docs/CUTOVER.md").read_text(encoding="utf-8")'),)
+
+    # When the conservative detector scans its path and text.
+    flagged = potential_docs_consumers(files)
+
+    # Then location cannot hide a potential documentation consumer.
+    assert flagged == {path}
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "python3 -m pytest tests/real.py\n# tests/comment_only.py",
+        'echo "tests/quoted.py"',
+        "python3 -m pytest tests/real.py  # noqa: tests/trailing.py",
+        "python3 -m pytest tests/test_x.py_backup",
+        "echo pytest tests/quoted_as_command_data.py",
+    ],
+)
+def test_docs_job_coverage_rejects_non_command_path_mentions(command: str) -> None:
+    # Given a docs-job command that only mentions a candidate outside an executable token.
+    candidates = {
+        "tests/comment_only.py",
+        "tests/quoted.py",
+        "tests/trailing.py",
+        "tests/test_x.py",
+        "tests/quoted_as_command_data.py",
+    }
+
+    # When docs-job coverage is derived from shell commands.
+    covered = _docs_job_covered_paths(command, candidates)
+
+    # Then comments, data arguments, and longer tokens provide no coverage.
+    assert not covered
+
+
+def test_docs_job_coverage_accepts_direct_commands_across_shell_separators() -> None:
+    # Given direct pytest and script invocations split by supported shell separators.
+    command = "python3 -m pytest tests/a.py::test_case \\\n+ tests/b.py && bash scripts/check.sh; pytest tests/c.py"
+    candidates = {"tests/a.py", "tests/b.py", "scripts/check.sh", "tests/c.py"}
+
+    # When docs-job coverage is derived from shell commands.
+    covered = _docs_job_covered_paths(command, candidates)
+
+    # Then only the directly invoked test and script tokens are covered.
+    assert covered == candidates
+
+
+def test_docs_job_coverage_ignores_path_invoked_only_by_another_job() -> None:
+    # Given separate docs and non-docs job commands.
+    docs_command = "python3 -m pytest tests/docs_contract.py"
+    jobs = {
+        "docs": docs_command,
+        "test": "python3 -m pytest tests/other_job_only.py",
+    }
+
+    # When coverage is derived only from the docs-validation command.
+    covered = _docs_job_covered_paths(
+        jobs["docs"],
+        {"tests/docs_contract.py", "tests/other_job_only.py"},
+    )
+
+    # Then a direct invocation in another job does not count.
+    assert covered == {"tests/docs_contract.py"}
+
+
 def test_every_potential_docs_consumer_is_reviewed_or_run_by_docs_job() -> None:
-    candidates = _potential_docs_consumers(_tracked_code_texts())
+    candidates = potential_docs_consumers(_tracked_code_texts())
     covered = _docs_job_covered_paths(_docs_job_command(), candidates)
 
     assert candidates == covered | ALLOWLIST.keys(), (
