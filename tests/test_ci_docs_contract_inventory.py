@@ -1,254 +1,159 @@
-"""Verify docs-only markdown consumers are covered by the docs CI job.
-
-A docs-only markdown file (docs/*.md or root *.md per test_ci_impact.py) must have
-every test that consumes it invoked by the docs CI job. This prevents docs-only PRs
-from breaking contract suites silently while the reduced docs job stays green.
-"""
 from __future__ import annotations
 
 import re
-from pathlib import Path
+import subprocess
+from collections.abc import Iterable
+from pathlib import Path, PurePosixPath
+from typing import Final
 
 import pytest
 import yaml
 
+ROOT: Final = Path(__file__).resolve().parent.parent
+CODE_SUFFIXES: Final = frozenset({".py", ".sh", ".js", ".ts", ".tsx", ".yml", ".yaml"})
+DOC_TOKEN: Final = re.compile(r"\.md\b|docs/|[\"']docs[\"']|docs\\|README")
+DOCS_STEP_NAME: Final = "Validate documentation contracts"
 
-ROOT = Path(__file__).resolve().parent.parent
+DOCS_JOB_EXECUTED_SCRIPTS: Final = {
+    "scripts/check_architecture_diagrams.py": "tests/test_architecture_diagrams.py",
+    "scripts/quickstart_smoke.sh": "apps/api/tests/test_quickstart_execution.py",
+}
 
-
-def _docs_only_paths() -> set[str]:
-    """Return the set of docs-only markdown file patterns."""
-    # From test_ci_impact.py: .md files in docs/ or at repository root (no /)
-    # This matches the canonical docs-only allowlist.
-    return {"docs/", "root_md"}
-
-
-def _parse_markdown_path_references(text: str) -> set[str]:
-    """Extract markdown file paths referenced in Python source.
-
-    Finds:
-    - Variable assignments like: _CUTOVER = _ROOT / "docs" / "CUTOVER.md"
-    - Direct path references like: _CUTOVER.read_text()
-
-    Filters out docstring examples and false positives.
-    """
-    refs = set()
-
-    # Look for path variable assignments: _VAR = _ROOT / "docs" / "NAME.md" or similar
-    # This pattern matches chains like: _ROOT / "docs" / "CUTOVER.md"
-    # and captures each path component separately, then rejoins them
-    var_assignments = re.findall(
-        r'_[A-Z_]+ = (?:_ROOT|_REPO_ROOT|Path\([^)]*\))(?:\s*/\s*["\']([^\'"]+)["\'])+',
-        text
-    )
-
-    for path in var_assignments:
-        if path.endswith('.md'):
-            refs.add(path)
-
-    # Capture full paths from chained / operations
-    # E.g., _ROOT / "docs" / "CUTOVER.md" -> "docs/CUTOVER.md"
-    path_chains = re.findall(
-        r'(?:_ROOT|_REPO_ROOT|Path\([^)]*\))(?:\s*/\s*["\']([^\'"]+)["\'])+',
-        text
-    )
-
-    # Reconstruct paths by looking at complete expressions
-    for match in re.finditer(
-        r'(?:_ROOT|_REPO_ROOT|Path\([^)]*\))(?:(?:\s*/\s*["\']([^\'"]+)["\'])+)',
-        text
-    ):
-        # Skip docstrings and comments by checking context
-        if '"""' in text[:match.start()] or "'''" in text[:match.start()]:
-            continue
-
-        full_expr = match.group(0)
-        # Extract all path components
-        components = re.findall(r'["\']([^\'"]+)["\']', full_expr)
-        if components and components[-1].endswith('.md'):
-            # Join path components with /
-            full_path = '/'.join(components)
-            # Clean up: remove duplicate // and trailing /
-            full_path = re.sub(r'/+', '/', full_path)
-            if full_path.endswith('.md'):
-                refs.add(full_path)
-
-    return refs
+CI_POLICY_ALLOWLIST: Final = {
+    "scripts/ci_impact.py": "classifies .md paths and the docs gate; never reads repository docs",
+    "scripts/ci_required.py": "uses docs only as a required CI job name",
+    "tests/test_ci_impact.py": "uses .md paths only as classifier inputs; never reads doc content",
+    "tests/test_ci_impact_git.py": "creates .md git fixtures only to test impact classification",
+    "tests/test_ci_required.py": "uses docs only as a required CI job name",
+    "tests/test_ci_required_workflow.py": "inspects docs-job wiring; never reads doc content",
+}
+API_ROUTE_ALLOWLIST: Final = {
+    "apps/api/tests/test_auth.py": "tests the FastAPI /docs route; never reads repository docs",
+    "apps/studio-web/src/pages/OpsPage.tsx": "links to the FastAPI /docs route; never reads repository docs",
+}
+INVENTORY_ALLOWLIST: Final = {
+    "tests/test_ci_docs_contract_inventory.py": "implements this inventory and its regression fixtures",
+}
+ALLOWLIST_BY_CATEGORY: Final = {
+    "CI policy classifiers": CI_POLICY_ALLOWLIST,
+    "API route identifiers": API_ROUTE_ALLOWLIST,
+    "Inventory implementation": INVENTORY_ALLOWLIST,
+}
+ALLOWLIST: Final = {
+    path: reason
+    for entries in ALLOWLIST_BY_CATEGORY.values()
+    for path, reason in entries.items()
+}
 
 
-def _is_docs_only(path: str) -> bool:
-    """Return True if path matches the docs-only allowlist.
-
-    Docs-only paths:
-    - Start with "docs/" (but not "docs/../")
-    - Are in repo root (no "/" in path name)
-    """
-    if "/" in path:
-        # Must be docs/ subdir (not docs/../ traversal)
-        return path.startswith("docs/") and not ".." in path
-    else:
-        # Root markdown
-        return path.endswith(".md")
-
-
-def _test_files_in_repo() -> list[Path]:
-    """Return all test files in tests/, apps/*/tests/, packages/*/tests/, scripts/."""
-    test_files = []
-    for pattern in [
-        "tests/test_*.py",
-        "apps/*/tests/test_*.py",
-        "packages/*/tests/test_*.py",
-        "scripts/test_*.py",
-    ]:
-        test_files.extend(ROOT.glob(pattern))
-    return sorted(test_files)
+def _is_scanned_code_path(path: str) -> bool:
+    candidate = PurePosixPath(path)
+    if candidate.suffix not in CODE_SUFFIXES:
+        return False
+    parts = candidate.parts
+    if parts[0] in {"tests", "scripts"}:
+        return True
+    if len(parts) >= 3 and parts[0] in {"apps", "packages"} and parts[2] == "tests":
+        return True
+    if len(parts) >= 3 and parts[0] == "apps" and parts[2] == "src":
+        return True
+    if len(parts) >= 2 and parts[0] == "packages" and "tests" not in parts[2:]:
+        return True
+    return len(parts) == 3 and parts[:2] == (".github", "workflows")
 
 
-def _consumers_of_docs_file(doc_path: str) -> set[str]:
-    """Return test file paths that consume the given docs file.
-
-    A test file consumes a doc if it references it by string literal or Path.
-    """
-    consumers = set()
-
-    for test_file in _test_files_in_repo():
-        try:
-            text = test_file.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, FileNotFoundError):
-            continue
-
-        refs = _parse_markdown_path_references(text)
-
-        # Normalize: docs/CUTOVER.md can be referenced as:
-        # - "docs/CUTOVER.md"
-        # - _ROOT / "docs" / "CUTOVER.md" (parsed as "docs/CUTOVER.md")
-        # - CUTOVER (just the name, less reliable)
-
-        # Direct match
-        if doc_path in refs:
-            consumers.add(test_file.relative_to(ROOT).as_posix())
-        # Also match just the basename for robustness
-        elif doc_path.split("/")[-1] in refs:
-            consumers.add(test_file.relative_to(ROOT).as_posix())
-
-    return consumers
-
-
-def _docs_job_commands() -> str:
-    """Return the concatenated run: commands from the docs CI job."""
-    workflow_path = ROOT / ".github" / "workflows" / "ci.yml"
-    workflow = yaml.safe_load(workflow_path.read_text())
-    docs_job = workflow["jobs"]["docs"]
-
-    commands = "\n".join(step.get("run", "") for step in docs_job["steps"])
-    return commands
-
-
-def _validate_markdown_utf8(path: Path) -> list[str]:
-    """Check markdown file for UTF-8 validity and absence of NUL bytes.
-
-    Returns list of issues (empty if valid).
-    """
-    issues = []
-    try:
-        text = path.read_bytes()
-        # Check for NUL bytes
-        if b'\x00' in text:
-            issues.append(f"{path}: contains NUL byte")
-        # Try to decode as UTF-8
-        try:
-            text.decode('utf-8')
-        except UnicodeDecodeError as e:
-            issues.append(f"{path}: invalid UTF-8 at offset {e.start}: {e.reason}")
-    except FileNotFoundError:
-        pass  # File doesn't exist, other tests will catch this
-
-    return issues
-
-
-def test_every_docs_only_consumer_is_run_by_docs_job() -> None:
-    """Test: every test consuming a docs-only markdown file is invoked by the docs CI job.
-
-    Given: a tracked repository with docs-only markdown files (docs/*.md, root *.md).
-    When:  checking which tests reference these files,
-    Then:  every test file is invoked by the docs job (or is in the reviewed allowlist).
-
-    The docs job runs a subset of tests for docs-only PRs. This test ensures
-    contracts pinned to docs-only files are not silently broken by such PRs.
-    """
-    docs_commands = _docs_job_commands()
-
-    # Scan for actual docs consumers (skip this inventory test itself)
-    docs_only_files = set()
-    for test_file in _test_files_in_repo():
-        if test_file.name == "test_ci_docs_contract_inventory.py":
-            continue  # Skip this inventory test itself
-
-        try:
-            text = test_file.read_text(encoding="utf-8")
-        except (UnicodeDecodeError, FileNotFoundError):
-            continue
-
-        refs = _parse_markdown_path_references(text)
-        for ref in refs:
-            if _is_docs_only(ref):
-                docs_only_files.add(ref)
-
-    # Allowlist: tests that consume docs but are covered elsewhere or intentionally excluded
-    # Tests in this allowlist are validated by other (non-docs-only-gated) jobs
-    allowlist = {
-        # test_ci_impact.py: runs on every commit via 'impact' job (ci-required)
-        # not docs-only-gated, so files are always validated
-        "tests/test_ci_impact.py": "covered by 'impact' job (runs on every commit)",
-        # test_ci_impact_git.py: git tests, validation not docs-only-specific
-        "tests/test_ci_impact_git.py": "covered by 'impact' job (runs on every commit)",
+def _potential_docs_consumers(files: Iterable[tuple[str, str]]) -> set[str]:
+    return {
+        path
+        for path, text in files
+        if _is_scanned_code_path(path) and DOC_TOKEN.search(text)
     }
 
-    missed = {}
-    for doc_file in sorted(docs_only_files):
-        consumers = _consumers_of_docs_file(doc_file)
-        for consumer in sorted(consumers):
-            if consumer.endswith("test_ci_docs_contract_inventory.py"):
-                continue  # Skip self-reference from this test
-            # Check if test is invoked by docs job or explicitly allowlisted
-            if consumer not in allowlist and consumer not in docs_commands:
-                if doc_file not in missed:
-                    missed[doc_file] = []
-                missed[doc_file].append(consumer)
 
-    assert not missed, (
-        f"docs-only contract violation: the following test files consume docs-only "
-        f"markdown but are not invoked by the docs CI job:\n"
-        + "\n".join(
-            f"  {doc}: {', '.join(tests)}"
-            for doc, tests in sorted(missed.items())
-        )
+def _tracked_files() -> tuple[str, ...]:
+    output = subprocess.run(
+        ["git", "ls-files", "-z"],
+        cwd=ROOT,
+        check=True,
+        capture_output=True,
+    ).stdout
+    return tuple(path.decode("utf-8") for path in output.split(b"\0") if path)
+
+
+def _tracked_code_texts() -> tuple[tuple[str, str], ...]:
+    return tuple(
+        (path, (ROOT / path).read_text(encoding="utf-8"))
+        for path in _tracked_files()
+        if _is_scanned_code_path(path)
     )
+
+
+def _docs_job_command() -> str:
+    workflow = yaml.safe_load((ROOT / ".github/workflows/ci.yml").read_text(encoding="utf-8"))
+    steps = workflow["jobs"]["docs"]["steps"]
+    matching = [step["run"] for step in steps if step.get("name") == DOCS_STEP_NAME]
+    assert len(matching) == 1
+    return matching[0]
+
+
+def _docs_job_covered_paths(command: str, candidates: set[str]) -> set[str]:
+    covered = {path for path in candidates if path in command}
+    covered.update(
+        script
+        for script, invoking_test in DOCS_JOB_EXECUTED_SCRIPTS.items()
+        if script in candidates and invoking_test in command
+    )
+    return covered
+
+
+@pytest.mark.parametrize(
+    ("path", "source"),
+    [
+        ("scripts/joinpath.py", 'ROOT.joinpath("docs", "NEW.md").read_text()'),
+        ("scripts/formatted.py", 'Path(f"docs/{NAME}.md").read_text()'),
+        ("scripts/globbed.py", 'next(Path("docs").glob("*.md")).read_text()'),
+        ("scripts/direct.py", 'Path("docs/NEW.md").read_text()'),
+        ("scripts/hypothetical_docs_consumer.py", 'Path("README.md").read_text()'),
+        ("scripts/hypothetical_docs_consumer.sh", 'grep -q README README.md'),
+        ("scripts/after_docstring.py", '\"\"\"Module docs.\"\"\"\nPath("docs/LATER.md").read_text()'),
+    ],
+)
+def test_conservative_detector_flags_every_docs_reference_form(path: str, source: str) -> None:
+    # Given one code-like tracked file containing a potential repository-doc reference.
+    files = ((path, source),)
+
+    # When the conservative detector scans its path and complete text.
+    flagged = _potential_docs_consumers(files)
+
+    # Then syntax shape and earlier docstrings cannot hide the candidate.
+    assert flagged == {path}
+
+
+def test_every_potential_docs_consumer_is_reviewed_or_run_by_docs_job() -> None:
+    candidates = _potential_docs_consumers(_tracked_code_texts())
+    covered = _docs_job_covered_paths(_docs_job_command(), candidates)
+
+    assert candidates == covered | ALLOWLIST.keys(), (
+        f"unclassified potential docs consumers: {sorted(candidates - covered - ALLOWLIST.keys())}; "
+        f"stale allowlist entries: {sorted(ALLOWLIST.keys() - candidates)}"
+    )
+    assert all(reason.strip() for reason in ALLOWLIST.values())
 
 
 def test_all_tracked_markdown_in_docs_is_valid_utf8() -> None:
-    """Test: every tracked markdown file in docs-only locations is valid UTF-8.
-
-    Given: markdown files in docs/ and repository root,
-    When:  checking their encoding,
-    Then:  all decode as UTF-8 and contain no NUL bytes.
-
-    This prevents a malformed markdown file (e.g., with non-UTF-8 or NUL bytes)
-    from passing the docs-only gate.
-    """
-    issues = []
-
-    # Check docs/ tree
-    if (ROOT / "docs").exists():
-        for md_file in (ROOT / "docs").rglob("*.md"):
-            issues.extend(_validate_markdown_utf8(md_file))
-
-    # Check root markdown files
-    for root_md in ROOT.glob("*.md"):
-        if root_md.is_file():
-            issues.extend(_validate_markdown_utf8(root_md))
-
-    assert not issues, (
-        f"invalid markdown encoding in docs-only files:\n"
-        + "\n".join(f"  {issue}" for issue in issues)
+    issues: list[str] = []
+    docs_files = (
+        path
+        for path in _tracked_files()
+        if path.endswith(".md") and (path.startswith("docs/") or "/" not in path)
     )
+    for path in docs_files:
+        content = (ROOT / path).read_bytes()
+        if b"\0" in content:
+            issues.append(f"{path}: contains NUL byte")
+        try:
+            content.decode("utf-8")
+        except UnicodeDecodeError as error:
+            issues.append(f"{path}: invalid UTF-8 at offset {error.start}: {error.reason}")
+
+    assert not issues, "invalid tracked docs-only markdown:\n  " + "\n  ".join(issues)

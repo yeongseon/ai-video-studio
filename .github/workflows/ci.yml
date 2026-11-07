@@ -66,6 +66,7 @@ jobs:
         run: >-
           python3 -m pytest
           tests/test_architecture_diagrams.py
+          tests/test_ci_docs_contract_inventory.py
           apps/api/tests/test_quickstart_docs.py
           apps/api/tests/test_quickstart_execution.py
           apps/api/tests/test_first_short_walkthrough.py
