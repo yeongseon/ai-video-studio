@@ -143,6 +143,10 @@ version check, keep the render test, and re-run the full CI. Do not skip the tes
   referenced paths and commands) in the dedicated `docs` gate, rather than unrelated
   Python/FFmpeg/Docker gates. Non-canonical paths, symlinks, and executable-mode changes
   cannot use the documentation-only classification.
+- The documentation-consumer inventory is a conservative static text heuristic, not a
+  proof against contrived dynamic path construction. A PR that adds a documentation
+  consumer must add its invoking test to the `docs` job or add a reviewed allowlist entry
+  with a true reason; reviewers must verify that boundary when new consumers are added.
 - Full end-to-end, container and recovery checks run on `main`; run the same
   complete workflow on the exact release SHA before deployment. Never deploy
   based solely on a fast PR gate.
