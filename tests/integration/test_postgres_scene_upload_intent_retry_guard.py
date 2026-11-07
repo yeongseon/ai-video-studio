@@ -22,6 +22,8 @@ _KEY = "956/scenes/accepted.png"
 async def _seed_accepted_asset_and_stale_intent(
     database: DeletionDatabase,
     local_path: Path,
+    *,
+    is_active: bool = True,
 ) -> None:
     await database.pool.execute(
         "INSERT INTO creator_runs (id, project_id, workspace_id) VALUES (956, 1, 1)",
@@ -30,10 +32,11 @@ async def _seed_accepted_asset_and_stale_intent(
         """
         INSERT INTO creator_scene_assets (
             run_id, scene_id, asset_path, storage_key, storage_provider, is_active
-        ) VALUES (956, 'accepted', $1, $2, 'local', true)
+        ) VALUES (956, 'accepted', $1, $2, 'local', $3)
         """,
         str(local_path),
         _KEY,
+        is_active,
     )
     await database.pool.execute(
         """
@@ -58,17 +61,23 @@ async def _seed_accepted_asset_and_stale_intent(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("is_active", [True, False])
 async def test_retry_discards_stale_intent_without_deleting_accepted_media(
     deletion_database: DeletionDatabase,
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
+    is_active: bool,
 ) -> None:
     # Given an accepted scene and an aged cleanup intent for its exact object.
     backend = LocalStorageBackend(str(tmp_path / "objects"))
     backend.upload(_KEY, b"accepted", "image/png")
     local_path = tmp_path / "accepted.png"
     local_path.write_bytes(b"accepted-local")
-    await _seed_accepted_asset_and_stale_intent(deletion_database, local_path)
+    await _seed_accepted_asset_and_stale_intent(
+        deletion_database,
+        local_path,
+        is_active=is_active,
+    )
     monkeypatch.setattr(
         "creator_service.artifact_download_service.get_storage_backend",
         lambda: backend,

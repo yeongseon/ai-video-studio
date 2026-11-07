@@ -59,7 +59,7 @@ async def retry_failed_deletions(
                 if artifact.get("metadata_json") == SCENE_UPLOAD_CLEANUP_INTENT_MARKER:
                     accepted_scene_id = await conn.fetchval(
                         "SELECT id FROM creator_scene_assets "
-                        "WHERE run_id = $1 AND storage_key = $2 AND is_active = true "
+                        "WHERE run_id = $1 AND storage_key = $2 "
                         "AND (storage_provider = $3 OR storage_provider IS NULL OR $3 IS NULL) "
                         "LIMIT 1",
                         artifact["run_id"],
