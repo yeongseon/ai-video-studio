@@ -54,7 +54,7 @@ async def render_through_production_adapters(
     root: Path,
     monkeypatch: pytest.MonkeyPatch,
     image: Path,
-    audio: Path,
+    audio: Path | None,
     subtitles: Path,
 ) -> RenderedAdapterPaths:
     backend = LocalStorageBackend(str(root))
@@ -94,7 +94,8 @@ async def render_through_production_adapters(
 
     legacy_run_id = 1
     await visuals.create_asset(legacy_run_id, "scene-1", str(image))
-    await audio_service.create_artifact(legacy_run_id, str(audio))
+    if audio is not None:
+        await audio_service.create_artifact(legacy_run_id, str(audio))
     await subtitle_service.create_artifact(legacy_run_id, str(subtitles))
     legacy_context = TaskContext(
         run_id=legacy_run_id,
@@ -148,7 +149,8 @@ async def render_through_production_adapters(
         "TIMELINE_REVIEW",
         notes=json.dumps({"timeline_id": timeline.id, "revision": timeline.revision}),
     )
-    await audio_service.create_artifact(timeline_run_id, str(audio))
+    if audio is not None:
+        await audio_service.create_artifact(timeline_run_id, str(audio))
     await subtitle_service.create_artifact(timeline_run_id, str(subtitles))
     timeline_context = TaskContext(
         run_id=timeline_run_id,
