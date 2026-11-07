@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 from .db import fetch_all, fetch_one, get_pool
+from .rejected_scene_cleanup import SCENE_UPLOAD_CLEANUP_INTENT_MARKER
 from .visual_asset_service import SceneAssetAcceptanceRejected
 
 
@@ -101,6 +102,15 @@ class PostgresVisualAssetStorage:
                 saved = await connection.fetchrow(
                     "SELECT * FROM creator_scene_assets WHERE idempotency_key = $1",
                     idempotency_key,
+                )
+            if saved is not None and isinstance(row.get("storage_key"), str):
+                await connection.execute(
+                    "DELETE FROM creator_artifacts "
+                    "WHERE run_id = $1 AND storage_key = $2 "
+                    "AND metadata_json = $3",
+                    run_id,
+                    row["storage_key"],
+                    SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
                 )
         if saved is None:
             raise ValueError("Failed to save visual asset")
