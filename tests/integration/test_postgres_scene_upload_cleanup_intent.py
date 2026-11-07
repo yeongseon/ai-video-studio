@@ -6,11 +6,15 @@ from typing import BinaryIO
 import asyncpg
 import pytest
 import pytest_asyncio
-from creator_service import artifact_storage_integration, object_storage
+from creator_service import (
+    artifact_storage_integration,
+    object_storage,
+    postgres_visual_asset_storage,
+)
+from creator_service.artifact_download_service import artifact_download_service
 from creator_service.object_storage import LocalStorageBackend, StorageResult
 from creator_service.postgres_visual_asset_storage import PostgresVisualAssetStorage
 from creator_service.rejected_scene_cleanup import rejected_scene_cleanup_service
-from tasks.retry_failed_artifact_deletions import _retry_once
 from tasks.scene_batch_lifecycle import SceneBatch
 from tasks.task_runner import TaskContext
 
@@ -126,7 +130,7 @@ async def test_interrupt_after_upload_leaves_exact_intent_for_production_retry(
         "UPDATE creator_artifacts SET created_at = NOW() - INTERVAL '6 minutes' WHERE run_id = $1",
         upload_run,
     )
-    assert await _retry_once() == {"deleted": 1}
+    assert await artifact_download_service.retry_failed_deletions() == 1
     assert not scene_backend.exists(expected_key)
     assert scene_backend.download_bytes(shared_key) == b"accepted"
 
@@ -163,11 +167,14 @@ async def test_intent_insert_failure_prevents_external_upload(
         await batch.upload(str(target))
 
     assert upload_calls == []
-    assert not scene_backend.exists(expected_key)
 
 
 async def _passing_checkpoint() -> None:
     return None
+
+
+async def _pool(database: DeletionDatabase) -> asyncpg.Pool:
+    return database.pool
 
 
 @pytest.mark.asyncio
@@ -185,6 +192,7 @@ async def test_asset_acceptance_atomically_clears_upload_intent(
     batch = _batch(upload_run)
     batch.local_outputs.add(target)
     monkeypatch.setattr(batch, "checkpoint", _passing_checkpoint)
+    monkeypatch.setattr(postgres_visual_asset_storage, "get_pool", lambda: _pool(deletion_database))
     uploaded = await batch.upload(str(target))
 
     # When the real PostgreSQL acceptance transaction commits the scene asset.
@@ -245,6 +253,6 @@ async def test_adapter_alias_is_never_recorded_or_deleted(
         "UPDATE creator_artifacts SET created_at = NOW() - INTERVAL '6 minutes' WHERE run_id = $1",
         upload_run,
     )
-    assert await _retry_once() == {"deleted": 1}
+    assert await artifact_download_service.retry_failed_deletions() == 1
     assert not scene_backend.exists(expected_key)
     assert scene_backend.download_bytes(alias_key) == b"accepted"

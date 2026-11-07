@@ -44,15 +44,19 @@ async def test_retry_workers_hold_each_row_lock_through_storage_deletion(
     # Given one pending artifact and a backend that blocks the first retry worker.
     local_path = tmp_path / "fresh.png"
     local_path.write_bytes(b"fresh")
+    await deletion_database.pool.execute(
+        "INSERT INTO creator_runs (id, project_id, workspace_id) VALUES (1, 1, 1)",
+    )
     await deletion_database.pool.execute("""
-        INSERT INTO creator_runs (id, project_id, workspace_id) VALUES (1, 1, 1);
         INSERT INTO creator_artifacts (
             run_id, project_id, artifact_type, scene_id, file_path, storage_key,
             metadata_json, delete_requested_at
         ) VALUES (1, 1, 'visual_asset', 'fresh', $1, '1/scenes/fresh.png',
                   'scene_upload_cleanup_intent', NOW());
-        UPDATE creator_artifacts SET created_at = NOW() - INTERVAL '6 minutes' WHERE run_id = 1;
     """, str(local_path))
+    await deletion_database.pool.execute(
+        "UPDATE creator_artifacts SET created_at = NOW() - INTERVAL '6 minutes' WHERE run_id = 1",
+    )
     backend = BlockingDeleteBackend()
 
     @contextlib.asynccontextmanager
