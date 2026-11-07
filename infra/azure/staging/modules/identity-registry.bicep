@@ -55,7 +55,7 @@ resource publisherAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01
     principalType: 'ServicePrincipal'
     roleDefinitionId: repositoryWriterRoleId
     conditionVersion: '2.0'
-    condition: '((!(ActionMatches{\'Microsoft.ContainerRegistry/registries/repositories/content/read\'}) AND !(ActionMatches{\'Microsoft.ContainerRegistry/registries/repositories/metadata/read\'})) OR (@Request[Microsoft.ContainerRegistry/registries/repositories:name] StringEqualsIgnoreCase \'api\' OR @Request[Microsoft.ContainerRegistry/registries/repositories:name] StringEqualsIgnoreCase \'worker\' OR @Request[Microsoft.ContainerRegistry/registries/repositories:name] StringEqualsIgnoreCase \'studio-web\'))'
+    condition: '((!(ActionMatches{\'Microsoft.ContainerRegistry/registries/repositories/content/read\'}) AND !(ActionMatches{\'Microsoft.ContainerRegistry/registries/repositories/metadata/read\'}) AND !(ActionMatches{\'Microsoft.ContainerRegistry/registries/repositories/content/write\'}) AND !(ActionMatches{\'Microsoft.ContainerRegistry/registries/repositories/metadata/write\'})) OR (@Request[Microsoft.ContainerRegistry/registries/repositories:name] StringEqualsIgnoreCase \'api\' OR @Request[Microsoft.ContainerRegistry/registries/repositories:name] StringEqualsIgnoreCase \'worker\' OR @Request[Microsoft.ContainerRegistry/registries/repositories:name] StringEqualsIgnoreCase \'studio-web\'))'
   }
 }
 
