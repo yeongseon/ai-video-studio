@@ -1,5 +1,6 @@
 """Fast cleanup proofs with an in-memory row source and real object bytes."""
 
+import os
 from pathlib import Path
 from typing import TypedDict
 
@@ -103,9 +104,9 @@ async def test_local_unlink_failure_is_reported_when_untracked_run_file_remains(
     # Given a legacy run file not indexed by creator_artifacts.
     backend = LocalStorageBackend(str(tmp_path))
     backend.upload("7/scene.png", b"scene")
-    original_unlink = Path.unlink
+    original_unlink = os.unlink
 
-    def denied_unlink(path: Path, missing_ok: bool = False) -> None:
+    def denied_unlink(path: str, *, dir_fd: int | None = None) -> None:
         raise PermissionError("private filesystem detail")
 
     async def fetch_rows(query: str, run_id: int) -> list[ObjectRow]:
@@ -115,11 +116,11 @@ async def test_local_unlink_failure_is_reported_when_untracked_run_file_remains(
     monkeypatch.setenv("STORAGE_BACKEND", "local")
     monkeypatch.setattr("creator_service.artifact_download_service.fetch_all", fetch_rows)
     monkeypatch.setattr("creator_service.artifact_download_service.get_storage_backend", lambda: backend)
-    monkeypatch.setattr(Path, "unlink", denied_unlink)
+    monkeypatch.setattr(os, "unlink", denied_unlink)
     first = await ArtifactDownloadService().delete_artifacts_for_run(7)
     assert first == 1
     assert backend.download_bytes("7/scene.png") == b"scene"
-    monkeypatch.setattr(Path, "unlink", original_unlink)
+    monkeypatch.setattr(os, "unlink", original_unlink)
     # When the filesystem permits deletion again.
     retry = await ArtifactDownloadService().delete_artifacts_for_run(7)
     # Then directory cleanup completes.
