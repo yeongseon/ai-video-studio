@@ -57,7 +57,7 @@ def main() -> int:
         if event not in EVENTS:
             raise ValueError(event)
         jobs = tuple(_parse_job(raw, event) for raw in sys.argv[3:])
-    except (ValueError, TypeError) as error:
+    except ValueError as error:
         print(f"invalid required CI input: {error}", file=sys.stderr)
         return 2
     names = tuple(job.name for job in jobs)
