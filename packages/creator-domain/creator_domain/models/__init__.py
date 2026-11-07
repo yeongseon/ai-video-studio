@@ -12,6 +12,7 @@ from .chunk_manifest import (
     ChunkSourceRef,
     RenderChunk,
 )
+from .chunk_identity import ApprovalIdentity, ChunkPlanningInput, SourceAssetIdentity
 from .chunk_planner import plan_chunks
 from .chunk_policy import ChunkPolicy
 from .duration_preset import (
@@ -86,6 +87,9 @@ __all__ = [
     "ContentRecipe",
     "CreativeProfile",
     "ChunkManifest",
+    "ApprovalIdentity",
+    "ChunkPlanningInput",
+    "SourceAssetIdentity",
     "ChunkPolicy",
     "ChunkSourceRef",
     "RenderChunk",
