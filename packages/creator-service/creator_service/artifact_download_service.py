@@ -225,7 +225,6 @@ class ArtifactDownloadService:
         if max_retries < 1:
             raise ValueError("max_retries must be >= 1")
 
-        backend = get_storage_backend()
         attempted_ids: list[int] = []
         deleted_count = 0
         failed_count = 0
@@ -253,7 +252,7 @@ class ArtifactDownloadService:
                 artifact_id = artifact["id"]
                 attempted_ids.append(artifact_id)
                 try:
-                    backend.delete(key)
+                    get_storage_backend().delete(key)
                     if artifact.get("metadata_json") == REJECTED_SCENE_UPLOAD_CLEANUP_MARKER:
                         local_path = artifact.get("file_path")
                         if not isinstance(local_path, str):

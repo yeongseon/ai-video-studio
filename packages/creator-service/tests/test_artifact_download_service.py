@@ -657,6 +657,27 @@ async def test_retry_failed_deletions_returns_zero_when_none_pending(
 
 
 @pytest.mark.asyncio
+async def test_retry_without_pending_rows_does_not_initialize_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _FakeConnection(fetch_rows=[])
+
+    def fail_if_initialized() -> None:
+        raise AssertionError("storage backend initialized without a retry candidate")
+
+    monkeypatch.setattr(
+        "creator_service.artifact_download_service.transaction",
+        lambda: _fake_transaction(conn),
+    )
+    monkeypatch.setattr(
+        "creator_service.artifact_download_service.get_storage_backend",
+        fail_if_initialized,
+    )
+
+    assert await ArtifactDownloadService(InMemoryArtifactDownloadStorage()).retry_failed_deletions() == 0
+
+
+@pytest.mark.asyncio
 async def test_retry_failed_deletions_rejects_invalid_max_retries() -> None:
     """retry_failed_deletions raises ValueError for max_retries < 1."""
     service = ArtifactDownloadService(InMemoryArtifactDownloadStorage())
