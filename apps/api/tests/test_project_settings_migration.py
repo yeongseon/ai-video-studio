@@ -15,9 +15,9 @@ import pytest
 def test_settings_migration_when_upgraded_and_downgraded_sqlite() -> None:
     # Given the previous schema with an existing project row.
     scripts = ScriptDirectory(str(Path(__file__).resolve().parents[1] / "migrations"))
-    revision = scripts.get_revision("051")
+    revision = scripts.get_revision("052")
     assert revision is not None
-    assert revision.down_revision == "050"
+    assert revision.down_revision == "051"
     with sa.create_engine("sqlite://").begin() as connection:
         connection.execute(sa.text("CREATE TABLE creator_projects (id INTEGER PRIMARY KEY, title TEXT)"))
         connection.execute(sa.text("INSERT INTO creator_projects VALUES (1, 'Legacy')"))
@@ -51,13 +51,13 @@ async def test_settings_migration_when_upgraded_and_downgraded_postgres() -> Non
         await admin.execute(f'CREATE TABLE "{schema}".alembic_version (version_num VARCHAR(32) PRIMARY KEY)')
         env = {**os.environ, "DATABASE_URL": url, "PGOPTIONS": f"-c search_path={schema}"}
         try:
-            subprocess.run([sys.executable, "-m", "alembic", "upgrade", "050"],
+            subprocess.run([sys.executable, "-m", "alembic", "upgrade", "051"],
                            cwd=root / "apps/api", env=env, check=True, capture_output=True)
             async with asyncpg.create_pool(url, min_size=1, max_size=2,
                                           server_settings={"search_path": schema}) as pool:
                 await pool.execute("INSERT INTO creator_projects (id, title) VALUES (1, 'Legacy')")
                 # When upgrading, then preserve old data and absent-row legacy semantics.
-                subprocess.run([sys.executable, "-m", "alembic", "upgrade", "051"],
+                subprocess.run([sys.executable, "-m", "alembic", "upgrade", "052"],
                                cwd=root / "apps/api", env=env, check=True, capture_output=True)
                 assert await pool.fetchval("SELECT title FROM creator_projects WHERE id=1") == "Legacy"
                 assert await pool.fetchval("SELECT COUNT(*) FROM creator_project_settings") == 0
@@ -68,7 +68,7 @@ async def test_settings_migration_when_upgraded_and_downgraded_postgres() -> Non
                 assert column is not None
                 assert (column["udt_name"], column["is_nullable"], column["column_default"]) == ("jsonb", "NO", None)
                 # When downgrading, then preserve the project and remove only settings.
-                subprocess.run([sys.executable, "-m", "alembic", "downgrade", "050"],
+                subprocess.run([sys.executable, "-m", "alembic", "downgrade", "051"],
                                cwd=root / "apps/api", env=env, check=True, capture_output=True)
                 assert await pool.fetchval("SELECT title FROM creator_projects WHERE id=1") == "Legacy"
                 assert await pool.fetchval("""

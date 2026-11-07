@@ -11,7 +11,7 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_previous_release_reads_when_settings_schema_is_upgraded() -> None:
-    # Given the previous release's actual model and a disposable pre-051 schema.
+    # Given the previous release's actual model and a disposable pre-052 schema.
     url = os.getenv("FIRST_SHORT_TEST_DATABASE_URL")
     if not url:
         if os.getenv("GITHUB_ACTIONS") == "true":
@@ -29,7 +29,7 @@ async def test_previous_release_reads_when_settings_schema_is_upgraded() -> None
         await admin.execute(f'CREATE SCHEMA "{schema}"')
         await admin.execute(f'CREATE TABLE "{schema}".alembic_version (version_num VARCHAR(32) PRIMARY KEY)')
         try:
-            subprocess.run([sys.executable, "-m", "alembic", "upgrade", "050"],
+            subprocess.run([sys.executable, "-m", "alembic", "upgrade", "051"],
                            cwd=root / "apps/api", env=env, check=True, capture_output=True)
             async with asyncpg.create_pool(url, min_size=1, max_size=2,
                                           server_settings={"search_path": schema}, statement_cache_size=0) as pool:
@@ -37,7 +37,7 @@ async def test_previous_release_reads_when_settings_schema_is_upgraded() -> None
                 before = await pool.fetchrow("SELECT * FROM creator_projects WHERE id = $1", 1)
                 assert before is not None
                 # When the candidate schema is migrated, then the old raw-row contract is identical.
-                subprocess.run([sys.executable, "-m", "alembic", "upgrade", "051"],
+                subprocess.run([sys.executable, "-m", "alembic", "upgrade", "052"],
                                cwd=root / "apps/api", env=env, check=True)
                 after = await pool.fetchrow("SELECT * FROM creator_projects WHERE id = $1", 1)
                 assert after is not None
