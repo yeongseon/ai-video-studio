@@ -1,3 +1,5 @@
+import hashlib
+import json
 from pathlib import Path
 
 import pytest
@@ -31,8 +33,12 @@ async def test_edge_sdk_soft_timeout_is_not_wrapped(
             "hello", params={"output_path": str(output)},
         )
     # Then the caller receives the timeout identity and only one save was attempted.
-    assert calls == [(str(output), f"{output}.words.jsonl")]
+    assert len(calls) == 1
+    assert calls[0][0] == str(output)
+    assert calls[0][1] is not None
+    assert calls[0][1] != f"{output}.words.jsonl"
     assert not output.exists()
+    assert not Path(f"{output}.words.jsonl").exists()
 
 
 @pytest.mark.asyncio
@@ -87,6 +93,23 @@ async def test_edge_tts_saves_word_boundaries_next_to_audio(
 
     # Then provider-native word timings are retained beside that exact audio.
     metadata_path = tmp_path / "audio.mp3.words.jsonl"
-    assert saved_paths == [(str(output), str(metadata_path))]
+    assert saved_paths[0][0] == str(output)
+    assert saved_paths[0][1] is not None
+    assert saved_paths[0][1] != str(metadata_path)
     assert metadata_path.exists()
+    envelope = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert envelope == {
+        "format": "short-form-studio/tts-word-timings",
+        "version": 1,
+        "audio_sha256": hashlib.sha256(output.read_bytes()).hexdigest(),
+        "script_sha256": hashlib.sha256("정확한 대본".encode()).hexdigest(),
+        "words": [
+            {
+                "type": "WordBoundary",
+                "offset": 0,
+                "duration": 10_000_000,
+                "text": "정확한",
+            }
+        ],
+    }
     assert result.metadata == {"word_timestamps_path": str(metadata_path)}

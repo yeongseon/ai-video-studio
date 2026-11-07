@@ -120,7 +120,11 @@ def test_edge_sdk_timeout_reaches_audio_task_without_fallback(
     output_path = (
         case.root / str(case.runner.run_id) / "audio" / "edge-sdk-timeout" / "section_0.mp3"
     )
-    assert calls == [(str(output_path), f"{output_path}.words.jsonl")]
+    assert len(calls) == 1
+    assert calls[0][0] == str(output_path)
+    assert calls[0][1] is not None
+    assert calls[0][1] != f"{output_path}.words.jsonl"
+    assert not Path(f"{output_path}.words.jsonl").exists()
     case.usage.assert_not_awaited()
 
 
