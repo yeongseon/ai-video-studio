@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import subprocess
+from hashlib import sha256
 from pathlib import Path
 from typing import Final
 
 import pytest
 import yaml
 
+import ci_docs_contract_inventory_support as inventory_support
 from ci_docs_contract_inventory_support import (
     EXCLUDED_FILENAMES,
     EXCLUDED_SUFFIX_REASONS,
@@ -67,6 +69,33 @@ ALLOWLIST: Final = {
     path: reason
     for entries in ALLOWLIST_BY_CATEGORY.values()
     for path, reason in entries.items()
+}
+REVIEWED_ALLOWLIST_MATCH_DIGESTS: Final = {
+    "scripts/ci_impact.py": "3299bdfcdee12b427c01dfc66f33446f4dbde2196b3c2cc243ed07b7130f5158",
+    "scripts/ci_required.py": "5330a60518537724a8dd459e39eb32b8e324219aba9e09b0bdbbc0c3b8bb21d7",
+    "tests/test_ci_impact.py": "4da6968714f1ac4c76389deb94dfd736129d3528d7d0fc427036a107f2f44184",
+    "tests/test_ci_impact_git.py": "8d558fd7293ed4ec6446908ce0d99518dcccffe63449e5405486e396f68eddb5",
+    "tests/test_ci_required.py": "8a646781d6f7de504ee035e6ceffdec5bac7b2cdacae4894035fdd3a48d1c0dd",
+    "tests/test_ci_required_workflow.py": "b6c3ec7e30f9cf8dd7ccacccd09d831d5919b2f6c93cde792380b75927eb2ac1",
+    "apps/api/tests/test_auth.py": "ba7d93317b9d1feef4301eb6c07d607c8394fc095b1f67398a96c363d64002b6",
+    "apps/studio-web/src/pages/OpsPage.tsx": "da2a9442fafa0e32885e0fb4f4fa6dcc698e957eb2e6842d87d924a534068d36",
+    "apps/api/migrations/versions/005_expand_artifact_typing_and_indexes.py": (
+        "ed958eb3fd883a2443b55a52def834d1828aee54e93eaefab2ca5aa5bc7432b9"
+    ),
+    "apps/api/migrations/versions/031_artifact_retention_env.py": (
+        "9889871d9c983afbecd6727491df0f7e5b4b620f2ce8be032d1778e8f439fcf5"
+    ),
+    "apps/worker-orchestrator/celery_app.py": (
+        "5079680b007699cd723fe0df708ae3afed3841787eaa91cc84c6ea8faea71765"
+    ),
+    "docker-compose.yml": "2f9e4c09cae2cea192b34b2cbcd23988f6a8f7ef8b00db5daf3bf3b44b87bee2",
+    "pyproject.toml": "72c22b6c12c1c2bac72839744f462529bbc3bcda0ac0176e5f6aade00ea6bd89",
+    "ci_docs_contract_inventory_support.py": (
+        "c4b95259cfcf3155b7c329c24cec3a9309c110c956cd73e70a9d4bf42273a377"
+    ),
+    "tests/test_ci_docs_contract_inventory.py": (
+        "873688636e0064317136d4eb49e194c2cec642225d26b31595df6ac2fcaa70c6"
+    ),
 }
 
 
@@ -196,15 +225,15 @@ def test_docs_job_coverage_rejects_non_command_path_mentions(command: str) -> No
     assert not covered
 
 
-def test_docs_job_coverage_accepts_direct_commands_across_shell_separators() -> None:
-    # Given direct pytest and script invocations split by supported shell separators.
-    command = "python3 -m pytest tests/a.py::test_case \\\n+ tests/b.py && bash scripts/check.sh; pytest tests/c.py"
-    candidates = {"tests/a.py", "tests/b.py", "scripts/check.sh", "tests/c.py"}
+def test_docs_job_coverage_accepts_direct_pytest_paths() -> None:
+    # Given direct pytest paths with the supported quiet option.
+    command = "python3 -m pytest tests/a.py::test_case tests/b.py -q"
+    candidates = {"tests/a.py", "tests/b.py"}
 
     # When docs-job coverage is derived from shell commands.
     covered = _docs_job_covered_paths(command, candidates)
 
-    # Then only the directly invoked test and script tokens are covered.
+    # Then each directly invoked test path is covered.
     assert covered == candidates
 
 
@@ -227,14 +256,24 @@ def test_docs_job_coverage_ignores_path_invoked_only_by_another_job() -> None:
 
 
 def test_every_potential_docs_consumer_is_reviewed_or_run_by_docs_job() -> None:
-    candidates = potential_docs_consumers(_tracked_code_texts())
+    tracked_texts = _tracked_code_texts()
+    candidates = potential_docs_consumers(tracked_texts)
     covered = _docs_job_covered_paths(_docs_job_command(), candidates)
+    current_matches = inventory_support.docs_reference_matches(tracked_texts)
 
     assert candidates == covered | ALLOWLIST.keys(), (
         f"unclassified potential docs consumers: {sorted(candidates - covered - ALLOWLIST.keys())}; "
         f"stale allowlist entries: {sorted(ALLOWLIST.keys() - candidates)}"
     )
     assert all(reason.strip() for reason in ALLOWLIST.values())
+    changed = {
+        path: current_matches[path]
+        for path in ALLOWLIST
+        if path in current_matches
+        and sha256("\n".join(current_matches[path]).encode()).hexdigest()
+        != REVIEWED_ALLOWLIST_MATCH_DIGESTS.get(path)
+    }
+    assert not changed, f"allowlisted documentation matches changed; review current matched lines: {changed}"
 
 
 def test_all_tracked_markdown_in_docs_is_valid_utf8() -> None:

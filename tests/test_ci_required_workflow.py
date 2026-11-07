@@ -8,6 +8,7 @@ import yaml
 
 ROOT = Path(__file__).resolve().parents[1]
 AGGREGATOR = "ci-required"
+DOCS_STEP_NAME = "Validate documentation contracts"
 
 
 def _workflow() -> dict:
@@ -34,6 +35,14 @@ def _test_commands(workflow: dict) -> str:
         step.get("run", "")
         for step in workflow["jobs"]["test"]["steps"]
     )
+
+
+def _assert_docs_job_has_no_failure_mask(workflow: dict) -> None:
+    docs = workflow["jobs"]["docs"]
+    matching = [step for step in docs["steps"] if step.get("name") == DOCS_STEP_NAME]
+    assert len(matching) == 1
+    assert "continue-on-error" not in docs
+    assert "continue-on-error" not in matching[0]
 
 
 def test_ci_required_aggregates_every_validation_job() -> None:
@@ -82,3 +91,24 @@ def test_docs_job_runs_documentation_contract_checks() -> None:
     assert "-e packages/creator-domain" in commands
     assert "-e packages/creator-provider" in commands
     assert "-e packages/creator-service" in commands
+    _assert_docs_job_has_no_failure_mask(workflow)
+
+
+@pytest.mark.parametrize("scope", ["job", "step"])
+@pytest.mark.parametrize(
+    "value",
+    [True, "${{ true }}", "${{ always() }}", "true", "${{ github.event_name == 'push' }}"],
+)
+def test_docs_job_rejects_continue_on_error(scope: str, value: bool | str) -> None:
+    # Given a docs workflow that masks either the whole job or its validation step.
+    workflow = deepcopy(_workflow())
+    docs = workflow["jobs"]["docs"]
+    if scope == "job":
+        docs["continue-on-error"] = value
+    else:
+        step = next(step for step in docs["steps"] if step.get("name") == DOCS_STEP_NAME)
+        step["continue-on-error"] = value
+
+    # When the docs contract is checked, then masked failures are rejected.
+    with pytest.raises(AssertionError):
+        _assert_docs_job_has_no_failure_mask(workflow)
