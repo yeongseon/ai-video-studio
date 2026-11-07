@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import subprocess
+import sys
 from io import BytesIO
 from pathlib import Path
 
@@ -147,9 +149,21 @@ def test_path_traversal_delete_rejected(tmp_path):
 
 def test_lazy_singleton_does_not_crash_at_import(monkeypatch):
     monkeypatch.delenv("STORAGE_BACKEND", raising=False)
-    module = _object_storage_module()
-    # Module-level _storage_backend should be None (lazy)
-    assert module._storage_backend is None
-    # get_storage_backend() should create on first call
-    backend = module.get_storage_backend()
-    assert isinstance(backend, module.LocalStorageBackend)
+    # Tests that already resolved the singleton must not affect the import-time contract.
+    # Import in a fresh interpreter, then verify the first backend access there.
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "import creator_service.object_storage as module\n"
+                "assert module._storage_backend is None\n"
+                "backend = module.get_storage_backend()\n"
+                "assert isinstance(backend, module.LocalStorageBackend)\n"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
