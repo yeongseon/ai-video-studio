@@ -134,4 +134,3 @@ def test_manifest_rejects_nonpositive_resolved_audio_sample_rate() -> None:
     # When constructed, then the serialized resolved policy cannot bypass policy bounds.
     with pytest.raises(ChunkManifestValidationError, match="sample rate"):
         _ = replace(manifest, policy=policy, chunks=(chunk,))
-
