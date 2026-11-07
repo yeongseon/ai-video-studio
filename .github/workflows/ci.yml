@@ -451,3 +451,29 @@ jobs:
             /tmp/release-lifecycle-evidence
       - name: Runtime cutover acceptance
         run: scripts/cutover_runtime_acceptance.sh
+
+  ci-required:
+    if: ${{ always() }}
+    needs:
+      - impact
+      - hygiene
+      - restore-drill
+      - lint
+      - test
+      - first-short-runtime
+      - worker-topology-runtime
+      - docker
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Require classifier and every selected validation job
+        run: >-
+          python3 scripts/ci_required.py
+          "${{ needs.impact.result }}"
+          "hygiene=true=${{ needs.hygiene.result }}"
+          "restore-drill=${{ github.event_name != 'pull_request' || needs.impact.outputs.restore == 'true' }}=${{ needs.restore-drill.result }}"
+          "lint=${{ github.event_name != 'pull_request' || needs.impact.outputs.code == 'true' }}=${{ needs.lint.result }}"
+          "test=${{ github.event_name != 'pull_request' || needs.impact.outputs.code == 'true' }}=${{ needs.test.result }}"
+          "first-short-runtime=${{ github.event_name != 'pull_request' || needs.impact.outputs.first_short == 'true' }}=${{ needs.first-short-runtime.result }}"
+          "worker-topology-runtime=${{ github.event_name != 'pull_request' || needs.impact.outputs.worker == 'true' }}=${{ needs.worker-topology-runtime.result }}"
+          "docker=${{ github.event_name != 'pull_request' || needs.impact.outputs.docker == 'true' }}=${{ needs.docker.result }}"
