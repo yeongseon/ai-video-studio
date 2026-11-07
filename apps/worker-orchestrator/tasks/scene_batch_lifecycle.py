@@ -71,7 +71,7 @@ class SceneBatch:
         await self.checkpoint()
         backend = get_storage_backend()
         path = Path(target_path)
-        expected_key = str(path.resolve().relative_to(artifact_storage_integration._ARTIFACT_ROOT))
+        expected_key = f"{self.ctx.run_id}/scenes/{path.name}"
         record_id = await rejected_scene_cleanup_service.record_intent(
             run_id=self.ctx.run_id,
             workspace_id=self.ctx.workspace_id,
