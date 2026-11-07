@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
 
 from celery.exceptions import SoftTimeLimitExceeded
@@ -21,6 +22,7 @@ from creator_service.usage_service import authorize_owned_provider_attempt, reco
 from tasks.task_runner import GpuLockContext, TaskContext, TaskResult, TaskRunnerConfig, run_task
 from tasks.hard_timeout import production_task
 from tasks.task_execution import TaskInputError
+from tasks.generate_audio import _strip_markdown_for_tts
 
 logger = logging.getLogger(__name__)
 _ARTIFACT_ROOT = os.getenv("ARTIFACT_ROOT", "data/artifacts")
@@ -97,6 +99,19 @@ def generate_subtitles(
             params = dict(entry.default_params or {})
             params["format"] = subtitle_format
             params["output_path"] = subtitle_path
+            if entry.provider_type == "script_timestamp_aligner":
+                params["script_text"] = _strip_markdown_for_tts(script_text)
+                try:
+                    from creator_service.ffmpeg_service import FFmpegService
+
+                    measured_duration = FFmpegService().get_audio_duration(audio_path)
+                    if not math.isfinite(measured_duration) or measured_duration <= 0:
+                        raise ValueError
+                    params["audio_duration_seconds"] = measured_duration
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    raise ProviderError(
+                        f"Could not measure audio duration for script alignment for run {run_id}"
+                    ) from None
             try:
                 attempt_id = f"{ctx.task_id}:{ctx.delivery_attempt}:stt"
                 if not await authorize_owned_provider_attempt(

@@ -343,6 +343,59 @@ def test_generate_subtitles_with_audio_path(monkeypatch: pytest.MonkeyPatch) -> 
     assert params["output_path"] == "data/artifacts/105/subtitles/subtitles.vtt"
 
 
+def test_generate_subtitles_passes_known_script_to_timestamp_aligner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given explicit selection of the script timestamp aligner.
+    provider = FakeProvider()
+    entry = FakeEntry(provider_type="script_timestamp_aligner", requires_gpu=False)
+    _patch_registry(monkeypatch, FakeRegistry(entry=entry, provider=provider))
+    monkeypatch.setattr(
+        "creator_service.ffmpeg_service.FFmpegService.get_audio_duration", lambda *_: 3.0
+    )
+    script = "## Heading\n2026년, punctuation—그대로."
+    _patch_services(
+        monkeypatch,
+        FakeScriptService(draft=FakeScriptDraft(markdown_content=script)),
+        FakeAudioService(artifact=FakeAudioArtifact(path="data/artifacts/108/audio/audio.mp3")),
+        FakeSubtitleService(),
+        _make_storage(run_id=108, stage="SUBTITLE_GENERATING"),
+    )
+
+    # When subtitles are generated with the opt-in model.
+    result = _invoke_task(run_id=108, subtitle_model="script-timestamps")
+
+    # Then the approved script is supplied as alignment ground truth.
+    assert result["status"] == "success"
+    params = provider.calls[0][1]
+    assert params is not None
+    assert params["script_text"] == "2026년, punctuation—그대로."
+
+
+def test_generate_subtitles_rejects_invalid_measured_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given script alignment selected when the duration probe returns no valid bound.
+    provider = FakeProvider()
+    entry = FakeEntry(provider_type="script_timestamp_aligner", requires_gpu=False)
+    _patch_registry(monkeypatch, FakeRegistry(entry=entry, provider=provider))
+    monkeypatch.setattr(
+        "creator_service.ffmpeg_service.FFmpegService.get_audio_duration", lambda *_: float("nan")
+    )
+    _patch_services(
+        monkeypatch,
+        FakeScriptService(draft=FakeScriptDraft(markdown_content="Known script")),
+        FakeAudioService(artifact=FakeAudioArtifact(path="data/artifacts/109/audio/audio.mp3")),
+        FakeSubtitleService(),
+        _make_storage(run_id=109, stage="SUBTITLE_GENERATING"),
+    )
+
+    # When subtitle generation runs, then the provider is not called without a safe audio bound.
+    with pytest.raises(generate_subtitles_module.ProviderError, match="measure audio duration"):
+        _invoke_task(run_id=109, subtitle_model="script-timestamps")
+    assert provider.calls == []
+
+
 def test_generate_subtitles_without_audio(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = FakeProvider()
     _patch_registry(

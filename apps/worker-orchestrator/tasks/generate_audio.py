@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import logging
+import json
 import os
 import shutil
 import wave
@@ -30,6 +31,7 @@ from tasks.task_execution import TaskInputError
 
 logger = logging.getLogger(__name__)
 _ARTIFACT_ROOT = os.getenv("ARTIFACT_ROOT", "data/artifacts")
+_TICKS_PER_SECOND = 10_000_000
 
 
 def _strip_markdown_for_tts(text: str) -> str:
@@ -101,6 +103,29 @@ def _get_audio_duration_seconds(path: str) -> float | None:
     except Exception:
         logger.warning("Could not determine audio duration for %s", path, exc_info=True)
         return None
+
+
+def _merge_word_timing_sidecars(
+    audio_paths: list[str], output_path: str, ffmpeg_service: object
+) -> None:
+    merged_path = Path(f"{output_path}.words.jsonl")
+    offset_ticks = 0
+    merged_lines: list[str] = []
+    for audio_path in audio_paths:
+        sidecar = Path(f"{audio_path}.words.jsonl")
+        if not sidecar.is_file():
+            raise ProviderError(f"Missing Edge TTS word timing metadata: {sidecar}")
+        for line in sidecar.read_text(encoding="utf-8").splitlines():
+            row = json.loads(line)
+            row["offset"] = int(row["offset"]) + offset_ticks
+            merged_lines.append(json.dumps(row, ensure_ascii=False))
+        duration = ffmpeg_service.get_audio_duration(audio_path)
+        offset_ticks += round(duration * _TICKS_PER_SECOND)
+    _ = merged_path.write_text("\n".join(merged_lines) + "\n", encoding="utf-8")
+
+
+def _invalidate_word_timing_sidecar(audio_path: str) -> None:
+    Path(f"{audio_path}.words.jsonl").unlink(missing_ok=True)
 
 @celery_app.task(
     bind=True,
@@ -240,6 +265,7 @@ def generate_audio(
                         from creator_service.ffmpeg_service import FFmpegService
                         _ffmpeg = FFmpegService()
                         _ffmpeg.concatenate_audio(section_audio_paths, audio_path)
+                        _merge_word_timing_sidecars(section_audio_paths, audio_path, _ffmpeg)
                         per_section_generated = True
                         logger.info(
                             "Per-section TTS generated for run %d (%d sections)",
@@ -250,6 +276,7 @@ def generate_audio(
                 except ProviderError:
                     raise
                 except Exception as sec_exc:
+                    _invalidate_word_timing_sidecar(audio_path)
                     logger.warning(
                         "Per-section TTS failed for run %d, falling back to single-pass: %s",
                         run_id, sec_exc
@@ -258,6 +285,7 @@ def generate_audio(
 
             # --- Fallback: single-pass TTS generation ---
             if not per_section_generated:
+                _invalidate_word_timing_sidecar(audio_path)
                 params = dict(entry.default_params or {})
                 params["output_path"] = audio_path
                 if entry.provider_type == "edge_tts":

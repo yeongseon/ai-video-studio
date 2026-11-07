@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -157,6 +159,53 @@ def _invoke_task(**kwargs: Any) -> dict[str, object]:
     task = generate_audio_module.generate_audio
     run_callable = getattr(task, "run", task)
     return run_callable(**kwargs)
+
+
+def test_merge_word_timing_sidecars_rebases_section_offsets(tmp_path: Path) -> None:
+    # Given two section-audio timing sidecars and measured section durations.
+    first = tmp_path / "first.mp3"
+    second = tmp_path / "second.mp3"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    Path(f"{first}.words.jsonl").write_text(
+        '{"type":"WordBoundary","offset":0,"duration":10000000,"text":"하나"}\n',
+        encoding="utf-8",
+    )
+    Path(f"{second}.words.jsonl").write_text(
+        '{"type":"WordBoundary","offset":0,"duration":10000000,"text":"둘"}\n',
+        encoding="utf-8",
+    )
+
+    class FakeFFmpeg:
+        def get_audio_duration(self, path: str) -> float:
+            return 1.5 if path == str(first) else 2.0
+
+    output = tmp_path / "full.mp3"
+
+    # When timing metadata is merged for the concatenated audio.
+    generate_audio_module._merge_word_timing_sidecars(
+        [str(first), str(second)], str(output), FakeFFmpeg()
+    )
+
+    # Then the second section starts after the measured first-section duration.
+    rows = [
+        json.loads(line)
+        for line in Path(f"{output}.words.jsonl").read_text(encoding="utf-8").splitlines()
+    ]
+    assert [row["offset"] for row in rows] == [0, 15_000_000]
+
+
+def test_invalidate_word_timing_sidecar_removes_stale_alignment(tmp_path: Path) -> None:
+    # Given a full-audio sidecar left by a failed per-section attempt.
+    audio_path = tmp_path / "audio.mp3"
+    sidecar = Path(f"{audio_path}.words.jsonl")
+    sidecar.write_text('{"text":"stale"}\n', encoding="utf-8")
+
+    # When the worker switches to single-pass fallback.
+    generate_audio_module._invalidate_word_timing_sidecar(str(audio_path))
+
+    # Then stale timings cannot be paired with replacement audio.
+    assert not sidecar.exists()
 
 
 def test_generate_audio_success(monkeypatch: pytest.MonkeyPatch) -> None:
