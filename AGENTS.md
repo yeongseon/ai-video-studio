@@ -131,9 +131,12 @@ version check, keep the render test, and re-run the full CI. Do not skip the tes
   re-run the checks relevant to changes made since the last green verification.
 - Configure `ci-required` as the single required status check. It fails unless the
   impact classifier succeeds and every selected gate succeeds; a selected skipped
-  job is a failure. On `main`, every gate is selected.
+  job is a failure. Pull-request gate selections must be explicit `true` or `false`;
+  malformed or missing classifier outputs fail closed. On `main`, every gate is selected.
 - Documentation-only changes use content and consistency checks (diff hygiene, links,
-  referenced paths and commands), rather than unrelated Python/FFmpeg/Docker gates.
+  referenced paths and commands) in the dedicated `docs` gate, rather than unrelated
+  Python/FFmpeg/Docker gates. Non-canonical paths, symlinks, and executable-mode changes
+  cannot use the documentation-only classification.
 - Full end-to-end, container and recovery checks run on `main`; run the same
   complete workflow on the exact release SHA before deployment. Never deploy
   based solely on a fast PR gate.
