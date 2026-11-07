@@ -7,6 +7,7 @@ from threading import Event
 
 import asyncpg
 import pytest
+from creator_service import postgres_visual_asset_storage
 from creator_service.artifact_deletion_retry import retry_failed_deletions
 from creator_service.object_storage import LocalStorageBackend
 from creator_service.postgres_visual_asset_storage import PostgresVisualAssetStorage
@@ -50,6 +51,16 @@ async def _seed_intent(database: DeletionDatabase, local_path: Path) -> None:
         str(local_path),
         _KEY,
     )
+
+
+def _bind_storage_pool(
+    database: DeletionDatabase,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def get_pool() -> asyncpg.Pool:
+        return database.pool
+
+    monkeypatch.setattr(postgres_visual_asset_storage, "get_pool", get_pool)
 
 
 async def _asset_row(database: DeletionDatabase) -> dict[str, object]:
@@ -103,6 +114,7 @@ async def _wait_for_query_pid(database: DeletionDatabase, query_fragment: str) -
 @pytest.mark.asyncio
 async def test_retry_first_rejects_acceptance_without_committing_dangling_scene(
     deletion_database: DeletionDatabase,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     # Given retry owns the aged intent and is blocked inside provider deletion.
@@ -112,6 +124,7 @@ async def test_retry_first_rejects_acceptance_without_committing_dangling_scene(
     local_path.write_bytes(b"race-local")
     await _seed_intent(deletion_database, local_path)
     asset_row = await _asset_row(deletion_database)
+    _bind_storage_pool(deletion_database, monkeypatch)
     retry_pid = 0
 
     @contextlib.asynccontextmanager
@@ -159,6 +172,7 @@ async def test_retry_first_rejects_acceptance_without_committing_dangling_scene(
 @pytest.mark.asyncio
 async def test_acceptance_first_keeps_bytes_and_retry_cannot_claim_intent(
     deletion_database: DeletionDatabase,
+    monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
     # Given acceptance starts while scene insertion is blocked after intent ownership.
@@ -168,6 +182,7 @@ async def test_acceptance_first_keeps_bytes_and_retry_cannot_claim_intent(
     local_path.write_bytes(b"race-local")
     await _seed_intent(deletion_database, local_path)
     asset_row = await _asset_row(deletion_database)
+    _bind_storage_pool(deletion_database, monkeypatch)
     blocker = await asyncpg.connect(
         deletion_database.url,
         server_settings={"search_path": deletion_database.schema},
