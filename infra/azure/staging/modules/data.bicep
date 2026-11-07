@@ -14,14 +14,9 @@ param artifactRetentionDays int
 param logAnalyticsWorkspaceId string
 param apiPrincipalId string
 param workerPrincipalId string
-param beatPrincipalId string
-param studioPrincipalId string
-param migrationPrincipalId string
 param tags object
 
-var secretsUserRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '4633458b-17de-408a-b874-0445c86b69e6')
 var blobContributorRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'ba92f5b4-2d11-453d-a403-e96b0029c9fe')
-var secretReaderPrincipals = [studioPrincipalId, apiPrincipalId, workerPrincipalId, beatPrincipalId, migrationPrincipalId]
 var blobPrincipals = [apiPrincipalId, workerPrincipalId]
 
 resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
@@ -43,12 +38,6 @@ resource vault 'Microsoft.KeyVault/vaults@2023-07-01' = {
     networkAcls: { bypass: 'None', defaultAction: 'Deny' }
   }
 }
-
-resource secretReaderAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for principalId in secretReaderPrincipals: {
-  name: guid(vault.id, principalId, secretsUserRoleId)
-  scope: vault
-  properties: { principalId: principalId, principalType: 'ServicePrincipal', roleDefinitionId: secretsUserRoleId }
-}]
 
 resource storage 'Microsoft.Storage/storageAccounts@2023-05-01' = {
   name: '${namePrefix}stgartifacts'
@@ -141,12 +130,17 @@ resource redis 'Microsoft.Cache/redis@2024-11-01' = {
   name: '${namePrefix}-stg-redis'
   location: location
   tags: tags
-  sku: { name: 'Premium', family: 'P', capacity: redisCapacity }
   properties: {
+    sku: { name: 'Premium', family: 'P', capacity: redisCapacity }
     enableNonSslPort: false
     minimumTlsVersion: '1.2'
     publicNetworkAccess: 'Disabled'
-    redisConfiguration: { 'maxmemory-policy': 'volatile-lru', 'rdb-backup-enabled': 'false' }
+    disableAccessKeyAuthentication: true
+    redisConfiguration: {
+      'aad-enabled': 'true'
+      'maxmemory-policy': 'volatile-lru'
+      'rdb-backup-enabled': 'false'
+    }
   }
 }
 

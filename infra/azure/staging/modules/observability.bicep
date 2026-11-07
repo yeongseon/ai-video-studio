@@ -38,16 +38,25 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
   tags: tags
   properties: {
     appLogsConfiguration: {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: workspace.properties.customerId
-        sharedKey: workspace.listKeys().primarySharedKey
-      }
+      destination: 'azure-monitor'
     }
     vnetConfiguration: {
       infrastructureSubnetId: infrastructureSubnetId
       internal: true
     }
+  }
+}
+
+resource environmentDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'send-to-log-analytics'
+  scope: environment
+  properties: {
+    workspaceId: workspace.id
+    logs: [
+      { category: 'ContainerAppConsoleLogs', enabled: true }
+      { category: 'ContainerAppSystemLogs', enabled: true }
+    ]
+    metrics: [{ category: 'AllMetrics', enabled: true }]
   }
 }
 

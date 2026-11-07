@@ -57,6 +57,7 @@ module identityRegistry 'modules/identity-registry.bicep' = {
   params: {
     location: location
     namePrefix: namePrefix
+    logAnalyticsWorkspaceId: observability.outputs.logAnalyticsWorkspaceId
     tags: tags
   }
 }
@@ -80,9 +81,6 @@ module data 'modules/data.bicep' = {
     logAnalyticsWorkspaceId: observability.outputs.logAnalyticsWorkspaceId
     apiPrincipalId: identityRegistry.outputs.apiPrincipalId
     workerPrincipalId: identityRegistry.outputs.workerPrincipalId
-    beatPrincipalId: identityRegistry.outputs.beatPrincipalId
-    studioPrincipalId: identityRegistry.outputs.studioPrincipalId
-    migrationPrincipalId: identityRegistry.outputs.migrationPrincipalId
     tags: tags
   }
 }

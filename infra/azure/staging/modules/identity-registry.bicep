@@ -1,10 +1,11 @@
 param location string
 param namePrefix string
+param logAnalyticsWorkspaceId string
 param tags object
 
 var identityNames = ['studio', 'api', 'worker', 'beat', 'migration', 'publisher']
 var repositoryReaderRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', 'b93aa761-3e63-49ed-ac28-beffa264f7ac')
-var repositoryWriterRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a1e307c-b015-4ebd-883e-5b7698d2c559')
+var repositoryWriterRoleId = subscriptionResourceId('Microsoft.Authorization/roleDefinitions', '2a1e307c-b015-4ebd-883e-5b7698a07328')
 var identityRepositories = ['studio-web', 'api', 'worker', 'worker', 'api']
 
 resource identities 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = [for identityName in identityNames: {
@@ -42,7 +43,7 @@ resource pullAssignments 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
     principalType: 'ServicePrincipal'
     roleDefinitionId: repositoryReaderRoleId
     conditionVersion: '2.0'
-    condition: '@Resource[Microsoft.ContainerRegistry/registries/repositories:name] StringEquals \'${repositoryName}\''
+    condition: '((!(ActionMatches{\'Microsoft.ContainerRegistry/registries/repositories/content/read\'}) AND !(ActionMatches{\'Microsoft.ContainerRegistry/registries/repositories/metadata/read\'})) OR @Request[Microsoft.ContainerRegistry/registries/repositories:name] StringEqualsIgnoreCase \'${repositoryName}\')'
   }
 }]
 
@@ -54,7 +55,20 @@ resource publisherAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01
     principalType: 'ServicePrincipal'
     roleDefinitionId: repositoryWriterRoleId
     conditionVersion: '2.0'
-    condition: '(@Resource[Microsoft.ContainerRegistry/registries/repositories:name] StringEquals \'api\') OR (@Resource[Microsoft.ContainerRegistry/registries/repositories:name] StringEquals \'worker\') OR (@Resource[Microsoft.ContainerRegistry/registries/repositories:name] StringEquals \'studio-web\')'
+    condition: '((!(ActionMatches{\'Microsoft.ContainerRegistry/registries/repositories/content/read\'}) AND !(ActionMatches{\'Microsoft.ContainerRegistry/registries/repositories/metadata/read\'})) OR (@Request[Microsoft.ContainerRegistry/registries/repositories:name] StringEqualsIgnoreCase \'api\' OR @Request[Microsoft.ContainerRegistry/registries/repositories:name] StringEqualsIgnoreCase \'worker\' OR @Request[Microsoft.ContainerRegistry/registries/repositories:name] StringEqualsIgnoreCase \'studio-web\'))'
+  }
+}
+
+resource registryDiagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
+  name: 'send-to-log-analytics'
+  scope: registry
+  properties: {
+    workspaceId: logAnalyticsWorkspaceId
+    logs: [
+      { category: 'ContainerRegistryLoginEvents', enabled: true }
+      { category: 'ContainerRegistryRepositoryEvents', enabled: true }
+    ]
+    metrics: [{ category: 'AllMetrics', enabled: true }]
   }
 }
 
