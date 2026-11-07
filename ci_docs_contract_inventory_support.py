@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Final
 
 DOC_TOKEN: Final = re.compile(r"\.md\b|docs/|[\"']docs[\"']|docs\\|README")
+REVIEW_DIGEST_ENTRY: Final = re.compile(r'^\s*"[^"]+": "[0-9a-f]{64}",?$')
 EXCLUDED_SUFFIX_REASONS: Final = {
     ".md": "documentation is the input being protected, not an executable consumer",
     ".svg": "declarative vector artwork cannot execute repository documentation reads",
@@ -28,6 +29,7 @@ EXCLUDED_FILENAMES: Final = {
     "uv.lock": "generated dependency lock data is not executable",
 }
 SHELL_OPERATORS: Final = frozenset({"&&", ";", "||", "|", "&"})
+SUPPORTED_PYTEST_OPTIONS: Final = frozenset({"-q"})
 
 
 def is_scanned_code_path(path: str, text: str) -> bool:
@@ -45,12 +47,27 @@ def potential_docs_consumers(files: Iterable[tuple[str, str]]) -> set[str]:
     }
 
 
+def docs_reference_matches(files: Iterable[tuple[str, str]]) -> dict[str, tuple[str, ...]]:
+    matches: dict[str, tuple[str, ...]] = {}
+    for path, text in files:
+        matched_lines = tuple(
+            line.strip()
+            for line in text.splitlines()
+            if DOC_TOKEN.search(line) and REVIEW_DIGEST_ENTRY.fullmatch(line) is None
+        )
+        if matched_lines:
+            matches[path] = matched_lines
+    return matches
+
+
 def directly_covered_paths(command: str, candidates: set[str]) -> set[str]:
-    normalized = command.replace("\\\n", " ").replace("\n", " ; ")
+    normalized = command.replace("\\\n", " ").replace("\n", " ")
     lexer = shlex.shlex(normalized, posix=True, punctuation_chars=";&|")
     lexer.whitespace_split = True
     lexer.commenters = "#"
     tokens = tuple(lexer)
+    if any(token in SHELL_OPERATORS for token in tokens):
+        return set()
     segments: list[tuple[str, ...]] = []
     start = 0
     for index, token in enumerate(tokens):
@@ -71,6 +88,11 @@ def directly_covered_paths(command: str, candidates: set[str]) -> set[str]:
             ("python3", "-m", "pytest"),
         }:
             pytest_arguments = segment[3:]
+        if any(
+            argument.startswith("-") and argument not in SUPPORTED_PYTEST_OPTIONS
+            for argument in pytest_arguments
+        ):
+            continue
         covered.update(
             path
             for path in candidates
