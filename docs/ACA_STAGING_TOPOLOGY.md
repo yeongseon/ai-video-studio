@@ -1,7 +1,9 @@
 # Secure Azure Container Apps staging contract
 
-**Status:** design contract only; not deployed or runtime-validated  
-**Scope:** Azure Container Apps (ACA) staging for issue #924  
+**Status:** design contract only; not deployed or runtime-validated
+
+**Scope:** Azure Container Apps (ACA) staging for issue #924
+
 **Last reviewed against repository:** 2026-11-08
 
 > This document does not authorize resource creation, image publication,
