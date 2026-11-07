@@ -212,18 +212,9 @@ class ArtifactDownloadService:
     async def retry_failed_deletions(self, max_retries: int = 5) -> int:
         """Reattempt deletion for artifacts that previously failed.
 
-        Uses a 3-phase design to avoid holding database locks during
-        network (S3/Azure/local) storage deletes:
-
-        1. **Claim** (short transaction): SELECT ... FOR UPDATE SKIP LOCKED
-           collects up to 500 candidate rows and immediately commits.
-           The lock prevents concurrent callers from claiming the same
-           rows during the SELECT, but is released before any network I/O.
-        2. **Delete** (no transaction): call ``backend.delete(key)`` for
-           each claimed row outside any database transaction.
-        3. **Commit** (short transaction): DELETE successful rows from
-           the DB, UPDATE failures with error metadata, and mark rows
-           that have exhausted all retries as abandoned.
+        Each candidate is selected and processed in its own transaction so
+        its ``FOR UPDATE SKIP LOCKED`` lock remains held through storage I/O.
+        The 500-row pass limit bounds both work and lock duration to one row.
 
         Also picks up *stranded* rows — those with ``delete_requested_at``
         set but no ``delete_failed_at`` (e.g. process crashed after storage
@@ -234,80 +225,71 @@ class ArtifactDownloadService:
         if max_retries < 1:
             raise ValueError("max_retries must be >= 1")
 
-        # Phase 1: Claim rows in a short transaction.
-        async with transaction() as conn:
-            rows = await conn.fetch(
-                "SELECT id, storage_key, file_path, metadata_json, delete_retry_count "
-                "FROM creator_artifacts "
-                "WHERE ("
-                "  delete_failed_at IS NOT NULL"
-                "  OR (delete_requested_at IS NOT NULL AND delete_failed_at IS NULL)"
-                ") "
-                "AND COALESCE(delete_retry_count, 0) < $1 "
-                "AND storage_key IS NOT NULL AND storage_key != '' "
-                "LIMIT 500 "
-                "FOR UPDATE SKIP LOCKED",
-                max_retries,
-            )
-            artifacts = [dict(r) for r in rows]
-        # Locks released here — transaction committed.
-
-        if not artifacts:
-            return 0
-
-        # Phase 2: Delete storage objects (NO transaction — no locks held).
         backend = get_storage_backend()
-        deleted_ids: list[int] = []
-        failed_updates: list[tuple[int, str]] = []
+        attempted_ids: list[int] = []
+        deleted_count = 0
+        failed_count = 0
 
-        for artifact in artifacts:
-            key = artifact.get("storage_key")
-            artifact_id = artifact.get("id")
-            if not isinstance(key, str) or not key or not isinstance(artifact_id, int):
-                continue
-            try:
-                backend.delete(key)
-                if artifact.get("metadata_json") == REJECTED_SCENE_UPLOAD_CLEANUP_MARKER:
-                    local_path = artifact.get("file_path")
-                    if not isinstance(local_path, str):
-                        raise OSError("rejected upload cleanup path missing")
-                    Path(local_path).unlink(missing_ok=True)
-                deleted_ids.append(artifact_id)
-            except SoftTimeLimitExceeded:
-                raise
-            except Exception as exc:
-                provider = "configured"
-                fingerprint = _key_fingerprint(key)
-                logger.error(
-                    "Artifact deletion retry failed",
-                    extra={
-                        "artifact_id": artifact_id,
-                        "storage_provider": provider,
-                        "key_fingerprint": fingerprint,
-                        "error_type": type(exc).__name__,
-                    },
+        for _ in range(500):
+            async with transaction() as conn:
+                row = await conn.fetchrow(
+                    "SELECT id, storage_key, file_path, metadata_json, delete_retry_count "
+                    "FROM creator_artifacts "
+                    "WHERE ("
+                    "  delete_failed_at IS NOT NULL"
+                    "  OR (delete_requested_at IS NOT NULL AND delete_failed_at IS NULL)"
+                    ") "
+                    "AND COALESCE(delete_retry_count, 0) < $1 "
+                    "AND storage_key IS NOT NULL AND storage_key != '' "
+                    "AND NOT (id = ANY($2::int[])) "
+                    "ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED",
+                    max_retries,
+                    attempted_ids,
                 )
-                failed_updates.append(
-                    (artifact_id, f"provider={provider}; fingerprint={fingerprint}")
-                )
+                if row is None:
+                    break
+                artifact = dict(row)
+                key = artifact["storage_key"]
+                artifact_id = artifact["id"]
+                attempted_ids.append(artifact_id)
+                try:
+                    backend.delete(key)
+                    if artifact.get("metadata_json") == REJECTED_SCENE_UPLOAD_CLEANUP_MARKER:
+                        local_path = artifact.get("file_path")
+                        if not isinstance(local_path, str):
+                            raise OSError("rejected upload cleanup path missing")
+                        Path(local_path).unlink(missing_ok=True)
+                    await conn.execute(
+                        "DELETE FROM creator_artifacts WHERE id = $1",
+                        artifact_id,
+                    )
+                    deleted_count += 1
+                except SoftTimeLimitExceeded:
+                    raise
+                except Exception as exc:
+                    provider = "configured"
+                    fingerprint = _key_fingerprint(key)
+                    logger.error(
+                        "Artifact deletion retry failed",
+                        extra={
+                            "artifact_id": artifact_id,
+                            "storage_provider": provider,
+                            "key_fingerprint": fingerprint,
+                            "error_type": type(exc).__name__,
+                        },
+                    )
+                    await conn.execute(
+                        "UPDATE creator_artifacts "
+                        "SET delete_failed_at = NOW(), "
+                        "    delete_error = $2, "
+                        "    delete_retry_count = COALESCE(delete_retry_count, 0) + 1 "
+                        "WHERE id = $1",
+                        artifact_id,
+                        f"provider={provider}; fingerprint={fingerprint}",
+                    )
+                    failed_count += 1
 
-        # Phase 3: Update DB in a short transaction.
         async with transaction() as conn:
-            if deleted_ids:
-                await conn.execute(
-                    "DELETE FROM creator_artifacts WHERE id = ANY($1::int[])",
-                    deleted_ids,
-                )
-            for artifact_id, error_msg in failed_updates:
-                await conn.execute(
-                    "UPDATE creator_artifacts "
-                    "SET delete_failed_at = NOW(), "
-                    "    delete_error = $2, "
-                    "    delete_retry_count = COALESCE(delete_retry_count, 0) + 1 "
-                    "WHERE id = $1",
-                    artifact_id,
-                    error_msg,
-                )
             # Log rows that have exhausted all retries (#610).
             # These rows remain in the DB with delete_retry_count >= max_retries
             # and will not be picked up by future retry passes (the WHERE clause
@@ -326,14 +308,14 @@ class ArtifactDownloadService:
                     max_retries,
                 )
 
-        if failed_updates:
+        if failed_count:
             logger.warning(
                 "retry_failed_deletions: %d succeeded, %d failed",
-                len(deleted_ids),
-                len(failed_updates),
+                deleted_count,
+                failed_count,
             )
 
-        return len(deleted_ids)
+        return deleted_count
 
 
 def _create_storage() -> ArtifactDownloadStorageBackend:

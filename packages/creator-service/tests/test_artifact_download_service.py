@@ -332,8 +332,15 @@ class _FakeConnection:
         self.queries.append((query, *args))
         return 0  # no abandoned rows in tests
 
-    async def fetchrow(self, query: str, *args: object) -> dict[str, object]:
+    async def fetchrow(self, query: str, *args: object) -> dict[str, object] | None:
         self.queries.append((query, *args))
+        if "FOR UPDATE SKIP LOCKED" in query:
+            attempted_ids = args[1]
+            assert isinstance(attempted_ids, list)
+            return next(
+                (row for row in self._fetch_rows if row.get("id") not in attempted_ids),
+                None,
+            )
         return {"id": 501}
 
 @contextlib.asynccontextmanager
@@ -494,6 +501,39 @@ async def test_rejected_scene_soft_timeout_leaves_pending_record(
 
 
 @pytest.mark.asyncio
+async def test_retry_soft_timeout_rolls_back_locked_row(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    conn = _FakeConnection(fetch_rows=[{
+        "id": 506,
+        "storage_key": "17/scenes/fresh.png",
+        "file_path": "/tmp/fresh.png",
+        "metadata_json": REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+        "delete_retry_count": 0,
+    }])
+
+    class _Backend:
+        def delete(self, key: str) -> bool:
+            assert key == "17/scenes/fresh.png"
+            raise SoftTimeLimitExceeded
+
+    monkeypatch.setattr(
+        "creator_service.artifact_download_service.transaction",
+        lambda: _fake_transaction(conn),
+    )
+    monkeypatch.setattr(
+        "creator_service.artifact_download_service.get_storage_backend",
+        lambda: _Backend(),
+    )
+
+    with pytest.raises(SoftTimeLimitExceeded):
+        await ArtifactDownloadService(InMemoryArtifactDownloadStorage()).retry_failed_deletions()
+
+    assert not [query for query in conn.queries if "DELETE FROM creator_artifacts" in query[0]]
+    assert not [query for query in conn.queries if "SET delete_failed_at" in query[0]]
+
+
+@pytest.mark.asyncio
 async def test_project_run_deletion_includes_pending_rejected_upload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
@@ -565,8 +605,7 @@ async def test_retry_failed_deletions_claims_and_deletes(
     assert retried == 2
     assert deleted_keys == ["101/a.mp3", "101/b.mp4"]
     delete_calls = [q for q in conn.queries if "DELETE" in q[0]]
-    assert len(delete_calls) == 1
-    assert delete_calls[0][1] == [71, 72]
+    assert [call[1] for call in delete_calls] == [71, 72]
 
 
 @pytest.mark.asyncio
@@ -644,7 +683,6 @@ async def test_retry_uses_for_update_skip_locked_in_transaction(
     service = ArtifactDownloadService(InMemoryArtifactDownloadStorage())
     await service.retry_failed_deletions()
 
-    assert len(conn.queries) == 1
     assert "FOR UPDATE SKIP LOCKED" in conn.queries[0][0]
 
 
@@ -663,7 +701,6 @@ async def test_retry_picks_up_stranded_rows(
     service = ArtifactDownloadService(InMemoryArtifactDownloadStorage())
     await service.retry_failed_deletions()
 
-    assert len(conn.queries) == 1
     assert "delete_requested_at IS NOT NULL" in conn.queries[0][0]
 
 
@@ -704,8 +741,7 @@ async def test_retry_all_operations_use_same_connection(
     retried = await service.retry_failed_deletions(max_retries=5)
 
     assert retried == 1
-    # Phase 1 (SELECT) + Phase 3 (DELETE success + UPDATE failure + COUNT abandoned) = 4 queries
-    assert len(conn.queries) == 4
+    assert len(conn.queries) == 6
 
 
 @pytest.mark.asyncio
