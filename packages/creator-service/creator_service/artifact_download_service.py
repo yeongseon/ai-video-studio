@@ -7,10 +7,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Protocol
 
-from billiard.exceptions import SoftTimeLimitExceeded
-
+from creator_service.artifact_deletion_retry import retry_failed_deletions
 from creator_service.artifact_storage_integration import get_artifact_download_path
-from creator_service.confined_directory_deletion import delete_direct_child_tree
+from creator_service.confined_directory_deletion import (
+    delete_confined_file,
+    delete_direct_child_tree,
+)
 from creator_service.object_storage import get_storage_backend
 from creator_service.run_object_deletion import delete_run_object
 from creator_service.rejected_scene_cleanup import (
@@ -101,12 +103,19 @@ class ArtifactDownloadService:
                 continue
             try:
                 provider = artifact.get("object_storage_provider")
-                if artifact.get("metadata_json") == REJECTED_SCENE_UPLOAD_CLEANUP_MARKER:
+                if artifact.get("metadata_json") in {
+                    REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+                    SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
+                }:
                     local_path = artifact.get("file_path")
                     if not isinstance(local_path, str):
                         raise OSError("rejected upload cleanup path missing")
-                    backend.delete(key)
-                    Path(local_path).unlink(missing_ok=True)
+                    delete_run_object(
+                        key,
+                        provider if isinstance(provider, str) else None,
+                        backend,
+                    )
+                    delete_confined_file(Path(local_path))
                 else:
                     delete_run_object(key, provider if isinstance(provider, str) else None, backend)
                 if isinstance(artifact_id, int):
@@ -227,102 +236,7 @@ class ArtifactDownloadService:
         """
         if max_retries < 1:
             raise ValueError("max_retries must be >= 1")
-
-        attempted_ids: list[int] = []
-        deleted_count = 0
-        failed_count = 0
-
-        for _ in range(500):
-            async with transaction() as conn:
-                row = await conn.fetchrow(
-                    "SELECT id, storage_key, file_path, metadata_json, delete_retry_count "
-                    "FROM creator_artifacts "
-                    "WHERE ("
-                    "  delete_failed_at IS NOT NULL"
-                    "  OR (delete_requested_at IS NOT NULL AND delete_failed_at IS NULL)"
-                    ") "
-                    "AND COALESCE(delete_retry_count, 0) < $1 "
-                    "AND storage_key IS NOT NULL AND storage_key != '' "
-                    "AND (metadata_json != $3 OR created_at < NOW() - INTERVAL '5 minutes') "
-                    "AND NOT (id = ANY($2::int[])) "
-                    "ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED",
-                    max_retries,
-                    attempted_ids,
-                    SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
-                )
-                if row is None:
-                    break
-                artifact = dict(row)
-                key = artifact["storage_key"]
-                artifact_id = artifact["id"]
-                attempted_ids.append(artifact_id)
-                try:
-                    get_storage_backend().delete(key)
-                    if artifact.get("metadata_json") in {
-                        REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
-                        SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
-                    }:
-                        local_path = artifact.get("file_path")
-                        if not isinstance(local_path, str):
-                            raise OSError("rejected upload cleanup path missing")
-                        Path(local_path).unlink(missing_ok=True)
-                    await conn.execute(
-                        "DELETE FROM creator_artifacts WHERE id = $1",
-                        artifact_id,
-                    )
-                    deleted_count += 1
-                except SoftTimeLimitExceeded:
-                    raise
-                except Exception as exc:
-                    provider = "configured"
-                    fingerprint = _key_fingerprint(key)
-                    logger.error(
-                        "Artifact deletion retry failed",
-                        extra={
-                            "artifact_id": artifact_id,
-                            "storage_provider": provider,
-                            "key_fingerprint": fingerprint,
-                            "error_type": type(exc).__name__,
-                        },
-                    )
-                    await conn.execute(
-                        "UPDATE creator_artifacts "
-                        "SET delete_failed_at = NOW(), "
-                        "    delete_error = $2, "
-                        "    delete_retry_count = COALESCE(delete_retry_count, 0) + 1 "
-                        "WHERE id = $1",
-                        artifact_id,
-                        f"provider={provider}; fingerprint={fingerprint}",
-                    )
-                    failed_count += 1
-
-        async with transaction() as conn:
-            # Log rows that have exhausted all retries (#610).
-            # These rows remain in the DB with delete_retry_count >= max_retries
-            # and will not be picked up by future retry passes (the WHERE clause
-            # filters them out). Storage objects become orphaned — manual cleanup
-            # may be needed.
-            abandoned_count = await conn.fetchval(
-                "SELECT COUNT(*) FROM creator_artifacts "
-                "WHERE COALESCE(delete_retry_count, 0) >= $1",
-                max_retries,
-            )
-            if abandoned_count and abandoned_count > 0:
-                logger.warning(
-                    "retry_failed_deletions: %d artifacts have exhausted max_retries=%d "
-                    "and will not be retried — storage orphans may need manual cleanup",
-                    abandoned_count,
-                    max_retries,
-                )
-
-        if failed_count:
-            logger.warning(
-                "retry_failed_deletions: %d succeeded, %d failed",
-                deleted_count,
-                failed_count,
-            )
-
-        return deleted_count
+        return await retry_failed_deletions(max_retries, transaction, get_storage_backend)
 
 
 def _create_storage() -> ArtifactDownloadStorageBackend:

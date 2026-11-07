@@ -57,3 +57,22 @@ def delete_direct_child_tree(parent: Path, child_name: str) -> None:
         os.rmdir(child_name, dir_fd=parent_fd)
     finally:
         os.close(parent_fd)
+
+
+def delete_confined_file(path: Path) -> None:
+    """Unlink one recorded file without following its final path component."""
+    try:
+        resolved_parent = path.parent.resolve(strict=True)
+    except FileNotFoundError:
+        return
+    parent_fd = os.open(resolved_parent, _DIRECTORY_OPEN_FLAGS)
+    try:
+        try:
+            file_stat = os.stat(path.name, dir_fd=parent_fd, follow_symlinks=False)
+        except FileNotFoundError:
+            return
+        if stat.S_ISDIR(file_stat.st_mode):
+            raise IsADirectoryError
+        os.unlink(path.name, dir_fd=parent_fd)
+    finally:
+        os.close(parent_fd)
