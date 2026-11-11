@@ -1,13 +1,13 @@
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from threading import Event
 
 import asyncpg
 import pytest
-from creator_service import postgres_visual_asset_storage
+from creator_service import db, postgres_visual_asset_storage
 from creator_service.artifact_deletion_retry import retry_failed_deletions
 from creator_service.object_storage import LocalStorageBackend
 from creator_service.postgres_visual_asset_storage import PostgresVisualAssetStorage
@@ -28,9 +28,17 @@ class BlockingLocalStorageBackend(LocalStorageBackend):
 
     def delete(self, key: str) -> bool:
         self.delete_entered.set()
-        if not self.allow_delete.wait(timeout=10):
+        if not self.allow_delete.wait(timeout=60):
             raise TimeoutError("provider deletion was not released")
         return super().delete(key)
+
+
+@pytest.fixture(autouse=True)
+def acceptance_pool(deletion_database: DeletionDatabase, monkeypatch: pytest.MonkeyPatch) -> None:
+    # asyncpg pools are bound to the loop that created them. save_asset reaches the database
+    # through its own get_pool and through db.fetch_one (db.get_pool), so bind both to the
+    # fixture pool and run acceptance on this test's loop instead of a foreign thread's loop.
+    monkeypatch.setattr(postgres_visual_asset_storage, "get_pool", db.get_pool)
 
 
 async def _seed_intent(database: DeletionDatabase, local_path: Path) -> None:
@@ -70,56 +78,33 @@ async def _asset_row(database: DeletionDatabase) -> dict[str, object]:
     }
 
 
-def _run_acceptance(
-    row: dict[str, object],
-    database_url: str,
-    schema: str,
-) -> dict[str, object]:
-    async def save() -> dict[str, object]:
-        async with asyncpg.create_pool(
-            database_url,
-            min_size=1,
-            max_size=1,
-            server_settings={"search_path": schema},
-        ) as pool:
-            async def get_pool() -> asyncpg.Pool:
-                return pool
-
-            original_get_pool = postgres_visual_asset_storage.get_pool
-            postgres_visual_asset_storage.get_pool = get_pool
-            try:
-                return await PostgresVisualAssetStorage().save_asset(row)
-            finally:
-                postgres_visual_asset_storage.get_pool = original_get_pool
-
-    return asyncio.run(save())
+async def _accept(row: dict[str, object]) -> dict[str, object]:
+    return await PostgresVisualAssetStorage().save_asset(row)
 
 
-async def _blocking_pids(database: DeletionDatabase, pid: int) -> list[int]:
-    return list(await database.pool.fetchval("SELECT pg_blocking_pids($1)", pid))
+async def _stop(task: "asyncio.Task[dict[str, object]] | None") -> None:
+    if task is None or task.done():
+        return
+    task.cancel()
+    with contextlib.suppress(asyncio.CancelledError):
+        await task
 
 
-async def _wait_until_blocked(database: DeletionDatabase, pid: int) -> None:
-    for _ in range(1_000):
-        if await _blocking_pids(database, pid):
-            return
-        await asyncio.sleep(0.01)
-    pytest.fail(
-        f"backend {pid} did not block; pg_blocking_pids={await _blocking_pids(database, pid)}",
-    )
-
-
-async def _wait_for_query_pid(database: DeletionDatabase, query_fragment: str) -> int:
-    for _ in range(1_000):
+async def _wait_for_blocked_by(
+    database: DeletionDatabase, blocker_pid: int, query_fragment: str,
+) -> int:
+    for _ in range(3_000):
         pid = await database.pool.fetchval(
             "SELECT pid FROM pg_stat_activity WHERE query LIKE $1 "
-            "AND wait_event_type = 'Lock' ORDER BY query_start DESC LIMIT 1",
+            "AND wait_event_type = 'Lock' AND $2 = ANY(pg_blocking_pids(pid)) "
+            "ORDER BY query_start DESC LIMIT 1",
             f"%{query_fragment}%",
+            blocker_pid,
         )
         if pid is not None:
             return int(pid)
         await asyncio.sleep(0.01)
-    pytest.fail(f"no blocked backend found for query fragment {query_fragment!r}")
+    pytest.fail(f"no backend blocked by {blocker_pid} on query fragment {query_fragment!r}")
 
 
 @pytest.mark.asyncio
@@ -153,23 +138,25 @@ async def test_retry_first_rejects_acceptance_without_committing_dangling_scene(
     async def retry() -> int:
         return await retry_failed_deletions(5, transaction, lambda: backend)
 
-    with ThreadPoolExecutor(max_workers=2) as executor:
+    acceptance: asyncio.Task[dict[str, object]] | None = None
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        # The blocking provider delete parks its own thread, so retry runs on a private loop
+        # and connection while acceptance runs on this test's loop.
         retry_future = executor.submit(asyncio.run, retry())
-        assert backend.delete_entered.wait(timeout=10)
-        acceptance_future: Future[dict[str, object]] = executor.submit(
-            _run_acceptance,
-            asset_row,
-            deletion_database.url,
-            deletion_database.schema,
-        )
-        acceptance_pid = await _wait_for_query_pid(deletion_database, "creator_artifacts")
-        assert retry_pid in await _blocking_pids(deletion_database, acceptance_pid)
+        try:
+            assert await asyncio.to_thread(backend.delete_entered.wait, 30)
+            blocker_pid = retry_pid
+            acceptance = asyncio.create_task(_accept(asset_row))
+            await _wait_for_blocked_by(deletion_database, blocker_pid, "creator_artifacts")
 
-        # When retry wins ownership and commits deletion.
-        backend.allow_delete.set()
-        assert retry_future.result(timeout=10) == 1
-        with pytest.raises(SceneAssetAcceptanceRejected):
-            acceptance_future.result(timeout=10)
+            # When retry wins ownership and commits deletion.
+            backend.allow_delete.set()
+            assert await asyncio.wait_for(asyncio.wrap_future(retry_future), timeout=30) == 1
+            with pytest.raises(SceneAssetAcceptanceRejected):
+                await asyncio.wait_for(acceptance, timeout=30)
+        finally:
+            backend.allow_delete.set()
+            await _stop(acceptance)
 
     # Then acceptance cannot commit a scene reference to deleted bytes.
     assert not backend.exists(_KEY)
@@ -188,7 +175,10 @@ async def test_acceptance_first_keeps_bytes_and_retry_cannot_claim_intent(
     deletion_database: DeletionDatabase,
     tmp_path: Path,
 ) -> None:
-    # Given acceptance starts while scene insertion is blocked after intent ownership.
+    # Given acceptance owns the intent while it waits on the scene advisory lock, which
+    # save_asset takes after claiming the intent and before touching any scene row.
+    # A table lock would also stall acceptance's earlier idempotency read and retry's
+    # accepted-scene read, so hold only that advisory lock.
     backend = LocalStorageBackend(str(tmp_path / "objects"))
     backend.upload(_KEY, b"race", "image/png")
     local_path = tmp_path / "race.png"
@@ -201,36 +191,36 @@ async def test_acceptance_first_keeps_bytes_and_retry_cannot_claim_intent(
     )
     blocker_transaction = blocker.transaction()
     await blocker_transaction.start()
-    await blocker.execute("LOCK TABLE creator_scene_assets IN ACCESS EXCLUSIVE MODE")
+    await blocker.execute(
+        "SELECT pg_advisory_xact_lock($1::int, hashtext($2))",
+        asset_row["run_id"],
+        asset_row["scene_id"],
+    )
+    acceptance: asyncio.Task[dict[str, object]] | None = None
 
     try:
-        with ThreadPoolExecutor(max_workers=2) as executor:
-            acceptance_future = executor.submit(
-                _run_acceptance,
-                asset_row,
-                deletion_database.url,
-                deletion_database.schema,
-            )
-            acceptance_pid = await _wait_for_query_pid(
-                deletion_database,
-                "INSERT INTO creator_scene_assets",
-            )
-            await _wait_until_blocked(deletion_database, acceptance_pid)
+        acceptance = asyncio.create_task(_accept(asset_row))
+        await _wait_for_blocked_by(
+            deletion_database, blocker.get_server_pid(), "pg_advisory_xact_lock",
+        )
 
-            # When retry runs after acceptance owns the intent.
-            @contextlib.asynccontextmanager
-            async def transaction() -> AsyncIterator[asyncpg.Connection]:
-                async with deletion_database.pool.acquire() as connection:
-                    async with connection.transaction():
-                        yield connection
+        # When retry runs after acceptance owns the intent.
+        @contextlib.asynccontextmanager
+        async def transaction() -> AsyncIterator[asyncpg.Connection]:
+            async with deletion_database.pool.acquire() as connection:
+                async with connection.transaction():
+                    yield connection
 
-            retry_result = await retry_failed_deletions(5, transaction, lambda: backend)
-            await blocker_transaction.rollback()
-            accepted = acceptance_future.result(timeout=10)
+        retry_result = await asyncio.wait_for(
+            retry_failed_deletions(5, transaction, lambda: backend), timeout=30,
+        )
+        await blocker_transaction.rollback()
+        accepted = await asyncio.wait_for(acceptance, timeout=30)
     finally:
         if blocker.is_in_transaction():
             await blocker_transaction.rollback()
         await blocker.close()
+        await _stop(acceptance)
 
     # Then acceptance commits atomically and retry never deletes its bytes.
     assert retry_result == 0
