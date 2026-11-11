@@ -38,12 +38,17 @@ docker-up-all:
 docker-logs:
 	docker compose logs -f
 
-# --- Local Server (LAN-accessible) ---
+# --- Local Server (private by default, LAN opt-in) ---
+# STUDIO_WEB_BIND / STUDIO_WEB_LAN_OK reach the recipes through make's own environment and
+# command-line passing. Do not `export` them here: exporting an unset variable hands the recipe
+# an EMPTY value, which the validator (rightly) rejects, breaking the private default.
 
 docker-local-up:
+	STUDIO_WEB_BIND="$$(python3 scripts/validate_local_bind.py)" && export STUDIO_WEB_BIND && \
 	docker compose -f docker-compose.yml -f docker-compose.local-server.yml up -d postgres redis api worker studio-web
 
 docker-local-build:
+	STUDIO_WEB_BIND="$$(python3 scripts/validate_local_bind.py)" && export STUDIO_WEB_BIND && \
 	docker compose -f docker-compose.yml -f docker-compose.local-server.yml up -d --build postgres redis api worker studio-web
 
 docker-local-migrate:
