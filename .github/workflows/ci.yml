@@ -120,6 +120,19 @@ jobs:
           node-version: "20"
       - name: Install Python dependencies
         run: python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt
+      - name: Install pinned Bicep CLI
+        env:
+          BICEP_VERSION: 0.43.8
+          BICEP_SHA256: a0d6bb75a8313c644ac9a4a71c330a72033b6b9c5359cd29f65e2ff8e30320c7
+        run: |
+          curl --fail --location --silent --show-error \
+            "https://github.com/Azure/bicep/releases/download/v${BICEP_VERSION}/Azure.Bicep.CommandLine.linux-x64.${BICEP_VERSION}.nupkg" \
+            --output /tmp/bicep
+          echo "${BICEP_SHA256}  /tmp/bicep" | sha256sum --check
+          sudo apt-get update && sudo apt-get install --yes unzip
+          mkdir /tmp/bicep-package
+          unzip -q /tmp/bicep -d /tmp/bicep-package
+          sudo install -m 0755 /tmp/bicep-package/tools/bicep /usr/local/bin/bicep
       - name: Install packages in editable mode
         run: |
           pip install -c constraints.txt -e packages/creator-domain
@@ -198,6 +211,11 @@ jobs:
         run: python3 -m pytest tests/test_package_dependency_cli.py tests/test_package_dependency_parser.py tests/test_package_dependency_compliance.py tests/test_architecture_diagrams.py -q
       - name: Test PR impact classifier fail-closed policy
         run: python3 -m pytest tests/test_ci_impact.py tests/test_ci_impact_git.py tests/test_ci_required.py tests/test_ci_required_workflow.py tests/test_ci_docs_contract_inventory.py tests/test_ci_docs_contract_inventory_hardening.py -q
+      - name: Test Azure staging foundation offline
+        env:
+          BICEP_CLI: bicep
+          AZURE_BICEP_DISABLE_UPDATE_CHECK: "true"
+        run: python3 -m pytest tests/test_azure_staging_bicep*.py -q
       - name: Test Packages (with coverage)
         run: |
           git fetch origin main:refs/remotes/origin/main --depth=1

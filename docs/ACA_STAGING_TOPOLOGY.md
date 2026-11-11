@@ -166,7 +166,8 @@ Beat, Studio, and migration Job definitions consume only the approved digests.
 
 ### Observability
 
-Route ACA platform/application logs to Log Analytics. Export application traces
+Route ACA platform/application logs through Azure Monitor diagnostic settings to
+Log Analytics; do not use the retired shared-key Data Collector path. Export application traces
 and metrics through the repository's OpenTelemetry support in
 `packages/creator-service/creator_service/telemetry.py` to an approved
 Application Insights/OTLP endpoint. Give API, Worker, and Beat distinct
