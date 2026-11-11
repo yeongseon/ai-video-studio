@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from .confined_directory_deletion import delete_artifact_file
 from .db import execute, transaction
 from .object_storage import get_storage_backend
 
@@ -121,7 +122,7 @@ class RejectedSceneCleanupService:
 
     async def cleanup(self, record_id: int, storage_key: str, local_path: str) -> None:
         get_storage_backend().delete(storage_key)
-        Path(local_path).unlink(missing_ok=True)
+        delete_artifact_file(Path(local_path))
         await execute("DELETE FROM creator_artifacts WHERE id = $1", record_id)
 
 

@@ -18,6 +18,36 @@ class SymlinkedDeletionRootError(OSError):
     """Raised when a requested deletion root is itself a symlink."""
 
 
+class ArtifactPathOutsideRootError(OSError):
+    """Raised when a recorded file is not strictly inside the artifact root."""
+
+
+def delete_artifact_file(path: Path, artifact_root: Path | None = None) -> None:
+    """Unlink a root-anchored file without following intermediate symlinks."""
+    root = Path(os.path.abspath(
+        artifact_root if artifact_root is not None else os.getenv("ARTIFACT_ROOT", "data/artifacts"),
+    ))
+    absolute_path = Path(os.path.abspath(path))
+    if absolute_path == root or not absolute_path.is_relative_to(root):
+        raise ArtifactPathOutsideRootError
+    components = absolute_path.relative_to(root).parts
+    descriptors: list[int] = []
+    try:
+        descriptors.append(os.open(root, os.O_RDONLY | os.O_DIRECTORY))
+        for component in components[:-1]:
+            descriptors.append(os.open(component, _DIRECTORY_OPEN_FLAGS, dir_fd=descriptors[-1]))
+        parent_fd = descriptors[-1]
+        file_stat = os.stat(components[-1], dir_fd=parent_fd, follow_symlinks=False)
+        if stat.S_ISDIR(file_stat.st_mode):
+            raise IsADirectoryError
+        os.unlink(components[-1], dir_fd=parent_fd)
+    except FileNotFoundError:
+        return
+    finally:
+        for descriptor in reversed(descriptors):
+            os.close(descriptor)
+
+
 def _delete_children(directory_fd: int) -> None:
     with os.scandir(directory_fd) as entries:
         for entry in entries:
