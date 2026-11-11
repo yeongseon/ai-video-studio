@@ -232,14 +232,28 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: "20"
-      - name: Install runtime and test dependencies
+      - name: Install host packages (ffmpeg, nginx)
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg nginx
-          python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt
-          python3 -m pip install -c constraints.txt -e packages/creator-domain -e packages/creator-provider -e packages/creator-service
+          ffmpeg -version
+          ffprobe -version
+          nginx -v
+      - name: Install constrained Python requirements
+        run: python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt
+      - name: Install packages in editable mode
+        run: python3 -m pip install -c constraints.txt -e packages/creator-domain -e packages/creator-provider -e packages/creator-service
+      - name: Install Playwright and Chromium
+        run: |
           python3 -m pip install -c constraints.txt playwright
           python3 -m playwright install chromium
-          npm --prefix apps/studio-web ci
+      - name: Install frontend dependencies
+        run: npm --prefix apps/studio-web ci
+      - name: Record resolved tool versions
+        run: |
+          python3 --version
+          node --version
+          npm --version
+          python3 -m pip show playwright
       - name: Start disposable loopback databases
         run: |
           docker run -d --name first-short-postgres -e POSTGRES_USER=review -e POSTGRES_PASSWORD=review-local-only -e POSTGRES_DB=first_short -p 127.0.0.1:55439:5432 postgres:16-alpine
