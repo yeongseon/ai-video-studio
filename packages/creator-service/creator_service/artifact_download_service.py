@@ -16,6 +16,7 @@ from creator_service.confined_directory_deletion import (
 from creator_service.object_storage import get_storage_backend
 from creator_service.run_object_deletion import delete_run_object
 from creator_service.rejected_scene_cleanup import (
+    INTERNAL_CLEANUP_MARKERS,
     REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
     SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
 )
@@ -69,7 +70,10 @@ class ArtifactDownloadService:
         self.storage = storage if storage is not None else InMemoryArtifactDownloadStorage()
 
     async def get_artifact_by_id(self, artifact_id: int) -> dict[str, Any] | None:
-        return await self.storage.get_artifact_by_id(artifact_id)
+        artifact = await self.storage.get_artifact_by_id(artifact_id)
+        if artifact is not None and artifact.get("metadata_json") in INTERNAL_CLEANUP_MARKERS:
+            return None
+        return artifact
 
     async def delete_artifacts_for_run(self, run_id: int) -> int:
         artifacts = await fetch_all(

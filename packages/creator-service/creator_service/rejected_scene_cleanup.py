@@ -7,6 +7,10 @@ from .object_storage import get_storage_backend
 
 REJECTED_SCENE_UPLOAD_CLEANUP_MARKER = "rejected_scene_upload_cleanup"
 SCENE_UPLOAD_CLEANUP_INTENT_MARKER = "scene_upload_cleanup_intent"
+INTERNAL_CLEANUP_MARKERS = (
+    REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+    SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
+)
 
 
 class RejectedSceneCleanupService:

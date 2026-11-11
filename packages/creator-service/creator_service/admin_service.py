@@ -15,6 +15,10 @@ from celery import current_app as celery_app  # noqa: F401
 from creator_service.admin_task_broker import CeleryTaskBroker as CeleryTaskBroker, TaskBroker as TaskBroker
 
 from creator_service.db import get_pool
+from creator_service.rejected_scene_cleanup import (
+    REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+    SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
+)
 
 _GENERATING_TO_REVIEW_STAGE = {
     "SCRIPT_GENERATING": "SCRIPT_REVIEW",
@@ -60,8 +64,11 @@ class AdminService:
 
     async def _get_run_artifact_types(self, run_id: int, connection: Any) -> set[str]:
         rows = await connection.fetch(
-            "SELECT DISTINCT artifact_type FROM creator_artifacts WHERE run_id = $1",
+            "SELECT DISTINCT artifact_type FROM creator_artifacts WHERE run_id = $1 "
+            "AND metadata_json IS DISTINCT FROM $2 AND metadata_json IS DISTINCT FROM $3",
             run_id,
+            REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+            SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
         )
         return {str(row["artifact_type"]) for row in rows if row.get("artifact_type")}
 
