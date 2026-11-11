@@ -1,10 +1,15 @@
 import asyncio
 import contextlib
 from collections.abc import AsyncIterator
+from pathlib import Path
+from uuid import uuid4
 
 import asyncpg
 import pytest
+from creator_domain.sanitize import sanitize_path_component
 from creator_service import db, postgres_visual_asset_storage
+from creator_service.artifact_deletion_retry import retry_failed_deletions
+from creator_service.object_storage import LocalStorageBackend
 from creator_service.postgres_visual_asset_storage import PostgresVisualAssetStorage
 from creator_service.rejected_scene_cleanup import (
     SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
@@ -12,6 +17,7 @@ from creator_service.rejected_scene_cleanup import (
     rejected_scene_cleanup_service,
 )
 from creator_service.visual_asset_service import SceneAssetAcceptanceRejected
+from tasks.hard_timeout import delivery_owner
 
 from project_deletion_support import DeletionDatabase
 
@@ -36,7 +42,12 @@ async def run_seeded(deletion_database: DeletionDatabase) -> DeletionDatabase:
 
 
 async def _seed_intent(
-    database: DeletionDatabase, key: str, *, scene: str = _SCENE, fenced: bool = False,
+    database: DeletionDatabase,
+    key: str,
+    *,
+    scene: str = _SCENE,
+    fenced: bool = False,
+    file_path: str | None = None,
 ) -> int:
     return int(
         await database.pool.fetchval(
@@ -46,12 +57,12 @@ async def _seed_intent(
                 storage_key, storage_provider, content_type, metadata_json,
                 delete_requested_at, delete_failed_at, delete_error
             ) VALUES (
-                $1, 1, 1, 'visual_asset', $2, $3, $3, 'local', 'image/png', $4, NOW(),
+                $1, 1, 1, 'visual_asset', $2, COALESCE($6, $3), $3, 'local', 'image/png', $4, NOW(),
                 CASE WHEN $5 THEN NOW() END,
                 CASE WHEN $5 THEN 'scene_upload_reclaim_started' END
             ) RETURNING id
             """,
-            _RUN, scene, key, SCENE_UPLOAD_CLEANUP_INTENT_MARKER, fenced,
+            _RUN, scene, key, SCENE_UPLOAD_CLEANUP_INTENT_MARKER, fenced, file_path,
         )
     )
 
@@ -342,3 +353,92 @@ async def test_registration_waits_for_an_uncommitted_deletion_fence_then_refuses
         await asyncio.wait_for(registration, _ASYNC_WAIT_SECONDS)
 
     assert await _intent_ids(run_seeded) == set()
+
+
+class _AmbiguousDeleteBackend(LocalStorageBackend):
+    def delete(self, key: str) -> bool:
+        super().delete(key)
+        raise TimeoutError("delete outcome unknown")
+
+
+@pytest.mark.parametrize("explicit", [True, False], ids=["explicit-id", "compat-no-id"])
+async def test_acceptance_after_an_ambiguous_reclaim_delete_is_rejected(
+    run_seeded: DeletionDatabase,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    explicit: bool,
+) -> None:
+    # Given reclaim fenced an aged intent, deleted its bytes, then lost the acknowledgement.
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    backend = _AmbiguousDeleteBackend(str(tmp_path / "objects"))
+    key = "956/scenes/ambiguous.png"
+    backend.upload(key, b"bytes", "image/png")
+    source = tmp_path / "ambiguous.png"
+    source.write_bytes(b"source")
+    intent = await _seed_intent(run_seeded, key, file_path=str(source))
+    await run_seeded.pool.execute(
+        "UPDATE creator_artifacts SET created_at = NOW() - INTERVAL '6 minutes' WHERE id = $1",
+        intent,
+    )
+
+    @contextlib.asynccontextmanager
+    async def transaction() -> AsyncIterator[asyncpg.Connection]:
+        async with run_seeded.pool.acquire() as connection, connection.transaction():
+            yield connection
+
+    assert await retry_failed_deletions(5, transaction, lambda: backend) == 0
+    assert not backend.exists(key)
+    fence = await run_seeded.pool.fetchrow(
+        "SELECT delete_failed_at, delete_retry_count FROM creator_artifacts WHERE id = $1",
+        intent,
+    )
+    assert fence is not None
+    assert fence["delete_failed_at"] is not None
+    assert fence["delete_retry_count"] == 1
+
+    # When a slow uploader then tries to accept that same, possibly deleted, object.
+    with pytest.raises(SceneAssetAcceptanceRejected):
+        await _accept(_row(key, intent if explicit else None))
+
+    # Then no scene references it; the fenced row stays so cleanup can finish.
+    assert await _assets(run_seeded) == []
+    assert await _intent_ids(run_seeded) == {intent}
+
+
+async def test_registration_accepts_real_worker_filenames_for_every_task_and_scene_shape(
+    run_seeded: DeletionDatabase,
+) -> None:
+    # Given the names the worker really generates: <scene>-<task>-<host>-<pid>-<uuid>.png,
+    # for a celery task id, the lightweight dispatcher id, and scene ids up to the model limit.
+    task_ids = {
+        "celery": str(uuid4()),
+        "lightweight": f"sync-generate_scene_image-{_RUN}-{uuid4().hex[:12]}",
+    }
+    scene_ids = ("scene-1", "scene-10", "s" * 100)
+    registered: dict[str, int] = {}
+    failures: list[str] = []
+
+    # When each upload registers its cleanup intent before object I/O.
+    for task_label, task_id in task_ids.items():
+        owner = delivery_owner(task_id, "worker-host-1", 12345)
+        for scene_id in scene_ids:
+            safe_scene = sanitize_path_component(scene_id, label="scene_id")
+            name = f"{safe_scene}-{owner}-{uuid4().hex}.png"
+            key = f"{_RUN}/scenes/{name}"
+            try:
+                registered[key] = await rejected_scene_cleanup_service.record_intent(
+                    run_id=_RUN,
+                    workspace_id=1,
+                    project_id=1,
+                    storage_key=key,
+                    local_path=f"/data/artifacts/{key}",
+                    storage_provider="local",
+                    content_type="image/png",
+                )
+            except asyncpg.PostgresError as error:
+                failures.append(f"{task_label}/{scene_id[:10]}/{len(Path(name).stem)}: {error}")
+
+    # Then none overflows a bounded bookkeeping column, so no valid scene fails before upload.
+    assert failures == []
+    assert await _intent_ids(run_seeded) == set(registered.values())

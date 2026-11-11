@@ -11,6 +11,7 @@ from creator_service.artifact_download_service import (
     ArtifactDownloadService,
     InMemoryArtifactDownloadStorage,
 )
+from creator_service.rejected_scene_cleanup import SCENE_UPLOAD_LATE_WATCH_MARKER
 
 from project_deletion_support import DeletionDatabase
 
@@ -136,6 +137,7 @@ async def test_retry_workers_hold_each_row_lock_through_storage_deletion(
 
     assert backend.calls == ["1/scenes/fresh.png"]
     assert not local_path.exists()
+    # An unresolved upload intent outlives its first reclaim as a late-write watch.
     assert await deletion_database.pool.fetchval(
-        "SELECT count(*) FROM creator_artifacts WHERE run_id=1",
-    ) == 0
+        "SELECT delete_error FROM creator_artifacts WHERE run_id=1",
+    ) == SCENE_UPLOAD_LATE_WATCH_MARKER

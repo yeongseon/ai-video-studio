@@ -9,7 +9,10 @@ import pytest
 from creator_service.artifact_deletion_retry import retry_failed_deletions
 from creator_service.db import transaction
 from creator_service.object_storage import LocalStorageBackend
-from creator_service.rejected_scene_cleanup import SCENE_UPLOAD_CLEANUP_INTENT_MARKER
+from creator_service.rejected_scene_cleanup import (
+    SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
+    SCENE_UPLOAD_LATE_WATCH_MARKER,
+)
 
 from project_deletion_support import DeletionDatabase
 
@@ -27,6 +30,15 @@ async def seed(database: DeletionDatabase, path: Path, metadata: str | None) -> 
         "VALUES (956, 1, 1, 'visual_asset', 'object', $1, $2, 'local', $3, NOW()) RETURNING id",
         str(path), _KEY, metadata,
     )
+
+
+async def assert_retained_as_watch(database: DeletionDatabase, artifact_id: int) -> None:
+    row = await database.pool.fetchrow(
+        "SELECT delete_failed_at, delete_error FROM creator_artifacts WHERE id = $1", artifact_id,
+    )
+    assert row is not None, "reclaim erased the only record of a possibly in-flight upload"
+    assert row["delete_failed_at"] is not None
+    assert row["delete_error"] == SCENE_UPLOAD_LATE_WATCH_MARKER
 
 
 @pytest.fixture
@@ -70,13 +82,11 @@ async def test_aged_intent_is_reclaimed(
     )
     # When retry reclaims it.
     result = await retry_failed_deletions(5, transaction, lambda: backend)
-    # Then both forms of bytes and the row are gone.
+    # Then both forms of bytes are gone and the intent stays behind as a late-write watch.
     assert result == 1
     assert not backend.exists(_KEY)
     assert not path.exists()
-    assert await deletion_database.pool.fetchval(
-        "SELECT count(*) FROM creator_artifacts WHERE id = $1", artifact_id,
-    ) == 0
+    await assert_retained_as_watch(deletion_database, artifact_id)
 
 
 async def test_ambiguous_delete_keeps_fence_and_resumes_without_grace(
@@ -120,9 +130,7 @@ async def test_ambiguous_delete_keeps_fence_and_resumes_without_grace(
     )
     assert await retry_failed_deletions(5, transaction, lambda: backend) == 1
     assert not path.exists()
-    assert await deletion_database.pool.fetchval(
-        "SELECT count(*) FROM creator_artifacts WHERE id = $1", artifact_id,
-    ) == 0
+    await assert_retained_as_watch(deletion_database, artifact_id)
 
 
 async def test_crash_between_transactions_leaves_committed_fence(
@@ -169,6 +177,4 @@ async def test_crash_between_transactions_leaves_committed_fence(
     assert await retry_failed_deletions(5, transaction, lambda: backend) == 1
     assert not backend.exists(_KEY)
     assert not path.exists()
-    assert await deletion_database.pool.fetchval(
-        "SELECT count(*) FROM creator_artifacts WHERE id = $1", artifact_id,
-    ) == 0
+    await assert_retained_as_watch(deletion_database, artifact_id)

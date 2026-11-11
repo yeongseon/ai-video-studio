@@ -197,6 +197,53 @@ converge without double charging or deleting an object still owned by canonical
 metadata. That lifecycle is intentionally deferred to a follow-up issue rather
 than partially implemented in this change.
 
+### Scene upload cleanup intents
+
+Before each worker scene-image upload, a durable cleanup intent is written to
+`creator_artifacts` (`artifact_type='visual_asset'`,
+`metadata_json='scene_upload_cleanup_intent'`, the exact `<run_id>/scenes/<name>.png`
+key, the recorded provider and the local source path). No migration is involved.
+Intent rows are bookkeeping, not artifacts: download-by-id answers 404 for them and the
+admin stage inventory ignores them. The persisted `scene_id` is the tail of the generated
+filename stem, bounded to the `VARCHAR(100)` column.
+
+- **Registration** takes `FOR SHARE` on the project and run and is refused once the project
+  is `deleting` or the run `cancelled`; the batch then cancels quietly before any storage
+  I/O, so no upload can start behind project deletion's artifact enumeration.
+- **Acceptance** (the scene-asset INSERT) uses one lock order for the intent-id and the
+  key-only paths: project, run, intent `FOR UPDATE NOWAIT`, then the scene advisory lock.
+  The idempotency lookup runs under the scene lock, so a replay returns the winner untouched
+  and a losing delivery keeps its own intent (its object stays reclaimable). The intent is
+  consumed in the same transaction as the INSERT. A fenced or busy intent rejects acceptance
+  rather than queueing behind storage I/O while parent share locks are held; a missing intent
+  rejects an acceptance that names one.
+- **Reclamation** (the artifact retry task) makes an intent eligible five minutes after
+  creation. A first transaction commits a fence (`delete_failed_at` set,
+  `delete_error='scene_upload_reclaim_started'`); a second deletes the object through its
+  recorded provider and the local source, so a crash after remote deletion can never leave a
+  claimable row whose object is gone. Ordinary rows, including ones with `NULL` metadata,
+  are eligible immediately.
+- **Late-write watch.** A reclaimed, unresolved intent is kept fenced for
+  `LATE_UPLOAD_WATCH_RETENTION` (the media pipeline's policy) and swept once more before it
+  is erased. Acceptance of that key is rejected meanwhile, whether or not it names the
+  intent. An intent whose object was accepted, or that a finishing worker compensates itself,
+  is simply removed.
+
+Local-file deletion is root-anchored. Recorded source paths must lie strictly beneath
+`ARTIFACT_ROOT` and are unlinked descriptor-relative with `O_NOFOLLOW`, so a directory
+swapped for a symlink after validation cannot redirect the delete; `LocalStorageBackend.delete`
+uses the same primitive and rejects keys containing `..` or starting with `/` instead of
+re-rooting them (callers translate legacy absolute keys to root-relative ones first).
+`ARTIFACT_ROOT` must therefore be identical for the API and the worker: a mismatch fails
+closed, leaving the row to be retried until `max_retries`.
+
+Residual risk, tracked in #1004: the watch bounds a late write, it does not rule one out. A
+remote-object-store upload that outlives the watch **and** whose worker dies before
+compensating can leave an object with no record, and project deletion erases unresolved
+intents immediately. The local filesystem backend cannot write late. Closing this fully
+needs an uploader acknowledgement and a fail-closed deletion path; until then it gates any
+remote object-store deployment.
+
 ## Media retention safety
 
 New workspace asset preview generations rely on `_store_asset` creating fresh UUID

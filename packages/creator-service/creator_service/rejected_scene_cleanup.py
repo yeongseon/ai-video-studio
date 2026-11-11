@@ -12,6 +12,18 @@ INTERNAL_CLEANUP_MARKERS = (
     REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
     SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
 )
+# Stored in delete_error (not metadata_json): a watched intent keeps its intent marker.
+SCENE_UPLOAD_LATE_WATCH_MARKER = "scene_upload_late_watch"
+SCENE_ID_COLUMN_WIDTH = 100
+
+
+def bookkeeping_scene_id(local_path: str) -> str:
+    """Fit the generated filename stem into creator_artifacts.scene_id (VARCHAR(100)).
+
+    The stem is ``<scene>-<delivery owner>-<uuid>``, which exceeds the column for ordinary
+    scene ids once a real task id is included. The tail keeps the per-attempt UUID.
+    """
+    return Path(local_path).stem[-SCENE_ID_COLUMN_WIDTH:]
 
 
 class SceneUploadIntentRejected(RuntimeError):
@@ -76,7 +88,7 @@ class RejectedSceneCleanupService:
                 run_id,
                 workspace_id,
                 project_id,
-                Path(local_path).stem,
+                bookkeeping_scene_id(local_path),
                 local_path,
                 storage_key,
                 storage_provider,
@@ -109,7 +121,7 @@ class RejectedSceneCleanupService:
                 run_id,
                 workspace_id,
                 project_id,
-                Path(local_path).stem,
+                bookkeeping_scene_id(local_path),
                 local_path,
                 storage_key,
                 storage_provider,

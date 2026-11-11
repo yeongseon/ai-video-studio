@@ -7,7 +7,11 @@ from pathlib import Path
 import pytest
 from creator_service.artifact_deletion_retry import retry_failed_deletions
 from creator_service.object_storage import LocalStorageBackend
-from creator_service.rejected_scene_cleanup import SCENE_UPLOAD_CLEANUP_INTENT_MARKER
+from creator_service.rejected_scene_cleanup import (
+    REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
+    SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
+    SCENE_UPLOAD_LATE_WATCH_MARKER,
+)
 
 
 class RecordingConnection:
@@ -18,7 +22,7 @@ class RecordingConnection:
             "id": 956, "run_id": 956, "storage_key": "956/scenes/object.png",
             "storage_provider": "local", "file_path": str(path),
             "metadata_json": SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
-            "delete_retry_count": 0, "delete_failed_at": None,
+            "delete_retry_count": 0, "delete_failed_at": None, "delete_error": None,
         }
         self.active = 0
         self.entries = 0
@@ -26,6 +30,7 @@ class RecordingConnection:
         self.deleted = False
         self.failures = 0
         self.fence_transaction = 0
+        self.watching = False
 
     @contextlib.asynccontextmanager
     async def transaction(self) -> AsyncIterator["RecordingConnection"]:
@@ -54,9 +59,12 @@ class RecordingConnection:
         return None if "creator_scene_assets" in query else 0
 
     async def execute(self, query: str, *args) -> str:
-        if "clock_timestamp()" in query:
+        if "scene_upload_reclaim_started" in query:
             self.row["delete_failed_at"] = "fenced"
             self.fence_transaction = self.active
+        elif SCENE_UPLOAD_LATE_WATCH_MARKER in args:
+            self.watching = True
+            self.row["delete_error"] = SCENE_UPLOAD_LATE_WATCH_MARKER
         elif "delete_retry_count = COALESCE" in query:
             self.failures += 1
             self.row["delete_retry_count"] = self.failures
@@ -144,9 +152,10 @@ async def test_retry_safe_source_cleanup_is_idempotent(root: Path, kind: str) ->
     backend = RecordingBackend(connection, root)
     # When retry cleans the source.
     result = await retry_failed_deletions(5, connection.transaction, lambda: backend)
-    # Then the source entry is gone, never its target.
+    # Then the source entry is gone, never its target, and the intent stays as a late-write watch.
     assert result == 1
-    assert connection.deleted
+    assert connection.watching
+    assert not connection.deleted
     assert not path.is_symlink()
     assert victim.read_bytes() == b"keep"
 
@@ -173,3 +182,43 @@ async def test_retry_failure_preserves_committed_fence(root: Path) -> None:
     assert connection.row["delete_failed_at"] == "fenced"
     assert connection.row["delete_retry_count"] == 1
     assert not connection.deleted
+
+
+async def test_unresolved_intent_is_retained_as_a_late_write_watch(root: Path) -> None:
+    # Given an unresolved upload intent whose object was just cleaned.
+    connection = RecordingConnection(root / "missing.png")
+    backend = RecordingBackend(connection, root)
+    # When reclaim succeeds.
+    assert await retry_failed_deletions(5, connection.transaction, lambda: backend) == 1
+    # Then the fenced row is kept, so a delayed write or acceptance still finds it.
+    assert not connection.deleted
+    assert connection.row["delete_error"] == SCENE_UPLOAD_LATE_WATCH_MARKER
+
+
+async def test_watch_row_is_removed_by_its_final_sweep(root: Path) -> None:
+    # Given a watched intent whose horizon elapsed.
+    connection = RecordingConnection(root / "missing.png")
+    connection.row["delete_failed_at"] = "watch"
+    connection.row["delete_error"] = SCENE_UPLOAD_LATE_WATCH_MARKER
+    backend = RecordingBackend(connection, root)
+    # When the final sweep succeeds.
+    assert await retry_failed_deletions(5, connection.transaction, lambda: backend) == 1
+    # Then the late bytes were swept and the record is finally removed.
+    assert backend.observations
+    assert connection.deleted
+    assert not connection.watching
+
+
+@pytest.mark.parametrize("marker", [REJECTED_SCENE_UPLOAD_CLEANUP_MARKER, None])
+async def test_resolved_and_ordinary_rows_are_removed_on_success(
+    root: Path, marker: str | None,
+) -> None:
+    # Given a row with no outstanding upload: a rejected-upload marker or ordinary artifact.
+    connection = RecordingConnection(root / "missing.png")
+    connection.row["metadata_json"] = marker
+    backend = RecordingBackend(connection, root)
+    # When deletion succeeds.
+    assert await retry_failed_deletions(5, connection.transaction, lambda: backend) == 1
+    # Then nothing remains to watch.
+    assert connection.deleted
+    assert not connection.watching

@@ -10,10 +10,12 @@ from typing import Protocol, TypedDict
 from billiard.exceptions import SoftTimeLimitExceeded
 
 from creator_service.confined_directory_deletion import delete_artifact_file
+from creator_service.media_upload_reconciliation import LATE_UPLOAD_WATCH_RETENTION
 from creator_service.object_storage import ArtifactStorageBackend
 from creator_service.rejected_scene_cleanup import (
     REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
     SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
+    SCENE_UPLOAD_LATE_WATCH_MARKER,
 )
 from creator_service.run_object_deletion import delete_run_object
 
@@ -34,11 +36,20 @@ class RetryArtifact(TypedDict):
     file_path: str | None
     metadata_json: str | None
     delete_failed_at: datetime | None
+    delete_error: str | None
 
 
 def _row_removable_after_success(artifact: RetryArtifact) -> bool:
-    # late-write residual tracked in #956; retaining a tombstone is a one-line change here
-    return True
+    """Only a resolved upload may lose its row; an unresolved one first becomes a late-write watch.
+
+    A reclaimed intent may belong to an upload that is still in flight. Keeping the fenced row
+    for ``LATE_UPLOAD_WATCH_RETENTION`` (the media pipeline's policy) makes acceptance of that
+    key fail and lets one last sweep delete bytes that land late. The row is erased only by
+    that final sweep.
+    """
+    if artifact.get("metadata_json") != SCENE_UPLOAD_CLEANUP_INTENT_MARKER:
+        return True
+    return artifact.get("delete_error") == SCENE_UPLOAD_LATE_WATCH_MARKER
 
 
 async def _has_accepted_reference(conn: RetryConnection, artifact: RetryArtifact) -> bool:
@@ -74,6 +85,12 @@ async def _delete_locked_candidate(
             delete_artifact_file(Path(local_path))
         if _row_removable_after_success(artifact):
             await conn.execute("DELETE FROM creator_artifacts WHERE id = $1", artifact_id)
+        else:
+            await conn.execute(
+                "UPDATE creator_artifacts SET delete_failed_at = clock_timestamp(), "
+                "delete_error = $2 WHERE id = $1",
+                artifact_id, SCENE_UPLOAD_LATE_WATCH_MARKER,
+            )
         return True
     except SoftTimeLimitExceeded:
         raise
@@ -97,6 +114,26 @@ async def _delete_locked_candidate(
         return False
 
 
+_ARTIFACT_COLUMNS = (
+    "id, run_id, storage_key, storage_provider, file_path, metadata_json, "
+    "delete_retry_count, delete_failed_at, delete_error"
+)
+_WATCH_HORIZON_SECONDS = LATE_UPLOAD_WATCH_RETENTION.total_seconds()
+
+
+def _watch_horizon_elapsed(horizon_param: int, marker_param: int) -> str:
+    """SQL predicate shared by both reclaim transactions: a watch is a candidate once elapsed.
+
+    The second transaction must re-check it, because another reclaimer can finish its own pass,
+    and so create a fresh watch, between this reclaimer's two transactions. Only parameter
+    positions are interpolated.
+    """
+    return (
+        f"(delete_error IS DISTINCT FROM ${marker_param} "
+        f"OR delete_failed_at < NOW() - make_interval(secs => ${horizon_param}))"
+    )
+
+
 async def retry_failed_deletions(
     max_retries: int,
     transaction_factory: Callable,
@@ -110,19 +147,21 @@ async def retry_failed_deletions(
     for _ in range(500):
         async with transaction_factory() as conn:
             row = await conn.fetchrow(
-                "SELECT id, run_id, storage_key, storage_provider, file_path, "
-                "metadata_json, delete_retry_count, delete_failed_at FROM creator_artifacts "
+                f"SELECT {_ARTIFACT_COLUMNS} FROM creator_artifacts "
                 "WHERE (delete_failed_at IS NOT NULL OR "
                 "(delete_requested_at IS NOT NULL AND delete_failed_at IS NULL)) "
                 "AND COALESCE(delete_retry_count, 0) < $1 "
                 "AND storage_key IS NOT NULL AND storage_key != '' "
                 "AND (metadata_json IS DISTINCT FROM $3 OR delete_failed_at IS NOT NULL "
                 "OR created_at < NOW() - INTERVAL '5 minutes') "
+                f"AND {_watch_horizon_elapsed(4, 5)} "
                 "AND NOT (id = ANY($2::int[])) "
                 "ORDER BY id LIMIT 1 FOR UPDATE SKIP LOCKED",
                 max_retries,
                 attempted_ids,
                 SCENE_UPLOAD_CLEANUP_INTENT_MARKER,
+                _WATCH_HORIZON_SECONDS,
+                SCENE_UPLOAD_LATE_WATCH_MARKER,
             )
             if row is None:
                 break
@@ -149,9 +188,11 @@ async def retry_failed_deletions(
         if is_intent:
             async with transaction_factory() as conn:
                 row = await conn.fetchrow(
-                    "SELECT id, run_id, storage_key, storage_provider, file_path, "
-                    "metadata_json, delete_retry_count, delete_failed_at FROM creator_artifacts "
-                    "WHERE id = $1 FOR UPDATE SKIP LOCKED", artifact_id,
+                    f"SELECT {_ARTIFACT_COLUMNS} FROM creator_artifacts "
+                    f"WHERE id = $1 AND {_watch_horizon_elapsed(2, 3)} FOR UPDATE SKIP LOCKED",
+                    artifact_id,
+                    _WATCH_HORIZON_SECONDS,
+                    SCENE_UPLOAD_LATE_WATCH_MARKER,
                 )
                 if row is None:
                     continue
