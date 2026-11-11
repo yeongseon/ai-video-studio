@@ -8,7 +8,10 @@ import pytest
 from celery.exceptions import SoftTimeLimitExceeded
 from creator_service import artifact_storage_integration as integration
 from creator_service import object_storage
-from creator_service.rejected_scene_cleanup import rejected_scene_cleanup_service
+from creator_service.rejected_scene_cleanup import (
+    RejectedSceneCleanupService,
+    rejected_scene_cleanup_service,
+)
 from creator_service.object_storage import LocalStorageBackend, StorageDeletionError, StorageResult
 from creator_service.visual_asset_service import SceneAssetAcceptanceRejected
 from tasks.scene_batch_lifecycle import SceneBatch
@@ -24,12 +27,42 @@ REAL_UPLOAD = integration.store_artifact_file
 
 
 @pytest.fixture(autouse=True)
-def rejected_cleanup_records(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str, str]]:
+def rejected_cleanup_records(
+    monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest,
+) -> list[tuple[str, str]]:
     records: list[tuple[str, str]] = []
+    callspec = getattr(request.node, "callspec", None)
+    postgres = callspec is not None and callspec.params.get("runner_case") == "postgres"
 
     async def record(**fields: object) -> int:
         records.append((str(fields["storage_key"]), str(fields["local_path"])))
         return len(records)
+
+    async def record_intent(
+        *,
+        run_id: int,
+        workspace_id: int | None,
+        project_id: int | None,
+        storage_key: str,
+        local_path: str,
+        storage_provider: str,
+        content_type: str,
+    ) -> int:
+        records.append((storage_key, local_path))
+        if not postgres:
+            return len(records)
+        # conftest stubs record_intent with a constant id, but PostgresVisualAssetStorage claims
+        # the intent row atomically with the asset insert, so PostgreSQL cases need a real row.
+        return await RejectedSceneCleanupService.record_intent(
+            rejected_scene_cleanup_service,
+            run_id=run_id,
+            workspace_id=workspace_id,
+            project_id=project_id,
+            storage_key=storage_key,
+            local_path=local_path,
+            storage_provider=storage_provider,
+            content_type=content_type,
+        )
 
     async def cleanup(_record_id: int, storage_key: str, local_path: str) -> None:
         try:
@@ -39,7 +72,7 @@ def rejected_cleanup_records(monkeypatch: pytest.MonkeyPatch) -> list[tuple[str,
             return
 
     monkeypatch.setattr(rejected_scene_cleanup_service, "record", record)
-    monkeypatch.setattr(rejected_scene_cleanup_service, "record_intent", record)
+    monkeypatch.setattr(rejected_scene_cleanup_service, "record_intent", record_intent)
     monkeypatch.setattr(rejected_scene_cleanup_service, "cleanup", cleanup)
     return records
 
