@@ -60,3 +60,25 @@ def test_security_policy_keeps_lan_opt_in_studio_only() -> None:
     assert "`studio-web` is exposed on `0.0.0.0`" not in text
     assert "If you need LAN access for the API" not in text
     assert "STUDIO_WEB_BIND" in text, "SECURITY.md does not name the explicit Studio opt-in"
+
+
+def test_legacy_wildcard_warning_precedes_the_first_startup_command() -> None:
+    # Given an existing .env copied from the old example, which direct Compose reads itself.
+    text = _text("docs/LOCAL_DOCKER.md")
+
+    # When locating the warning about the old wildcard line and the first startup command.
+    warning = text.find("STUDIO_WEB_BIND=0.0.0.0")
+    first_start = text.find("\nmake docker-local-up\n")
+
+    # Then the operator is told to delete that line before starting anything.
+    assert warning != -1, "LOCAL_DOCKER.md does not warn about the old STUDIO_WEB_BIND=0.0.0.0 line"
+    assert first_start != -1, "LOCAL_DOCKER.md lost its startup command"
+    assert warning < first_start
+
+
+def test_local_example_does_not_invite_direct_lan_api_access() -> None:
+    # Given the example operators copy to .env.
+    text = _text(".env.local.example")
+
+    # Then it does not suggest reaching the loopback-only API from another LAN device.
+    assert "another device on the LAN" not in text

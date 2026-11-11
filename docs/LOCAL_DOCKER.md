@@ -25,6 +25,12 @@ cp .env.local.example .env
 
 Edit `.env` and change `POSTGRES_PASSWORD` and `DATABASE_URL` credentials.
 
+If you already have a `.env` that was copied from an older `.env.local.example`,
+delete any `STUDIO_WEB_BIND=0.0.0.0` line from it now. `make docker-local-up` ignores
+that value and exports its own validated one, so the Make workflow stays private, but a
+direct `docker compose` run interpolates `.env` itself and would publish Studio on
+every interface.
+
 ## 2. Start services
 
 ```bash
@@ -106,9 +112,8 @@ wildcards may expose every interface (including IPv6/dual-stack paths). These
 settings must be shell environment variables or Make command-line assignments,
 not `.env` entries: the helper deliberately does not load `.env` and exports the
 validated result to Compose. Direct Compose invocations bypass this validation
-and are not the supported opt-in workflow; they interpolate `.env` themselves, so
-delete any `STUDIO_WEB_BIND=0.0.0.0` line that an older `.env.local.example` copied
-into your `.env`. To return to private mode:
+and are not the supported opt-in workflow; they interpolate `.env` themselves (see
+the legacy-line warning in step 1). To return to private mode:
 
 ```bash
 STUDIO_WEB_BIND=127.0.0.1 make docker-local-up
