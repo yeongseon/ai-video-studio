@@ -165,3 +165,71 @@ async def test_project_run_deletion_cleans_intent_exact_key_and_local_path(
     assert deleted_keys == [key, key]
     assert alias not in deleted_keys
     assert not local_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_in_memory_replay_never_invokes_the_destructive_intent_claim() -> None:
+    # Given an accepted winner and a redundant delivery with its own pending intent.
+    claims: list[tuple[int, str]] = []
+
+    async def accept_run(_run_id: int) -> bool:
+        return True
+
+    async def claim_intent(intent_id: int, storage_key: str) -> bool:
+        claims.append((intent_id, storage_key))
+        return True
+
+    storage = InMemoryVisualAssetStorage(
+        acceptance_guard=accept_run,
+        upload_intent_claim=claim_intent,
+    )
+    winner = await storage.save_asset({
+        "run_id": 17,
+        "scene_id": "scene-a",
+        "asset_path": "/tmp/a.png",
+        "storage_key": "17/scenes/a.png",
+        "idempotency_key": "task:scene-a",
+        "upload_intent_id": 701,
+    })
+    claims.clear()
+
+    # When the redundant delivery replays the same idempotency key with another object.
+    replay = await storage.save_asset({
+        "run_id": 17,
+        "scene_id": "scene-a",
+        "asset_path": "/tmp/b.png",
+        "storage_key": "17/scenes/b.png",
+        "idempotency_key": "task:scene-a",
+        "upload_intent_id": 702,
+    })
+
+    # Then the winner is returned and the loser's intent is never consumed.
+    assert replay["id"] == winner["id"]
+    assert claims == []
+    assert len(await storage.list_assets_by_run(17)) == 1
+
+
+@pytest.mark.asyncio
+async def test_in_memory_idempotency_key_reused_by_another_scene_is_rejected() -> None:
+    # Given an accepted asset for one scene.
+    storage = InMemoryVisualAssetStorage()
+    await storage.save_asset({
+        "run_id": 17,
+        "scene_id": "scene-x",
+        "asset_path": "/tmp/x.png",
+        "storage_key": "17/scenes/x.png",
+        "idempotency_key": "shared",
+    })
+
+    # When another scene reuses its idempotency key.
+    with pytest.raises(SceneAssetAcceptanceRejected):
+        await storage.save_asset({
+            "run_id": 17,
+            "scene_id": "scene-y",
+            "asset_path": "/tmp/y.png",
+            "storage_key": "17/scenes/y.png",
+            "idempotency_key": "shared",
+        })
+
+    # Then no second asset is recorded.
+    assert len(await storage.list_assets_by_run(17)) == 1

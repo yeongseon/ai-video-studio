@@ -13,6 +13,14 @@ INTERNAL_CLEANUP_MARKERS = (
 )
 
 
+class SceneUploadIntentRejected(RuntimeError):
+    """Plain exception: frozen slotted dataclasses break under contextlib's __traceback__ writes."""
+
+    def __init__(self, run_id: int) -> None:
+        super().__init__(f"scene upload intent rejected for run {run_id}")
+        self.run_id = run_id
+
+
 class RejectedSceneCleanupService:
     async def record_intent(
         self,
@@ -26,6 +34,24 @@ class RejectedSceneCleanupService:
         content_type: str,
     ) -> int:
         async with transaction() as conn:
+            # Same parent fence as acceptance: once deletion or cancellation has committed,
+            # artifact enumeration may already be past this run, so no new upload may start.
+            project = await conn.fetchrow(
+                "SELECT p.status FROM creator_projects p "
+                "JOIN creator_runs r ON r.project_id = p.id WHERE r.id = $1 FOR SHARE OF p",
+                run_id,
+            )
+            run = await conn.fetchrow(
+                "SELECT status FROM creator_runs WHERE id = $1 FOR SHARE",
+                run_id,
+            )
+            if (
+                project is None
+                or run is None
+                or project["status"] == "deleting"
+                or run["status"] == "cancelled"
+            ):
+                raise SceneUploadIntentRejected(run_id)
             await conn.execute(
                 "SELECT pg_advisory_xact_lock($1::int, hashtext($2))",
                 run_id,

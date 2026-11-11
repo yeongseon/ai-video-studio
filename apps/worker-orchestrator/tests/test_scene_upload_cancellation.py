@@ -5,11 +5,12 @@ from datetime import datetime, timezone
 from typing import BinaryIO
 
 import pytest
-from celery.exceptions import SoftTimeLimitExceeded
+from celery.exceptions import Ignore, SoftTimeLimitExceeded
 from creator_service import artifact_storage_integration as integration
 from creator_service import object_storage
 from creator_service.rejected_scene_cleanup import (
     RejectedSceneCleanupService,
+    SceneUploadIntentRejected,
     rejected_scene_cleanup_service,
 )
 from creator_service.object_storage import LocalStorageBackend, StorageDeletionError, StorageResult
@@ -372,3 +373,87 @@ def test_scene_upload_intent_failure_prevents_storage_io(
 
     # Then no external storage upload occurs without the durable intent.
     assert upload_calls == []
+
+
+def test_scene_upload_refused_registration_cancels_without_storage_io(
+    scene_case: SceneCase,
+    upload_backend: LocalStorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    # Given the project is being deleted, so the cleanup intent is refused.
+    case = scene_case
+    target = tmp_path / str(case.runner.run_id) / "scenes" / "late-intent.png"
+    target.parent.mkdir(parents=True)
+    target.write_bytes(b"fresh")
+    batch = SceneBatch(
+        TaskContext(
+            run_id=case.runner.run_id,
+            task_id=case.task_id,
+            run={},
+            workspace_id=1,
+            project_id=1,
+            start_time=datetime.now(timezone.utc),
+        ),
+        case.runner.runs,
+    )
+    batch.local_outputs.add(target)
+    upload_calls: list[str] = []
+    original_upload = upload_backend.upload
+
+    async def checkpoint() -> None:
+        return None
+
+    async def refuse_intent(**_fields: object) -> int:
+        raise SceneUploadIntentRejected(case.runner.run_id)
+
+    def observe_upload(key: str, data: bytes | BinaryIO, content_type: str) -> StorageResult:
+        upload_calls.append(key)
+        return original_upload(key, data, content_type)
+
+    monkeypatch.setattr(batch, "checkpoint", checkpoint)
+    monkeypatch.setattr(rejected_scene_cleanup_service, "record_intent", refuse_intent, raising=False)
+    monkeypatch.setattr(upload_backend, "upload", observe_upload)
+
+    # When the batch attempts to upload the output.
+    with pytest.raises(Ignore):
+        run_in_worker_loop(batch.upload(str(target)))
+
+    # Then it cancels quietly and nothing reaches external storage.
+    assert upload_calls == []
+
+
+def test_accounting_cancellation_never_deletes_another_deliverys_winner(
+    scene_case: SceneCase,
+    upload_backend: LocalStorageBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given another delivery already accepted scene-0 under the same idempotency key.
+    case = scene_case
+    case.provider.released.set()
+    winner_key = f"{case.runner.run_id}/scenes/winner.png"
+    upload_backend.upload(winner_key, b"winner")
+    winner = run_in_worker_loop(case.assets.create_asset(
+        case.runner.run_id,
+        "scene-0",
+        "winner.png",
+        storage_provider=upload_backend.provider,
+        storage_key=winner_key,
+        idempotency_key=f"{case.task_id}:scene-0",
+    ))
+
+    async def cancel_at_accounting(*_args: object, **_kwargs: object) -> None:
+        await case.cancel()
+
+    monkeypatch.setattr(images, "record_provider_call", cancel_at_accounting)
+
+    # When this redundant delivery replays the winner and is then cancelled at accounting.
+    result = case.invoke()
+
+    # Then the winner it never owned survives with its bytes; only its own upload is discarded.
+    assert result["status"] == "cancelled"
+    assets = run_in_worker_loop(case.assets.storage.list_assets_by_run(case.runner.run_id))
+    assert [(asset["id"], asset["storage_key"]) for asset in assets] == [(winner.id, winner_key)]
+    assert upload_backend.download_bytes(winner_key) == b"winner"
+    own_key = f"{case.runner.run_id}/scenes/{case.provider.paths[0].name}"
+    assert not upload_backend.exists(own_key)

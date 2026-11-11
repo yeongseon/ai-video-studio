@@ -285,7 +285,9 @@ def generate_scene_image(
                     ctx.mark_provider_accounted()
                     await batch.checkpoint()
                 except Ignore:
-                    await _visual_asset_service.storage.delete_asset(asset.id)
+                    # An idempotent replay returns the winning delivery's asset, not ours.
+                    if asset.asset_path == target_path:
+                        await _visual_asset_service.storage.delete_asset(asset.id)
                     await batch.discard_rejected_upload(target_path, uploaded)
                     batch.results.remove(scene_result)
                     raise

@@ -9,7 +9,10 @@ from celery.exceptions import Ignore, SoftTimeLimitExceeded
 from creator_domain.models.stage import RunStage
 from creator_service import artifact_storage_integration
 from creator_service.artifact_download_service import ArtifactDownloadService
-from creator_service.rejected_scene_cleanup import rejected_scene_cleanup_service
+from creator_service.rejected_scene_cleanup import (
+    SceneUploadIntentRejected,
+    rejected_scene_cleanup_service,
+)
 from creator_service.object_storage import StorageResult, get_storage_backend
 from creator_service.run_service import RunService
 from tasks import task_runner
@@ -72,15 +75,18 @@ class SceneBatch:
         backend = get_storage_backend()
         path = Path(target_path)
         expected_key = f"{self.ctx.run_id}/scenes/{path.name}"
-        record_id = await rejected_scene_cleanup_service.record_intent(
-            run_id=self.ctx.run_id,
-            workspace_id=self.ctx.workspace_id,
-            project_id=self.ctx.project_id,
-            storage_key=expected_key,
-            local_path=str(path),
-            storage_provider=backend.provider,
-            content_type="image/png",
-        )
+        try:
+            record_id = await rejected_scene_cleanup_service.record_intent(
+                run_id=self.ctx.run_id,
+                workspace_id=self.ctx.workspace_id,
+                project_id=self.ctx.project_id,
+                storage_key=expected_key,
+                local_path=str(path),
+                storage_provider=backend.provider,
+                content_type="image/png",
+            )
+        except SceneUploadIntentRejected:
+            raise Ignore() from None
         self.upload_cleanup_intents[expected_key] = record_id
         uploaded = artifact_storage_integration.store_artifact_file(
             self.ctx.run_id, path, "image/png",

@@ -104,6 +104,12 @@ class InMemoryVisualAssetStorage:
         async with lock:
             if self._acceptance_guard is not None and not await self._acceptance_guard(run_id):
                 raise SceneAssetAcceptanceRejected(run_id=run_id)
+            idem_key = row.get("idempotency_key")
+            if isinstance(idem_key, str) and idem_key in self._by_idempotency_key:
+                existing = self._by_idempotency_key[idem_key]
+                if existing["run_id"] != run_id or existing["scene_id"] != scene_id:
+                    raise SceneAssetAcceptanceRejected(run_id=run_id)
+                return dict(existing)
             upload_intent_id = row.get("upload_intent_id")
             storage_key = row.get("storage_key")
             if isinstance(upload_intent_id, int):
@@ -112,9 +118,6 @@ class InMemoryVisualAssetStorage:
                     and not await self._upload_intent_claim(upload_intent_id, storage_key)
                 ):
                     raise SceneAssetAcceptanceRejected(run_id=run_id)
-            idem_key = row.get("idempotency_key")
-            if isinstance(idem_key, str) and idem_key in self._by_idempotency_key:
-                return dict(self._by_idempotency_key[idem_key])
             # Deactivate previous active if this asset should be active.
             if row.get("is_active", False):
                 for a in self._assets:
