@@ -67,6 +67,8 @@ async def test_retry_workers_hold_each_row_lock_through_storage_deletion(
     tmp_path: Path,
 ) -> None:
     # Given one pending artifact and a backend that blocks the first retry worker.
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
     local_path = tmp_path / "fresh.png"
     local_path.write_bytes(b"fresh")
     await deletion_database.pool.execute(
@@ -92,8 +94,7 @@ async def test_retry_workers_hold_each_row_lock_through_storage_deletion(
         )
         try:
             async with connection.transaction():
-                if backend.transaction_backend_pid == 0:
-                    backend.transaction_backend_pid = connection.get_server_pid()
+                backend.transaction_backend_pid = connection.get_server_pid()
                 yield connection
         finally:
             await connection.close()
