@@ -18,6 +18,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import BinaryIO, Final, Protocol, cast
 
+from .confined_directory_deletion import unlink_beneath
 from .object_storage_reads import (
     ObjectInfo as ObjectInfo,
     StorageObjectMissing as StorageObjectMissing,
@@ -191,13 +192,18 @@ class LocalStorageBackend:
         return (self._root / self._safe_key(key)).read_bytes()
 
     def delete(self, key: str) -> bool:
-        path = self._root / self._safe_key(key)
-        try:
-            if path.is_file():
-                path.unlink()
-                return True
+        self._safe_key(key)
+        # '.' and empty components never change a path's meaning, but '..' does once a symlink
+        # is involved (resolve() and a lexical rewrite then name different files), and an
+        # absolute key would be re-rooted beneath the root. Neither is a valid object key.
+        parts = tuple(part for part in key.split("/") if part not in ("", "."))
+        if ".." in parts or key.startswith("/"):
+            raise ValueError(f"Invalid key (path traversal): {key}")
+        if not parts:
             return False
-        except FileNotFoundError:
+        try:
+            return unlink_beneath(self._root, parts)
+        except IsADirectoryError:
             return False
         except OSError as error:
             raise StorageDeletionError(key=key) from error
