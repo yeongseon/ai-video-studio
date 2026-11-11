@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import os
 from pathlib import Path
 
 import pytest
@@ -428,6 +429,7 @@ async def test_rejected_scene_cleanup_failure_stays_retryable_then_clears(
     tmp_path: Path,
     failure: Exception,
 ) -> None:
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
     key = "17/scenes/fresh.png"
     local_path = tmp_path / "fresh.png"
     local_path.write_bytes(b"fresh")
@@ -471,6 +473,7 @@ async def test_rejected_scene_local_unlink_failure_stays_retryable_then_clears(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
     key = "17/scenes/fresh.png"
     local_path = tmp_path / "fresh.png"
     local_path.write_bytes(b"fresh")
@@ -481,7 +484,7 @@ async def test_rejected_scene_local_unlink_failure_stays_retryable_then_clears(
         "metadata_json": REJECTED_SCENE_UPLOAD_CLEANUP_MARKER,
         "delete_retry_count": 0,
     }])
-    original_unlink = Path.unlink
+    original_unlink = os.unlink
     fail_unlink = True
 
     class _Backend:
@@ -489,10 +492,10 @@ async def test_rejected_scene_local_unlink_failure_stays_retryable_then_clears(
             assert candidate == key
             return True
 
-    def unlink(path: Path, *, missing_ok: bool = False) -> None:
-        if fail_unlink and path == local_path:
+    def unlink(path, *, dir_fd=None) -> None:
+        if fail_unlink and path == local_path.name:
             raise PermissionError("busy")
-        original_unlink(path, missing_ok=missing_ok)
+        original_unlink(path, dir_fd=dir_fd)
 
     monkeypatch.setattr(
         "creator_service.artifact_download_service.transaction",
@@ -501,7 +504,7 @@ async def test_rejected_scene_local_unlink_failure_stays_retryable_then_clears(
     monkeypatch.setattr(
         "creator_service.artifact_download_service.get_storage_backend", lambda: _Backend(),
     )
-    monkeypatch.setattr(Path, "unlink", unlink)
+    monkeypatch.setattr(os, "unlink", unlink)
     service = ArtifactDownloadService(InMemoryArtifactDownloadStorage())
 
     assert await service.retry_failed_deletions() == 0
@@ -581,6 +584,7 @@ async def test_project_run_deletion_includes_pending_rejected_upload(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
     key = "17/scenes/fresh.png"
     local_path = tmp_path / "fresh.png"
     local_path.write_bytes(b"fresh")

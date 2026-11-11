@@ -121,6 +121,7 @@ async def test_project_run_deletion_cleans_intent_exact_key_and_local_path(
     tmp_path: Path,
     provider: str,
 ) -> None:
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
     # Given an upload intent, its exact object, local source, and an unrelated alias.
     key = "17/scenes/fresh.png"
     alias = "17/scenes/shared.png"

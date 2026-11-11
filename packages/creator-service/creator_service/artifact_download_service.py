@@ -10,7 +10,7 @@ from typing import Any, Protocol
 from creator_service.artifact_deletion_retry import retry_failed_deletions
 from creator_service.artifact_storage_integration import get_artifact_download_path
 from creator_service.confined_directory_deletion import (
-    delete_confined_file,
+    delete_artifact_file,
     delete_direct_child_tree,
 )
 from creator_service.object_storage import get_storage_backend
@@ -119,7 +119,7 @@ class ArtifactDownloadService:
                         provider if isinstance(provider, str) else None,
                         backend,
                     )
-                    delete_confined_file(Path(local_path))
+                    delete_artifact_file(Path(local_path))
                 else:
                     delete_run_object(key, provider if isinstance(provider, str) else None, backend)
                 if isinstance(artifact_id, int):
