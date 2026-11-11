@@ -62,6 +62,8 @@ def scene_backend(
     )
     monkeypatch.setattr(object_storage, "_storage_backend", backend)
     monkeypatch.setattr(artifact_storage_integration, "_ARTIFACT_ROOT", artifact_root)
+    monkeypatch.setenv("ARTIFACT_ROOT", str(artifact_root))
+    monkeypatch.setenv("STORAGE_BACKEND", "s3" if request.param == "remote" else "local")
     return backend
 
 
@@ -282,6 +284,8 @@ asyncio.run(main())
     finally:
         await separate.close()
     monkeypatch.setattr(object_storage, "_storage_backend", backend)
+    monkeypatch.setenv("ARTIFACT_ROOT", str(artifact_root))
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
     assert backend.download_bytes(expected_key) == b"fresh"
     assert await artifact_download_service.retry_failed_deletions() == 1
     assert not backend.exists(expected_key)

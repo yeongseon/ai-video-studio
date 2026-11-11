@@ -34,7 +34,11 @@ class BlockingLocalStorageBackend(LocalStorageBackend):
 
 
 @pytest.fixture(autouse=True)
-def acceptance_pool(deletion_database: DeletionDatabase, monkeypatch: pytest.MonkeyPatch) -> None:
+def acceptance_pool(
+    deletion_database: DeletionDatabase, monkeypatch: pytest.MonkeyPatch, tmp_path: Path,
+) -> None:
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
     # asyncpg pools are bound to the loop that created them. save_asset reaches the database
     # through its own get_pool and through db.fetch_one (db.get_pool), so bind both to the
     # fixture pool and run acceptance on this test's loop instead of a foreign thread's loop.
@@ -119,16 +123,13 @@ async def test_retry_first_rejects_acceptance_without_committing_dangling_scene(
     local_path.write_bytes(b"race-local")
     await _seed_intent(deletion_database, local_path)
     asset_row = await _asset_row(deletion_database)
-    retry_pid = 0
 
     @contextlib.asynccontextmanager
     async def transaction() -> AsyncIterator[asyncpg.Connection]:
-        nonlocal retry_pid
         connection = await asyncpg.connect(
             deletion_database.url,
             server_settings={"search_path": deletion_database.schema},
         )
-        retry_pid = connection.get_server_pid()
         try:
             async with connection.transaction():
                 yield connection
@@ -145,15 +146,16 @@ async def test_retry_first_rejects_acceptance_without_committing_dangling_scene(
         retry_future = executor.submit(asyncio.run, retry())
         try:
             assert await asyncio.to_thread(backend.delete_entered.wait, 30)
-            blocker_pid = retry_pid
-            acceptance = asyncio.create_task(_accept(asset_row))
-            await _wait_for_blocked_by(deletion_database, blocker_pid, "creator_artifacts")
 
-            # When retry wins ownership and commits deletion.
+            # When acceptance arrives while retry's fenced intent is inside provider deletion,
+            # it fails closed at once instead of queueing behind the storage call.
+            acceptance = asyncio.create_task(_accept(asset_row))
+            with pytest.raises(SceneAssetAcceptanceRejected):
+                await asyncio.wait_for(acceptance, timeout=10)
+
+            # And retry then commits its deletion.
             backend.allow_delete.set()
             assert await asyncio.wait_for(asyncio.wrap_future(retry_future), timeout=30) == 1
-            with pytest.raises(SceneAssetAcceptanceRejected):
-                await asyncio.wait_for(acceptance, timeout=30)
         finally:
             backend.allow_delete.set()
             await _stop(acceptance)
