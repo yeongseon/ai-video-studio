@@ -68,6 +68,9 @@ jobs:
           tests/test_architecture_diagrams.py
           tests/test_ci_docs_contract_inventory.py
           tests/test_ci_docs_contract_inventory_hardening.py
+          tests/test_local_compose_bindings.py
+          tests/test_local_bind.py
+          tests/test_local_docs_contract.py
           apps/api/tests/test_quickstart_docs.py
           apps/api/tests/test_quickstart_execution.py
           apps/api/tests/test_first_short_walkthrough.py

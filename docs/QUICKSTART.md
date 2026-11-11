@@ -9,7 +9,11 @@ services are an optional path documented at the end.
 
 ## 1. Prerequisites
 
-- Docker and Docker Compose v2+ (`docker compose version`).
+- Docker Engine >= 28.0.0 and Docker Compose v2+ (`docker version --format
+  '{{.Server.Version}}'`, `docker compose version`). Older Engines let hosts on the
+  same L2 segment reach ports published to localhost
+  ([moby/moby#45610](https://github.com/moby/moby/issues/45610)), which would defeat
+  the loopback-only defaults below.
 - No GPU required. The CPU path uses remote providers for the LLM, image, TTS, and
   speech-to-text (subtitle) stages, because the local model services are gated
   behind the optional `gpu` profile.
@@ -38,10 +42,10 @@ Edit `.env`:
     complete. If you do not need burned-in subtitles yet, you can defer this key
     and set `burn_subtitles` off in your render settings.
 
-> **Security defaults are already safe.** Every published port binds to
-> `127.0.0.1` only (Postgres, Redis, the API on `127.0.0.1:8000`, and the studio
-> UI on `127.0.0.1:5174`), so nothing is exposed on your LAN. Do not change these
-> to `0.0.0.0`. Keep `ENVIRONMENT=development` for local use; production mode
+> **Security defaults are already safe** on Docker Engine >= 28.0.0. Every published
+> port binds to `127.0.0.1` only (Postgres, Redis, the API on `127.0.0.1:8000`, and
+> the studio UI on `127.0.0.1:5174`), so nothing is exposed on your LAN. Do not change
+> these to `0.0.0.0`. Keep `ENVIRONMENT=development` for local use; production mode
 > rejects the default password and enforces `CORS_ORIGINS`.
 
 ## 3. Start infrastructure
