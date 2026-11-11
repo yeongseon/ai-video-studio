@@ -23,6 +23,16 @@ _MAX_INPUT: Final = 8192
 _MAX_ITEMS: Final = 50
 _MAX_NODES: Final = 1000
 _SENSITIVE_KEYS: Final = frozenset({"key", "secret", "token", "password", "credential"})
+_LINE_BREAK = re.compile(r"\r\n|[\n\r\x0b\x0c\x1c-\x1e\x85\u2028\u2029]")
+_CAMEL_BOUNDARY = re.compile(r"(?<=[a-z0-9])(?=[A-Z])|(?<=[A-Z])(?=[A-Z][a-z])")
+_LOG_SEGMENTS = re.compile(r"[_\-. ]+")
+_LOG_SECRETS: Final = frozenset({
+    "secret", "token", "password", "passwd", "pwd", "passphrase", "credential", "credentials",
+    "authorization", "bearer", "cookie", "apikey",
+})
+_LOG_KEY_PREFIXES: Final = frozenset({"api", "private", "access", "secret", "signing", "session"})
+_MAX_LOG_LINES: Final = 400
+_MAX_LOG_BYTES: Final = 65536
 
 
 def redact_error_message(text: str) -> str:
@@ -37,6 +47,70 @@ def redact_error_message(text: str) -> str:
     redacted = _WORKSPACE_PATH.sub(_REDACTED, redacted)
     redacted = _ABS_POSIX_PATH.sub(_REDACTED, redacted)
     return _LONG_HEX.sub(_REDACTED, redacted)[:_MAX_STRING]
+
+
+def redact_log_text(text: str, trusted_lines: frozenset[str] = frozenset()) -> str:
+    """Redact every visible line of ``text`` independently, within a fixed output budget.
+
+    Any Unicode line break starts a new line, so a separator cannot hide content on a line
+    that is kept as it is. ``trusted_lines`` are exact strings known from program metadata
+    (traceback frame headers rebuilt from the live exception): only an exact match is kept
+    verbatim, because text that merely looks like one is as untrusted as any other.
+
+    The input is scanned lazily and an over-long line is never sliced, so the work and the
+    allocation stay bounded however large the text is.
+    """
+    lines: list[str] = []
+    size = 0
+    start = 0
+    truncated = False
+    for _ in range(_MAX_LOG_LINES):
+        match = _LINE_BREAK.search(text, start)
+        end = match.start() if match else len(text)
+        if end - start > _MAX_INPUT:
+            safe = _REDACTED
+        else:
+            line = text[start:end]
+            safe = line if line in trusted_lines else redact_error_message(line)
+        line_size = len(safe.encode("utf-8", errors="replace")) + 1
+        if size + line_size > _MAX_LOG_BYTES - 64:
+            truncated = True
+            break
+        lines.append(safe)
+        size += line_size
+        if match is None:
+            break
+        start = match.end()
+    else:
+        truncated = True
+    if truncated:
+        lines.append("<output truncated>")
+    return "\n".join(lines)
+
+
+def carries_credential(text: str) -> bool:
+    """True when ``text`` holds a shape redact_error_message treats as a credential.
+
+    Text too long to scan counts as carrying one, matching redact_error_message's refusal.
+    """
+    return len(text) > _MAX_INPUT or any(
+        pattern.search(text)
+        for pattern in (_CREDENTIAL_URI, _URL, _BEARER, _TOKEN_PREFIX, _LONG_HEX)
+    )
+
+
+def is_sensitive_log_key(name: str) -> bool:
+    """Recognize credential labels without hiding key identifiers or token counts."""
+    lower = name.lower()
+    if lower == "token_count":
+        return False
+    if lower in {"key", "apikey", "x-api-key"}:
+        return True
+    segments = _LOG_SEGMENTS.split(_CAMEL_BOUNDARY.sub("_", name).lower())
+    return any(segment in _LOG_SECRETS for segment in segments) or any(
+        first in _LOG_KEY_PREFIXES and second == "key"
+        for first, second in zip(segments, segments[1:])
+    )
 
 
 def sanitize_error_json(data: object, depth: int = 0) -> JsonValue:
