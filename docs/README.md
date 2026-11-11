@@ -27,4 +27,5 @@ Widening reduced classes later requires evidence and Oracle review.
 | [LIGHTWEIGHT.md](LIGHTWEIGHT.md) | Run without Celery/Redis |
 | [LOCAL_DOCKER.md](LOCAL_DOCKER.md) | Local Docker Compose setup with LAN access |
 | [RUN_STORAGE_CONTRACT.md](RUN_STORAGE_CONTRACT.md) | Versioned run storage adapter update contract |
+| [LOCAL_STORAGE.md](LOCAL_STORAGE.md) | Explicit artifact host storage, independent memory limits and verified non-destructive migration |
 | [QUEUE_DURABILITY.md](QUEUE_DURABILITY.md) | Redis durability, broker replacement recovery, and DLQ retention contract |

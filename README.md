@@ -483,6 +483,7 @@ See [`docs/LIGHTWEIGHT.md`](docs/LIGHTWEIGHT.md) for setup and tradeoffs.
 - [Security Model](docs/SECURITY.md) -- Authentication, trust boundaries, network policy
 - [Deployment Guide](docs/CUTOVER.md) -- Production deployment checklist
 - [Lightweight Mode](docs/LIGHTWEIGHT.md) -- Run without Celery/Redis
+- [Local Storage](docs/LOCAL_STORAGE.md) -- Artifact host directory, memory limits and safe migration
 - [Local Docker Compose Setup](docs/LOCAL_DOCKER.md) -- Run the full stack on a local server with LAN access
 
 ## License

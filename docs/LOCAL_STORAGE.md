@@ -1,0 +1,191 @@
+# Local Storage
+
+## Scope and host checks
+
+Use an explicit HDD directory for growing durable input/output media when the
+checkout is on a space-constrained root SSD. This is not a capacity guarantee:
+the target inventory (Ubuntu 22.04, 6 cores, 32 GiB RAM; SSD about 217 GiB/73%
+used, HDD `/data` about 916 GiB/80% used) is only a snapshot. Re-measure on the
+actual host and allow room for both copies, future media and filesystem overhead.
+An HDD can be slower; measure render throughput before committing to it.
+
+This procedure was **not run on a real host**. Automated evidence is limited to
+Compose config inspection and a temporary fixture copy, corruption detection and
+rollback. No live assets, containers, mounts or host permissions were changed.
+Free-space admission guardrails, bounded render scratch and metrics are a later
+slice; changing the artifact mount does not bound `/tmp` or container overlay use.
+Existing retention and workspace budgets are unchanged. This is not a backup.
+
+Choose an absolute destination on the intended mounted filesystem, not a path
+copied blindly from this example. Start in the repository root, using Bash:
+
+```bash
+SRC="$(pwd -P)/data/artifacts"
+DEST="/data/ai-video-studio/artifacts"
+MANIFEST="$(pwd -P)/artifacts-before-migration.sha256"
+ENV_FILE="$(pwd -P)/.env.storage"
+df -h "$SRC" /data
+findmnt --target /data --output TARGET,SOURCE,FSTYPE,OPTIONS
+stat -c '%n uid=%u gid=%g mode=%a' "$SRC" /data
+```
+
+Confirm `/data` really is the HDD mount, has sufficient free space and is writable;
+if absent, abort rather than accidentally creating a directory on the SSD below
+an unmounted mountpoint. Arrange persistent host mounting before container startup.
+After provisioning the destination, repeat:
+
+```bash
+df -h "$SRC" "$DEST"
+findmnt --target "$DEST" --output TARGET,SOURCE,FSTYPE,OPTIONS
+stat -c '%n uid=%u gid=%g mode=%a' "$SRC" "$DEST"
+```
+
+## Ownership and configuration
+
+Both `apps/api/Dockerfile` and `apps/worker-orchestrator/Dockerfile` explicitly
+create group `appuser` with GID **1000** and user `appuser` with UID **1000**, then
+use `USER appuser`. For ordinary rootful Docker without user-namespace remapping,
+the destination and all copied media must be writable/traversable by `1000:1000`.
+Have the host administrator provision only the new dedicated tree, for example
+`install -d -m 0750 -o 1000 -g 1000 "$DEST"`. Parent directories must allow traversal.
+Do not recursively change the old tree or use world-writable permissions.
+For rootless Docker/userns-remap, first determine the mapped host IDs with the
+administrator; literal host `1000:1000` is not sufficient in that topology.
+After copying, the administrator may assign `chown -R 1000:1000 "$DEST"` to the
+new dedicated tree only, if needed. Recheck permissions before restarting writers.
+
+Docker creates a **missing** bind-mount source as a root-owned directory, with no
+error, on whatever filesystem is there. If `/data` is not mounted when the containers
+start, that is the root SSD, and the `1000:1000` containers cannot write to it. Confirm
+the mount and the ownership of `$DEST` immediately before every container creation,
+and never let Docker create it implicitly.
+
+`ARTIFACTS_HOST_DIR` changes only the host bind source. API and Worker still see
+`/app/data/artifacts`; keep `ARTIFACT_ROOT=./data/artifacts` (image working directory
+`/app`) or `/app/data/artifacts`, never the host HDD path. Keep `STORAGE_BACKEND=local`.
+Relative host paths are resolved against the base Compose file's directory.
+Default: `ARTIFACTS_HOST_DIR=./data/artifacts`. Dev, E2E and local-server overlays
+inherit this bind; the scaled workers use the same host variable. The E2E runner's
+separate `artifact_data` volume and Worker `dlq_data` volume are not relocated.
+
+Base API and Worker memory limits are independently controlled in MiB:
+`API_MAX_MEMORY_MB` defaults to 1024 and `WORKER_MAX_MEMORY_MB` defaults to 4096.
+For each, precedence is nonempty service-specific variable, then nonempty legacy
+`MAX_MEMORY_MB`, then that service's default. Compose passes the effective value
+as each container's `MAX_MEMORY_MB`, matching its cgroup limit. Choose positive
+integer values and leave RAM for the OS, database and other services. Applications
+and hosted ACA still consume `MAX_MEMORY_MB` directly; no application contract
+changes. Scaled stage-worker memory policy is unchanged by this slice.
+
+## Non-destructive migration
+
+**Stop all writers first**, through the operator's approved maintenance workflow:
+block uploads/new jobs, drain or cancel active work safely, stop API, every Worker
+(including scaled workers), Beat/retention tasks and any external process writing
+these files. Keep them stopped through verification and the read-only smoke check.
+Do not touch unrelated containers or delete/recreate database/DLQ volumes.
+Coordinate database metadata backup as described in [Backup and Restore](BACKUP_RESTORE.md).
+
+Use **copy, never move**: no `mv`, no rsync `--remove-source-files`, no `--delete`.
+Use a new empty destination, disjoint from the source; do not merge unrelated data.
+The commands below assume a nonempty regular-file media tree (empty directories
+are supported). Symlinks and special files require separate review, not following
+links outside the tree. Set the four absolute variables above; `MANIFEST` must be
+outside both trees. `DEST` must be an absolute path made only of letters, digits and
+`/ . _ -`: it is written to an env file, where a space, `#` or `$` would make Compose
+mount a different directory, and the blocks refuse anything else. Save each block as
+its own script and run it with `bash -euo pipefail script.sh`; never paste one into a
+login shell, where its `exit` and `set -e` would end your session.
+**Verify before switching.**
+Keep the manifest and the old directory untouched until the operator explicitly approves deletion.
+
+### Copy
+
+```bash
+set -euo pipefail
+case "$DEST" in /*[!A-Za-z0-9/._-]* | [!/]*) echo "DEST must be an absolute path of letters, digits, / . _ -" >&2; exit 1 ;; esac
+test -d "$SRC"
+test -d "$DEST"
+test "$(realpath "$SRC")" != "$(realpath "$DEST")"
+case "$(realpath "$DEST")/" in "$(realpath "$SRC")/"*) exit 1 ;; esac
+case "$(realpath "$SRC")/" in "$(realpath "$DEST")/"*) exit 1 ;; esac
+test -z "$(find "$DEST" -mindepth 1 -print -quit)"
+test -z "$(find "$SRC" ! -type d ! -type f -print -quit)"
+test ! -e "$MANIFEST"
+(cd "$SRC" && find . -type f -exec sha256sum -- {} +) > "$MANIFEST"
+test -s "$MANIFEST"
+rsync --archive --no-owner --no-group -- "$SRC/" "$DEST/"
+```
+
+The trailing slashes copy the contents, preserving relative paths, hidden files
+and empty directories. The copy must exit successfully; investigate any errors.
+Run as an account able to read every source file and write the new tree; ownership
+is intentionally not copied. Provision/check destination ownership as above.
+If the block fails, do not switch; investigate using a new reviewed empty
+destination and a new manifest path rather than deleting the old directory.
+
+### Verify
+
+```bash
+set -euo pipefail
+(cd "$SRC" && sha256sum --check --strict "$MANIFEST")
+(cd "$DEST" && sha256sum --check --strict "$MANIFEST")
+```
+
+Both checks must exit zero with every file `OK`. Missing or corrupted copies
+must block the switch. The source must still be quiescent; a checksum is not a
+snapshot of concurrent writes. Do not ignore a nonzero exit or regenerate the
+manifest from the destination to hide a mismatch.
+
+### Switch
+
+```bash
+set -euo pipefail
+case "$DEST" in /*[!A-Za-z0-9/._-]* | [!/]*) echo "DEST must be an absolute path of letters, digits, / . _ -" >&2; exit 1 ;; esac
+(cd "$SRC" && sha256sum --check --strict "$MANIFEST")
+(cd "$DEST" && sha256sum --check --strict "$MANIFEST")
+printf 'ARTIFACTS_HOST_DIR=%s\n' "$DEST" > "$ENV_FILE"
+```
+
+This writes only a dedicated storage override file, not your secrets-bearing
+`.env`. Ensure neither a shell-exported `ARTIFACTS_HOST_DIR` nor a later env-file
+overrides it. Use both files, in this order, for config inspection and subsequent
+approved maintenance operations (add your usual overlay files as needed):
+
+```bash
+docker compose --env-file .env --env-file "$ENV_FILE" -f docker-compose.yml config --no-env-resolution --format json
+```
+
+`--no-env-resolution` needs Docker Compose >= 2.35.0 and keeps the secrets in `.env`
+out of the printed configuration. On an older Compose omit it, and then do not paste or
+share the output.
+
+Review API and Worker bind sources, unchanged container paths and memory values.
+Only then have the operator recreate the affected API/Worker containers via the
+approved workflow, initially keeping writes blocked. Merely restarting an existing
+container does not change its bind. Do not change database rows, `storage_key`
+values, or relative artifact paths: the unchanged `storage_key` identity resolves
+to the copied bytes under the same container root.
+
+With an existing authorized workspace session, preview/download known existing
+inputs and a published MP4 through the usual API/Studio routes; compare the bytes
+with the manifest. Check that unauthorized/cross-workspace requests still return
+404, not raw filesystem access. This live-host check is required but **not verified**
+by the temporary-fixture tests. Resume writers only after operator acceptance.
+
+### Rollback
+
+```bash
+set -euo pipefail
+(cd "$SRC" && sha256sum --check --strict "$MANIFEST")
+printf 'ARTIFACTS_HOST_DIR=%s\n' "$SRC" > "$ENV_FILE"
+```
+
+Rollback = point the variable back to the original directory, inspect config
+again with the same env-file order, then have the operator recreate affected
+containers and repeat authorized existing-asset checks before allowing writes.
+No reverse-copy or deletion is needed during this pre-write acceptance window.
+If writes already resumed on the HDD, stop all writers again and reconcile new
+files and database references with the operator before rollback; the old copy
+cannot contain new uploads. Never silently discard those assets. Keep both trees
+and the manifest until explicit operator approval; this guide includes no deletion step.
