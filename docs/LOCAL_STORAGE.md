@@ -24,6 +24,7 @@ SRC="$(pwd -P)/data/artifacts"
 DEST="/data/ai-video-studio/artifacts"
 MANIFEST="$(pwd -P)/artifacts-before-migration.sha256"
 ENV_FILE="$(pwd -P)/.env.storage"
+export SRC DEST MANIFEST ENV_FILE
 df -h "$SRC" /data
 findmnt --target /data --output TARGET,SOURCE,FSTYPE,OPTIONS
 stat -c '%n uid=%u gid=%g mode=%a' "$SRC" /data
@@ -91,21 +92,25 @@ Use a new empty destination, disjoint from the source; do not merge unrelated da
 The commands below assume a nonempty regular-file media tree (empty directories
 are supported). Symlinks and special files require separate review, not following
 links outside the tree. Set the four absolute variables above; `MANIFEST` must be
-outside both trees. `DEST` must be an absolute path made only of letters, digits and
-`/ . _ -`: it is written to an env file, where a space, `#` or `$` would make Compose
-mount a different directory, and the blocks refuse anything else. Save each block as
-its own script and run it with `bash -euo pipefail script.sh`; never paste one into a
-login shell, where its `exit` and `set -e` would end your session.
-**Verify before switching.**
+outside both trees. `SRC` and `DEST` must be absolute paths without single quotes or
+newlines, and the blocks refuse anything else. Spaces, `$` and `#` are fine: the override
+file is written with the path single-quoted, which Compose reads literally, so it never
+re-interpolates or truncates the path. Save each block as its own script and run it
+with `bash -euo pipefail script.sh`; never paste one into a login shell, where its
+`exit` and `set -e` would end your session. **Verify before switching.**
 Keep the manifest and the old directory untouched until the operator explicitly approves deletion.
 
 ### Copy
 
 ```bash
 set -euo pipefail
-case "$DEST" in /*[!A-Za-z0-9/._-]* | [!/]*) echo "DEST must be an absolute path of letters, digits, / . _ -" >&2; exit 1 ;; esac
+case "$SRC$DEST" in *"'"* | *$'\n'*) echo "SRC and DEST must not contain quotes or newlines" >&2; exit 1 ;; esac
+case "$SRC" in /*) ;; *) echo "SRC must be an absolute path" >&2; exit 1 ;; esac
+case "$DEST" in /*) ;; *) echo "DEST must be an absolute path" >&2; exit 1 ;; esac
 test -d "$SRC"
 test -d "$DEST"
+test ! -L "$SRC" || { echo "SRC must not be a symlink" >&2; exit 1; }
+test ! -L "$DEST" || { echo "DEST must not be a symlink" >&2; exit 1; }
 test "$(realpath "$SRC")" != "$(realpath "$DEST")"
 case "$(realpath "$DEST")/" in "$(realpath "$SRC")/"*) exit 1 ;; esac
 case "$(realpath "$SRC")/" in "$(realpath "$DEST")/"*) exit 1 ;; esac
@@ -130,42 +135,64 @@ destination and a new manifest path rather than deleting the old directory.
 set -euo pipefail
 (cd "$SRC" && sha256sum --check --strict "$MANIFEST")
 (cd "$DEST" && sha256sum --check --strict "$MANIFEST")
+cmp <(cd "$SRC" && find . -type f -print0 | LC_ALL=C sort -z) <(cd "$DEST" && find . -type f -print0 | LC_ALL=C sort -z)
 ```
 
-Both checks must exit zero with every file `OK`. Missing or corrupted copies
-must block the switch. The source must still be quiescent; a checksum is not a
-snapshot of concurrent writes. Do not ignore a nonzero exit or regenerate the
-manifest from the destination to hide a mismatch.
+Both checks must exit zero with every file `OK`, and the final `cmp` must print
+nothing: it compares the complete lists of files in both trees, which the manifest
+cannot do (it never notices a file added to the source after it was built, for
+example by a writer that was not really stopped, or an extra file in the destination).
+Missing, corrupted or unlisted files must block the switch. The source must still be
+quiescent; a checksum is not a snapshot of concurrent writes. Do not ignore a nonzero
+exit or regenerate the manifest from the destination to hide a mismatch.
 
 ### Switch
 
 ```bash
 set -euo pipefail
-case "$DEST" in /*[!A-Za-z0-9/._-]* | [!/]*) echo "DEST must be an absolute path of letters, digits, / . _ -" >&2; exit 1 ;; esac
+case "$SRC$DEST" in *"'"* | *$'\n'*) echo "SRC and DEST must not contain quotes or newlines" >&2; exit 1 ;; esac
+case "$SRC" in /*) ;; *) echo "SRC must be an absolute path" >&2; exit 1 ;; esac
+case "$DEST" in /*) ;; *) echo "DEST must be an absolute path" >&2; exit 1 ;; esac
 (cd "$SRC" && sha256sum --check --strict "$MANIFEST")
 (cd "$DEST" && sha256sum --check --strict "$MANIFEST")
-printf 'ARTIFACTS_HOST_DIR=%s\n' "$DEST" > "$ENV_FILE"
+cmp <(cd "$SRC" && find . -type f -print0 | LC_ALL=C sort -z) <(cd "$DEST" && find . -type f -print0 | LC_ALL=C sort -z)
+printf "ARTIFACTS_HOST_DIR='%s'\n" "$DEST" > "$ENV_FILE"
 ```
 
 This writes only a dedicated storage override file, not your secrets-bearing
 `.env`. Ensure neither a shell-exported `ARTIFACTS_HOST_DIR` nor a later env-file
-overrides it. Use both files, in this order, for config inspection and subsequent
-approved maintenance operations (add your usual overlay files as needed):
+overrides it. Pass both files, in this order, to every later Compose command,
+including the approved recreation and any maintenance operation: a plain
+`docker compose up` without `--env-file .env --env-file "$ENV_FILE"` falls back to
+`./data/artifacts` and would recreate containers on the old tree.
+
+### Inspect
+
+Print only the effective bind sources and memory limits of the API and Worker (add the
+overlay files you normally pass with `-f`; Compose prints a literal `$` as `$$`, which
+the snippet undoes). **Never print or share the whole
+`docker compose config` output:** it contains the secrets from `.env` on every Compose
+version, even with `--no-env-resolution`, because interpolated fields carry them too.
 
 ```bash
-docker compose --env-file .env --env-file "$ENV_FILE" -f docker-compose.yml config --no-env-resolution --format json
+set -euo pipefail
+docker compose --env-file .env --env-file "$ENV_FILE" -f docker-compose.yml config --format json |
+  python3 -c '
+import json, sys
+services = json.load(sys.stdin)["services"]
+for name in ("api", "worker"):
+    service = services[name]
+    sources = [v["source"].replace("$$", "$") for v in service.get("volumes", []) if v.get("target") == "/app/data/artifacts"]
+    print(name, sources, int(service["deploy"]["resources"]["limits"]["memory"]) // 2**20, "MiB")
+'
 ```
 
-`--no-env-resolution` needs Docker Compose >= 2.35.0 and keeps the secrets in `.env`
-out of the printed configuration. On an older Compose omit it, and then do not paste or
-share the output.
-
-Review API and Worker bind sources, unchanged container paths and memory values.
-Only then have the operator recreate the affected API/Worker containers via the
-approved workflow, initially keeping writes blocked. Merely restarting an existing
-container does not change its bind. Do not change database rows, `storage_key`
-values, or relative artifact paths: the unchanged `storage_key` identity resolves
-to the copied bytes under the same container root.
+Review the bind sources and memory values this prints. Only then have the operator
+recreate the affected API/Worker containers via the approved workflow, initially
+keeping writes blocked. Merely restarting an existing container does not change its
+bind. Do not change database rows, `storage_key` values, or relative artifact paths:
+the unchanged `storage_key` identity resolves to the copied bytes under the same
+container root.
 
 With an existing authorized workspace session, preview/download known existing
 inputs and a published MP4 through the usual API/Studio routes; compare the bytes
@@ -177,8 +204,10 @@ by the temporary-fixture tests. Resume writers only after operator acceptance.
 
 ```bash
 set -euo pipefail
+case "$SRC" in *"'"* | *$'\n'*) echo "SRC must not contain quotes or newlines" >&2; exit 1 ;; esac
+case "$SRC" in /*) ;; *) echo "SRC must be an absolute path" >&2; exit 1 ;; esac
 (cd "$SRC" && sha256sum --check --strict "$MANIFEST")
-printf 'ARTIFACTS_HOST_DIR=%s\n' "$SRC" > "$ENV_FILE"
+printf "ARTIFACTS_HOST_DIR='%s'\n" "$SRC" > "$ENV_FILE"
 ```
 
 Rollback = point the variable back to the original directory, inspect config

@@ -201,10 +201,10 @@ jobs:
         run: npm --prefix apps/studio-web ci
       - name: Test architecture dependency checker
         run: python3 -m pytest tests/test_package_dependency_cli.py tests/test_package_dependency_parser.py tests/test_package_dependency_compliance.py tests/test_architecture_diagrams.py -q
-      - name: Test PR impact classifier fail-closed policy
-        run: python3 -m pytest tests/test_ci_impact.py tests/test_ci_impact_git.py tests/test_ci_required.py tests/test_ci_required_workflow.py tests/test_ci_docs_contract_inventory.py tests/test_ci_docs_contract_inventory_hardening.py -q
       - name: Inspect local storage Compose configuration without containers
         run: python3 -m pytest tests/test_local_storage_compose.py -q
+      - name: Test PR impact classifier fail-closed policy
+        run: python3 -m pytest tests/test_ci_impact.py tests/test_ci_impact_git.py tests/test_ci_required.py tests/test_ci_required_workflow.py tests/test_ci_docs_contract_inventory.py tests/test_ci_docs_contract_inventory_hardening.py -q
       - name: Test Packages (with coverage)
         run: |
           git fetch origin main:refs/remotes/origin/main --depth=1
