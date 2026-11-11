@@ -31,6 +31,8 @@ class Migration:
     manifest: Path
     env_file: Path
 
+    # Plain `bash -c`: each block must carry its own `set -euo pipefail`, so an operator who runs
+    # it without those flags is still protected.
     def run(
         self, section: str, destination: Path | None = None, *,
         cwd: Path | None = None, extra_env: dict[str, str] | None = None,
@@ -40,7 +42,7 @@ class Migration:
                "MANIFEST": str(self.manifest), "ENV_FILE": str(self.env_file)}
         env.update(extra_env or {})
         return subprocess.run(
-            ["bash", "-euo", "pipefail", "-c", _command(section)],
+            ["bash", "-c", _command(section)],
             cwd=cwd or self.root, env=env, capture_output=True, text=True, check=False, timeout=30,
         )
 
@@ -140,6 +142,32 @@ def test_verify_when_the_file_inventories_differ_blocks_switch(migration: Migrat
     assert not migration.env_file.exists()
 
 
+@pytest.mark.parametrize("section", ["Verify", "Switch"])
+@pytest.mark.parametrize("tree", ["source", "destination"])
+@pytest.mark.skipif(os.geteuid() == 0, reason="permission checks do not apply to root")
+def test_inventory_when_a_tree_cannot_be_fully_enumerated_blocks_switch(
+    migration: Migration, section: str, tree: str,
+) -> None:
+    # Given a copied tree with an unreadable directory holding an unlisted file, so that the
+    # readable file lists are still identical while enumeration itself fails.
+    assert migration.run("Copy").returncode == 0
+    side = migration.source if tree == "source" else migration.destination
+    hidden = side / "run-7" / "unreadable"
+    hidden.mkdir()
+    (hidden / "late-upload.mp4").write_bytes(b"late")
+    hidden.chmod(0)
+
+    # When running the documented verification gate or the switch.
+    try:
+        result = migration.run(section)
+    finally:
+        hidden.chmod(0o755)
+
+    # Then it refuses, and no storage override is written after an incomplete comparison.
+    assert result.returncode != 0
+    assert not migration.env_file.exists()
+
+
 def test_rollback_when_switching_storage_preserves_storage_keys(migration: Migration) -> None:
     # Given a verified migration selected with the documented override.
     copied = migration.run("Copy")
@@ -231,6 +259,26 @@ def test_copy_when_destination_is_relative_changes_nothing(migration: Migration)
     assert result.returncode != 0
     assert not migration.manifest.exists()
     assert not any(migration.destination.iterdir())
+
+
+@pytest.mark.parametrize("side", ["source", "destination"])
+def test_copy_when_a_path_ends_with_a_backslash_changes_nothing(migration: Migration, side: str) -> None:
+    # Given a directory whose name ends with a backslash, which would turn the closing single
+    # quote of the env-file value into an escaped quote.
+    awkward = migration.root / "ends-with-backslash\\"
+    awkward.mkdir()
+    if side == "source":
+        (awkward / "run-7").mkdir()
+        (awkward / "run-7/final video.mp4").write_bytes(b"published")
+        migration = Migration(migration.root, awkward, migration.destination, migration.manifest, migration.env_file)
+
+    # When running the documented copy.
+    result = migration.run("Copy", awkward if side == "destination" else None)
+
+    # Then it fails before creating a manifest or copying a byte.
+    assert result.returncode != 0
+    assert not migration.manifest.exists()
+    assert not any(migration.destination.iterdir() if side == "source" else awkward.iterdir())
 
 
 def test_copy_when_a_path_holds_a_quote_changes_nothing(migration: Migration) -> None:

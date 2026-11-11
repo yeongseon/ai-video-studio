@@ -93,7 +93,7 @@ The commands below assume a nonempty regular-file media tree (empty directories
 are supported). Symlinks and special files require separate review, not following
 links outside the tree. Set the four absolute variables above; `MANIFEST` must be
 outside both trees. `SRC` and `DEST` must be absolute paths without single quotes or
-newlines, and the blocks refuse anything else. Spaces, `$` and `#` are fine: the override
+newlines, and not ending in a backslash, and the blocks refuse anything else. Spaces, `$` and `#` are fine: the override
 file is written with the path single-quoted, which Compose reads literally, so it never
 re-interpolates or truncates the path. Save each block as its own script and run it
 with `bash -euo pipefail script.sh`; never paste one into a login shell, where its
@@ -104,9 +104,10 @@ Keep the manifest and the old directory untouched until the operator explicitly 
 
 ```bash
 set -euo pipefail
-case "$SRC$DEST" in *"'"* | *$'\n'*) echo "SRC and DEST must not contain quotes or newlines" >&2; exit 1 ;; esac
 case "$SRC" in /*) ;; *) echo "SRC must be an absolute path" >&2; exit 1 ;; esac
 case "$DEST" in /*) ;; *) echo "DEST must be an absolute path" >&2; exit 1 ;; esac
+case "$SRC" in *"'"* | *$'\n'* | *\\) echo "SRC must not contain quotes or newlines or end with a backslash" >&2; exit 1 ;; esac
+case "$DEST" in *"'"* | *$'\n'* | *\\) echo "DEST must not contain quotes or newlines or end with a backslash" >&2; exit 1 ;; esac
 test -d "$SRC"
 test -d "$DEST"
 test ! -L "$SRC" || { echo "SRC must not be a symlink" >&2; exit 1; }
@@ -135,27 +136,41 @@ destination and a new manifest path rather than deleting the old directory.
 set -euo pipefail
 (cd "$SRC" && sha256sum --check --strict "$MANIFEST")
 (cd "$DEST" && sha256sum --check --strict "$MANIFEST")
-cmp <(cd "$SRC" && find . -type f -print0 | LC_ALL=C sort -z) <(cd "$DEST" && find . -type f -print0 | LC_ALL=C sort -z)
+inventory="$(mktemp -d)"
+trap 'rm -rf "$inventory"' EXIT
+(cd "$SRC" && find . -type f -print0 | LC_ALL=C sort -z) > "$inventory/source"
+(cd "$DEST" && find . -type f -print0 | LC_ALL=C sort -z) > "$inventory/destination"
+cmp "$inventory/source" "$inventory/destination"
 ```
 
 Both checks must exit zero with every file `OK`, and the final `cmp` must print
-nothing: it compares the complete lists of files in both trees, which the manifest
-cannot do (it never notices a file added to the source after it was built, for
-example by a writer that was not really stopped, or an extra file in the destination).
-Missing, corrupted or unlisted files must block the switch. The source must still be
-quiescent; a checksum is not a snapshot of concurrent writes. Do not ignore a nonzero
-exit or regenerate the manifest from the destination to hide a mismatch.
+nothing. The manifest proves the content of the files it lists. The inventory
+comparison proves only that both trees hold the same set of regular-file names: it
+catches a file added to the source after the manifest was built (for example by a
+writer that was not really stopped) and an extra file in the destination. It does
+not verify file modes, modification times, hardlink relationships, sparse allocation
+or empty directories, and it cannot show that a file present on both sides under the
+same new name has the same content. A failure to read either tree, such as a
+permission error, stops the block. The source must still be quiescent; a checksum is
+not a snapshot of concurrent writes, and none of this is safe against someone
+swapping a directory while the commands run. Do not ignore a nonzero exit or
+regenerate the manifest from the destination to hide a mismatch.
 
 ### Switch
 
 ```bash
 set -euo pipefail
-case "$SRC$DEST" in *"'"* | *$'\n'*) echo "SRC and DEST must not contain quotes or newlines" >&2; exit 1 ;; esac
 case "$SRC" in /*) ;; *) echo "SRC must be an absolute path" >&2; exit 1 ;; esac
 case "$DEST" in /*) ;; *) echo "DEST must be an absolute path" >&2; exit 1 ;; esac
+case "$SRC" in *"'"* | *$'\n'* | *\\) echo "SRC must not contain quotes or newlines or end with a backslash" >&2; exit 1 ;; esac
+case "$DEST" in *"'"* | *$'\n'* | *\\) echo "DEST must not contain quotes or newlines or end with a backslash" >&2; exit 1 ;; esac
 (cd "$SRC" && sha256sum --check --strict "$MANIFEST")
 (cd "$DEST" && sha256sum --check --strict "$MANIFEST")
-cmp <(cd "$SRC" && find . -type f -print0 | LC_ALL=C sort -z) <(cd "$DEST" && find . -type f -print0 | LC_ALL=C sort -z)
+inventory="$(mktemp -d)"
+trap 'rm -rf "$inventory"' EXIT
+(cd "$SRC" && find . -type f -print0 | LC_ALL=C sort -z) > "$inventory/source"
+(cd "$DEST" && find . -type f -print0 | LC_ALL=C sort -z) > "$inventory/destination"
+cmp "$inventory/source" "$inventory/destination"
 printf "ARTIFACTS_HOST_DIR='%s'\n" "$DEST" > "$ENV_FILE"
 ```
 
@@ -173,6 +188,9 @@ overlay files you normally pass with `-f`; Compose prints a literal `$` as `$$`,
 the snippet undoes). **Never print or share the whole
 `docker compose config` output:** it contains the secrets from `.env` on every Compose
 version, even with `--no-env-resolution`, because interpolated fields carry them too.
+The snippet filters standard output only. Compose can still write diagnostics to
+standard error, for example a warning that names an unset variable referenced inside a
+secret value, so do not share that either.
 
 ```bash
 set -euo pipefail
@@ -204,7 +222,7 @@ by the temporary-fixture tests. Resume writers only after operator acceptance.
 
 ```bash
 set -euo pipefail
-case "$SRC" in *"'"* | *$'\n'*) echo "SRC must not contain quotes or newlines" >&2; exit 1 ;; esac
+case "$SRC" in *"'"* | *$'\n'* | *\\) echo "SRC must not contain quotes or newlines or end with a backslash" >&2; exit 1 ;; esac
 case "$SRC" in /*) ;; *) echo "SRC must be an absolute path" >&2; exit 1 ;; esac
 (cd "$SRC" && sha256sum --check --strict "$MANIFEST")
 printf "ARTIFACTS_HOST_DIR='%s'\n" "$SRC" > "$ENV_FILE"
