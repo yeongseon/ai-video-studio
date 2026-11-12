@@ -407,9 +407,12 @@ async def _handle_general_failure(
     exc: Exception,
     usage_storage: UsageStorageBackend,
     claim_token: str | None = None,
-    billing_outcome: BillingOutcome = BillingOutcome.NOT_STARTED,
+    billing_outcome: BillingOutcome | None = BillingOutcome.NOT_STARTED,
 ) -> bool:
-    """Consolidate error-handler async work into a single coroutine."""
+    """Consolidate error-handler async work into a single coroutine.
+
+    ``billing_outcome=None`` lets the durable attempt history decide how the reservation ends.
+    """
     try:
         code, message = _safe_failure_record(exc)
         if claim_token is not None:

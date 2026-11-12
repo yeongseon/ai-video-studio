@@ -14,6 +14,8 @@ from types import SimpleNamespace
 from unittest.mock import Mock
 
 import pytest
+from creator_domain.models.stage import RunStage
+from creator_provider.exceptions import ProviderTimeoutError
 from creator_service import job_capacity
 from creator_service.actionable_errors import failure_summary_from_code
 from creator_service.postgres_task_tracking_storage import PostgresTaskTrackingStorage
@@ -21,6 +23,7 @@ from creator_service.postgres_usage_storage import PostgresUsageStorage
 from creator_service.storage_policy import FilesystemLowSpace
 from creator_service.usage_service import InMemoryUsageStorage, UsageService
 from tasks import task_runner
+from tasks.scene_batch_lifecycle import SAFE_FAILURE_STAGES, SAFE_SUCCESS_STAGES
 from worker_loop import run_in_worker_loop
 
 from .provider_boundary_support import GenerationCase, generation_case as generation_case  # noqa: F401
@@ -249,6 +252,83 @@ def test_refusal_creates_no_files_and_leaves_existing_artifacts_untouched(
     assert (_snapshot(volumes.artifacts), _snapshot(volumes.scratch)) == before
 
 
+def test_refusal_on_a_retried_delivery_keeps_what_an_earlier_provider_attempt_authorized(
+    runner_case: RunnerCase, quota_case: UsageService, volumes: Volumes, watermarks: None,
+) -> None:
+    # Given a first delivery that authorized and started a provider attempt, lost its answer, and
+    # was left reclaimable for Celery's retry (its exposure is therefore still owed), and a cost
+    # budget that only has room for the two reservations.
+    case = runner_case
+    config = _guarded(case.config)
+    run_in_worker_loop(quota_case.set_quota(1, monthly_llm_calls=2, monthly_cost_usd=0.2))
+
+    async def first_delivery(ctx: task_runner.TaskContext) -> task_runner.TaskResult:
+        assert await quota_case.authorize_owned_attempt(
+            ctx.reservation_owner_id or "", "first-provider-attempt", "0.01",
+        )
+        ctx.mark_provider_started()
+        raise ProviderTimeoutError("response lost")
+
+    with pytest.raises(ProviderTimeoutError):
+        task_runner.run_task(case.delivery(retries=0), case.run_id, config, first_delivery)
+    # When the retried delivery finds the artifact filesystem under its floor.
+    volumes.set_free(artifact=100 * MIB)
+    with pytest.raises(FilesystemLowSpace):
+        task_runner.run_task(case.delivery(retries=1), case.run_id, config, _executing([]))
+    # Then the refusal does not pretend nothing was ever started: the earlier attempt's exposure is
+    # kept, so no replacement is admitted on the budget it still holds.
+    assert not run_in_worker_loop(quota_case.reserve_owned(1, "llm", "replacement"))
+
+
+def test_a_low_space_error_raised_during_execution_keeps_that_deliverys_own_billing_outcome(
+    runner_case: RunnerCase, quota_case: UsageService,
+) -> None:
+    # Given a task that already started a provider attempt and then raises the refusal error itself
+    # (not the admission check, which runs before execution), and a budget with no spare room.
+    case = runner_case
+    run_in_worker_loop(quota_case.set_quota(1, monthly_llm_calls=2, monthly_cost_usd=0.2))
+
+    async def execute(ctx: task_runner.TaskContext) -> task_runner.TaskResult:
+        ctx.mark_provider_started()
+        raise FilesystemLowSpace(incoming_bytes=0, free_bytes=1, filesystem="scratch", required_bytes=2)
+
+    # When the delivery fails.
+    with pytest.raises(FilesystemLowSpace):
+        task_runner.run_task(case.delivery(), case.run_id, case.config, execute)
+    # Then the history-based finalization is reserved for refusals before execution: this delivery's
+    # provider outcome is unknown, so its whole estimate stays charged like any other failure.
+    assert not run_in_worker_loop(quota_case.reserve_owned(1, "llm", "replacement"))
+
+
+def test_a_refused_scene_image_task_leaves_a_run_that_is_in_review_where_it_is(
+    runner_case: RunnerCase, volumes: Volumes, watermarks: None,
+) -> None:
+    # Given the scene-image task's own stage policy and a run the user is reviewing.
+    case = runner_case
+    config = task_runner.TaskRunnerConfig(
+        task_name="generate_scene_image",
+        allowed_stages=frozenset({
+            RunStage.VISUAL_PLAN_REVIEW, RunStage.VISUAL_ASSET_GENERATING, RunStage.VISUAL_ASSET_REVIEW,
+        }),
+        safe_stages=SAFE_SUCCESS_STAGES,
+        safe_failure_stages=SAFE_FAILURE_STAGES,
+        success_stage=None,
+        requires_free_space=True,
+    )
+    run_in_worker_loop(case.runs.storage.update_run(
+        case.run_id, {"current_stage": "VISUAL_ASSET_REVIEW", "status": "paused"},
+    ))
+    volumes.set_free(artifact=100 * MIB)
+    # When regenerating one scene is refused for low storage.
+    with pytest.raises(FilesystemLowSpace):
+        task_runner.run_task(case.delivery(), case.run_id, config, _executing([]))
+    # Then the failure is recorded on the task only: reviewing the other scenes is not interrupted.
+    tracked = run_in_worker_loop(case.tracking.list_run_tasks(case.run_id))[0]
+    assert (tracked.status, tracked.error_code) == ("failed", "ARTIFACT_STORAGE_LOW")
+    saved = run_in_worker_loop(case.runs.storage.get_run(case.run_id))
+    assert (saved["current_stage"], saved["status"]) == ("VISUAL_ASSET_REVIEW", "paused")
+
+
 def test_low_storage_refuses_exactly_the_tasks_that_write_media(
     generation_case: GenerationCase, volumes: Volumes, watermarks: None,
     monkeypatch: pytest.MonkeyPatch,
@@ -256,7 +336,7 @@ def test_low_storage_refuses_exactly_the_tasks_that_write_media(
     # Given each real generation task, and both filesystems under their floors.
     case = generation_case
     volumes.set_free(artifact=100 * MIB, scratch=100 * MIB)
-    before = _snapshot(volumes.artifacts)
+    before = (_snapshot(volumes.artifacts), _snapshot(volumes.scratch))
     retry = Mock(wraps=case.task.retry)
     monkeypatch.setattr(case.task, "retry", retry)
     case.task.push_request(id="low-space-task", args=case.args, kwargs={}, retries=0)
@@ -276,7 +356,7 @@ def test_low_storage_refuses_exactly_the_tasks_that_write_media(
         assert case.provider.generate.await_count + case.provider.transcribe.await_count == 0
         case.usage.assert_not_awaited()
         retry.assert_not_called()  # a full disk is not hammered by automatic retries
-        assert _snapshot(volumes.artifacts) == before
+        assert (_snapshot(volumes.artifacts), _snapshot(volumes.scratch)) == before
         assert (tracked.status, tracked.error_code) == ("failed", "ARTIFACT_STORAGE_LOW")
         assert (saved["current_stage"], saved["status"]) == ("FAILED", "failed")
     else:
@@ -285,23 +365,37 @@ def test_low_storage_refuses_exactly_the_tasks_that_write_media(
         assert saved["current_stage"] != "FAILED"
 
 
+def _calls_named(tree: ast.AST, name: str) -> list[ast.Call]:
+    return [
+        node for node in ast.walk(tree)
+        if isinstance(node, ast.Call)
+        and (getattr(node.func, "id", None) == name or getattr(node.func, "attr", None) == name)
+    ]
+
+
 def test_every_task_decides_whether_it_needs_free_space() -> None:
-    # Given every task module that builds a TaskRunnerConfig.
+    # Given every module under tasks/ that starts a task through run_task.
     tasks_dir = Path(__file__).resolve().parents[1] / "tasks"
-    declared: dict[str, bool] = {}
-    for module in sorted(tasks_dir.glob("*.py")):
-        for node in ast.walk(ast.parse(module.read_text(encoding="utf-8"))):
-            if not isinstance(node, ast.Call):
-                continue
-            callee = node.func.id if isinstance(node.func, ast.Name) else getattr(node.func, "attr", "")
-            if callee != "TaskRunnerConfig":
-                continue
+    declared: list[tuple[str, bool]] = []
+    for module in sorted(tasks_dir.rglob("*.py")):
+        tree = ast.parse(module.read_text(encoding="utf-8"))
+        invocations = _calls_named(tree, "run_task")
+        configs = _calls_named(tree, "TaskRunnerConfig")
+        # Each run_task invocation must be paired with a TaskRunnerConfig written out in the same
+        # module, so a task cannot take its configuration from a factory this inventory cannot read.
+        assert len(invocations) == len(configs), (
+            f"{module.name}: {len(invocations)} run_task calls but {len(configs)} literal TaskRunnerConfig"
+        )
+        for node in configs:
             keywords = {keyword.arg: keyword.value for keyword in node.keywords}
             name = keywords["task_name"]
             assert isinstance(name, ast.Constant) and isinstance(name.value, str), module.name
             flag = keywords.get("requires_free_space")
-            declared[name.value] = isinstance(flag, ast.Constant) and flag.value is True
+            declared.append((name.value, isinstance(flag, ast.Constant) and flag.value is True))
     # When the two reviewed lists are compared with what the code declares.
+    names = [name for name, _ in declared]
     expected = {**{task: True for task in GUARDED_TASKS}, **{task: False for task in EXEMPT_TASKS}}
-    # Then a new task cannot ship without someone deciding (and listing) whether it writes media.
-    assert declared == expected
+    # Then task names are unique, and a new task cannot ship without someone deciding (and listing)
+    # whether it writes media.
+    assert len(names) == len(set(names))
+    assert dict(declared) == expected
