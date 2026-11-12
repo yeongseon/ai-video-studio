@@ -204,7 +204,12 @@ filesystem is checked before the temp directory is looked up, the temp directory
 is resolved without `tempfile`'s probe file, and a directory that does not exist
 yet is measured through its nearest existing parent without creating it. The
 artifact floor is measured at `ARTIFACT_ROOT` itself; a different filesystem
-mounted below it is not measured separately.
+mounted below it is not measured separately. Once the process has used
+`tempfile`, its cached directory is measured exactly. On the process's first
+admission the directory is chosen in `tempfile`'s order by existence and
+permissions rather than by `tempfile`'s write probe, so a full or
+inode-exhausted first candidate (`TMPDIR`) can make the check measure a
+different filesystem than `tempfile` then settles on.
 
 What a refusal does:
 

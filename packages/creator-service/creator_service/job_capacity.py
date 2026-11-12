@@ -157,13 +157,17 @@ def _admit(
 def _default_scratch_directory() -> Path:
     """The directory ``tempfile`` uses, found without ``tempfile.gettempdir()``'s write probe.
 
-    Once the process has used ``tempfile`` its choice is cached and is returned as is. Before
-    that, the candidates are tried in ``tempfile``'s own order and the first usable one wins;
-    usable means an existing, searchable and writable directory, which is checked without
-    creating anything. The current directory is ``tempfile``'s last resort.
+    Once the process has used ``tempfile`` its choice is cached (as ``str`` or ``bytes``) and is
+    returned as is. Before that, the candidates are tried in ``tempfile``'s own order and the
+    first usable one wins; usable means an existing, searchable and writable directory, which is
+    checked without creating anything. That is an approximation of ``tempfile``, which rejects a
+    candidate only when a probe file cannot be written there: a full or inode-exhausted first
+    candidate passes this test but not ``tempfile``'s, so on the first admission of a process the
+    measured filesystem can differ from the one ``tempfile`` settles on. The current directory is
+    ``tempfile``'s last resort.
     """
     if tempfile.tempdir is not None:
-        return Path(tempfile.tempdir)
+        return Path(os.fsdecode(tempfile.tempdir))
     candidates = [os.environ.get(name) for name in _TEMP_ENVIRONMENT_VARIABLES]
     candidates.extend(_TEMP_FALLBACK_DIRECTORIES)
     for candidate in candidates:

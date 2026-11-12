@@ -581,6 +581,20 @@ def test_a_cold_cache_skips_an_unusable_candidate_in_tempfiles_order(
     assert raised.value.filesystem == "scratch"
 
 
+def test_a_bytes_valued_cached_temp_directory_is_accepted(
+    volumes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a process whose tempfile cache holds the directory as bytes, which tempfile itself accepts.
+    artifacts, scratch = volumes
+    monkeypatch.setattr(tempfile, "tempdir", os.fsencode(scratch))
+    disk = FakeDisk({artifacts: 9000 * MIB, scratch: 9000 * MIB})
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", disk)
+    # When a job asks to start with both floors enabled.
+    job_capacity.ensure_job_capacity("render_video", policy=_policy(), artifact_root=artifacts)
+    # Then the cached directory is decoded and measured, as tempfile.gettempdir() would return it.
+    assert scratch in disk.queried
+
+
 def test_a_cold_cache_prefers_tmpdir_over_the_other_temp_variables(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
