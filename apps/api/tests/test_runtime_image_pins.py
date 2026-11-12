@@ -6,9 +6,14 @@ reference, so a bumped patch or digest cannot be applied in one place and silent
 another, and no moving tag such as `postgres:16-alpine` or `latest` can come back.
 
 The check is textual and covers tracked YAML, Python, shell, TOML, Makefile and Dockerfile
-files. It does not read prose documentation (documentation-only pull requests run a reduced
-CI matrix that does not include this module), and it cannot see a reference that is assembled
-at run time or written without a tag.
+files. It reads a reference written with any tag, qualified by a registry or namespace
+(`docker.io/library/postgres:...`), inside a `${NAME:-default}` default, or untagged on an
+`image:` key or a Dockerfile `FROM` line, and compares it byte for byte with the compose pin.
+It does not read prose documentation (documentation-only pull requests run a reduced CI matrix
+that does not include this module). It cannot see a reference assembled at run time (`$IMAGE`)
+or an untagged name on a `docker run` line. It also cannot tell whether a tag and its digest
+belong together: a tag edited without its digest, consistently everywhere, passes, which is why
+the follow-up runtime check (#1021) asserts the version each running server reports.
 """
 
 import re
@@ -16,6 +21,7 @@ import subprocess
 from pathlib import Path
 from typing import Final
 
+import pytest
 import yaml
 
 ROOT: Final = Path(__file__).resolve().parents[3]
@@ -25,13 +31,27 @@ SHAPE: Final = {
     "postgres": re.compile(r"postgres:16\.\d+-alpine@sha256:[0-9a-f]{64}"),
     "redis": re.compile(r"redis:7\.4\.\d+-alpine@sha256:[0-9a-f]{64}"),
 }
-# An image reference to either service: any tag (including latest) and an optional digest. A tag of
-# three or more digits is a host port (`postgres:5432`), a bare `postgres:16` is a floating major
-# tag, and a preceding `@`, `/` or `.` means the text is a URL or a path.
-REFERENCE: Final = re.compile(
-    r"(?<![\w/.@-])(?P<image>postgres|redis):(?P<tag>latest|\d+(?:\.\d+)*(?:-[A-Za-z0-9.]+)?)"
+# An optional registry host (with a port) and namespace path in front of the image name, as in
+# `docker.io/library/` or `registry.example.com:5000/mirror/`.
+QUALIFIER: Final = r"(?:[\w.-]+(?::\d+)?/)*"
+# A tagged reference to either image: any tag (`latest`, `alpine`, `16`, an exact patch) and an
+# optional digest. The lookbehind starts a match only at a token boundary, so URLs
+# (`redis://redis:6379`), credentials (`user:pass@postgres:5432`) and longer names
+# (`short-form-studio-redis:7.4`) are not read as images. A tag of three or more digits is a host
+# port and is skipped by `find_references`.
+TAGGED: Final = re.compile(
+    rf"(?<![\w/.@:-]){QUALIFIER}(?P<image>postgres|redis):(?P<tag>\w[\w.-]*)"
     r"(?P<digest>@sha256:[0-9a-f]{64})?"
 )
+# The same images with no tag, which Docker resolves to `latest`. A bare name is only unambiguous as
+# the value of an `image:` key or on a Dockerfile `FROM` line, so only those positions count.
+UNTAGGED: Final = re.compile(
+    rf"^\s*(?:-\s+)?(?:image:|(?i:FROM)(?:\s+--\S+)*)\s+[\"']?(?P<ref>{QUALIFIER}(?P<image>postgres|redis))[\"']?"
+    r"(?i:\s+AS\s+\S+)?\s*(?:#.*)?$"
+)
+# `${NAME:-default}` and its `-`, `=`, `+` and `?` variants, with or without the colon: the default
+# text is a reference that a reader (and Compose) will use, so it is scanned like any other.
+INTERPOLATION: Final = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+?]([^{}]*)\}")
 
 
 def _compose() -> dict[str, dict[str, object]]:
@@ -63,16 +83,27 @@ def _tracked_text_files() -> list[Path]:
     ]
 
 
+def find_references(line: str) -> list[tuple[str, str]]:
+    text = INTERPOLATION.sub(r" \1 ", line)
+    found = [
+        (match["image"], match[0])
+        for match in TAGGED.finditer(text)
+        if not (match["tag"].isdigit() and len(match["tag"]) >= 3)
+    ]
+    bare = UNTAGGED.match(text)
+    if bare:
+        found.append((bare["image"], bare["ref"]))
+    return found
+
+
 def _references() -> list[tuple[str, int, str, str]]:
     found = []
     for path in _tracked_text_files():
         for number, line in enumerate(
             path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1
         ):
-            for match in REFERENCE.finditer(line):
-                if match["tag"].isdigit() and len(match["tag"]) >= 3:
-                    continue  # `postgres:5432`: a host port, not an image tag
-                found.append((path.relative_to(ROOT).as_posix(), number, match["image"], match[0]))
+            for image, reference in find_references(line):
+                found.append((path.relative_to(ROOT).as_posix(), number, image, reference))
     return found
 
 
@@ -132,3 +163,115 @@ def test_core_services_never_use_a_moving_image() -> None:
     assert pulled, "the default stack must name its database and broker images"
     for name, image in pulled.items():
         assert "@sha256:" in image and not image.split("@")[0].endswith(":latest"), (name, image)
+
+
+DIGEST: Final = "sha256:" + "0123456789abcdef" * 4
+PINNED_POSTGRES: Final = f"postgres:16.15-alpine@{DIGEST}"
+PINNED_REDIS: Final = f"redis:7.4.12-alpine@{DIGEST}"
+
+
+@pytest.mark.parametrize(
+    ("line", "expected"),
+    [
+        pytest.param(
+            f"image: {PINNED_POSTGRES}", [("postgres", PINNED_POSTGRES)], id="the-pin-itself"
+        ),
+        pytest.param(
+            f"image: ${{PG_IMAGE:-{PINNED_POSTGRES}}}",
+            [("postgres", PINNED_POSTGRES)],
+            id="interpolation-default-equal-to-the-pin",
+        ),
+        pytest.param(
+            "image: postgres:16-alpine", [("postgres", "postgres:16-alpine")], id="floating-major"
+        ),
+        pytest.param("docker run -d redis:latest", [("redis", "redis:latest")], id="latest"),
+        pytest.param("image: redis:alpine", [("redis", "redis:alpine")], id="named-moving-tag"),
+        pytest.param(
+            "image: postgres:alpine3.24",
+            [("postgres", "postgres:alpine3.24")],
+            id="named-moving-tag-with-release",
+        ),
+        pytest.param(
+            "image: docker.io/library/postgres:latest",
+            [("postgres", "docker.io/library/postgres:latest")],
+            id="docker-hub-qualified",
+        ),
+        pytest.param(
+            f"image: library/redis:7.4.12-alpine@{DIGEST}",
+            [("redis", f"library/redis:7.4.12-alpine@{DIGEST}")],
+            id="qualified-alias-of-a-pinned-form",
+        ),
+        pytest.param(
+            "image: registry.example.com:5000/mirror/postgres:16",
+            [("postgres", "registry.example.com:5000/mirror/postgres:16")],
+            id="private-registry",
+        ),
+        pytest.param(
+            "image: ${PG_IMAGE:-postgres:16}",
+            [("postgres", "postgres:16")],
+            id="interpolation-default",
+        ),
+        pytest.param(
+            "image: ${REDIS_IMAGE:-redis:7.4-alpine}",
+            [("redis", "redis:7.4-alpine")],
+            id="interpolation-default-floating-minor",
+        ),
+        pytest.param('image: "postgres"', [("postgres", "postgres")], id="untagged-image-key"),
+        pytest.param(
+            "  - image: redis  # cache", [("redis", "redis")], id="untagged-list-item-with-comment"
+        ),
+        pytest.param(
+            "image: ${REDIS_IMAGE:-redis}",
+            [("redis", "redis")],
+            id="untagged-interpolation-default",
+        ),
+        pytest.param("FROM postgres", [("postgres", "postgres")], id="untagged-from"),
+        pytest.param(
+            "FROM --platform=linux/amd64 library/redis AS cache",
+            [("redis", "library/redis")],
+            id="untagged-qualified-from-with-flag-and-alias",
+        ),
+        pytest.param(
+            f"image: postgres:16.15-alpine@sha256:{'0' * 63}",
+            [("postgres", "postgres:16.15-alpine")],
+            id="truncated-digest-counts-as-no-digest",
+        ),
+    ],
+)
+def test_matcher_reports_every_form_that_names_these_images(
+    line: str, expected: list[tuple[str, str]]
+) -> None:
+    # Given one line of a tracked file that names one of the two images in some spelling.
+    # When the guard reads it.
+    found = find_references(line)
+
+    # Then the reference is reported exactly as written, so comparing it with the pin can reject it.
+    assert found == expected
+
+
+@pytest.mark.parametrize(
+    "line",
+    [
+        "DATABASE_URL=postgresql://postgres:secret@postgres:5432/app",
+        "REDIS_URL=redis://redis:6379/0",
+        "  postgres:",
+        "POSTGRES_USER: review",
+        "depends_on: [postgres, redis]",
+        "      - postgres",
+        "host=postgres port=5432",
+        "DB_ADDR=postgres:5432",
+        "REDIS_ADDR=redis:6379",
+        "redis-cli ping",
+        "image: redis/redis-stack:latest",
+        "image: short-form-studio-redis:7.4",
+        "image: ollama/ollama:0.6.2",
+        "# postgres: 16 is the supported major",
+    ],
+)
+def test_matcher_ignores_text_that_is_not_an_image_reference(line: str) -> None:
+    # Given a connection string, a service key, a host name, a port or a different image.
+    # When the guard reads it.
+    found = find_references(line)
+
+    # Then nothing is reported, so the stricter spellings above cannot cause false alarms.
+    assert found == []
