@@ -9,9 +9,11 @@ Every tracked YAML, Python, shell, TOML, Makefile and Dockerfile file is scanned
 reference written with any tag, qualified by a registry or namespace
 (`docker.io/library/postgres:...`), inside a `${NAME:-default}` default, or untagged or digest-only
 on an `image:` key or a Dockerfile `FROM` line. Tracked YAML is also parsed, and every `image`
-value naming either image is read whatever its quoting, flow style, anchor or Compose tag.
+value (and the workflow job `container` shorthand) naming either image is read whatever its
+quoting, flow style, anchor or Compose tag.
 
-A `docker run` or `docker create` command is read without parsing it. From the command word to the
+A `docker run` or `docker create` command, with or without global options such as `--context` or
+`-H`, is read without parsing it. From the command word to the
 end of the statement (continued lines joined) every whole word that names either image, in any
 spelling, is a reference, except the value of an option that carries a name (`--name redis`). The
 `run` values of workflow steps are decoded first, so a folded scalar is read as the shell sees it.
@@ -69,6 +71,9 @@ UNTAGGED: Final = re.compile(
 # An `image` value of a parsed YAML document. Here every tag counts (`redis:123` is a tag, not a
 # port) and so does a digest with no tag, malformed or not, because the key itself says it is an image.
 YAML_IMAGE: Final = re.compile(rf"{QUALIFIER}(?P<image>postgres|redis)(?::\w[\w.-]*)?(?:@\S+)?")
+# Keys whose string value is an image: Compose and workflow `image`, and the workflow job
+# `container` shorthand (`container: redis`).
+IMAGE_KEYS: Final = ("image", "container")
 # `${NAME:-default}` and its `-`, `=`, `+` and `?` variants, with or without the colon: the default
 # text is a reference that a reader (and Compose) will use, so it is scanned like any other.
 INTERPOLATION: Final = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+?]([^{}]*)\}")
@@ -143,7 +148,7 @@ def _image_values(node: object, visited: set[int] | None = None) -> Iterator[str
     visited.add(id(node))
     if isinstance(node, dict):
         for key, value in node.items():
-            if key == "image":
+            if key in IMAGE_KEYS:
                 for item in value if isinstance(value, list) else [value]:
                     if isinstance(item, str):
                         yield item
@@ -195,7 +200,9 @@ def find_yaml_images(text: str) -> list[tuple[str, str]]:
 # A `docker run` or `docker create` command. From its first word to the end of the statement every
 # whole word is read, and nothing is parsed, so command substitution, quoting, `bash -c` and
 # separators inside quoted values cannot hide an image.
-RUN_COMMAND: Final = re.compile(r"\bdocker\s+(?:container\s+)?(?:run|create)\b")
+RUN_COMMAND: Final = re.compile(
+    r"\bdocker(?:\s+-{1,2}[\w-]+(?:=\S+|\s+[^-\s]\S*)?)*\s+(?:container\s+)?(?:run|create)\b"
+)
 # What ends a word in a shell command line without being part of an image reference: whitespace,
 # quotes, and the characters of redirections, pipes, lists, groups and substitutions. `=` is not
 # one of them, so `REDIS_HOST=redis` stays a single word that is not an image.
@@ -210,6 +217,7 @@ NAME_OPTIONS: Final = frozenset(
         "--net",
         "--network-alias",
         "--net-alias",
+        "--context",
         "--link",
         "--volumes-from",
     )
@@ -556,6 +564,16 @@ def test_matcher_ignores_text_that_is_not_an_image_reference(line: str) -> None:
             "image: redis:123\n", [("redis", "redis:123")], id="numeric-tag-is-a-tag-here"
         ),
         pytest.param(
+            "jobs:\n  cache:\n    container: redis\n",
+            [("redis", "redis")],
+            id="job-container-shorthand",
+        ),
+        pytest.param(
+            "jobs:\n  cache:\n    container: redis:alpine\n",
+            [("redis", "redis:alpine")],
+            id="job-container-shorthand-with-a-tag",
+        ),
+        pytest.param(
             "image: ${A:-${B:-redis}}\n", [("redis", "redis")], id="untagged-nested-defaults"
         ),
         pytest.param(
@@ -687,6 +705,22 @@ def test_yaml_reader_ignores_values_that_are_not_these_images(document: str) -> 
             "docker run -d redis;echo done", [("redis", "redis")], id="semicolon-touching-the-image"
         ),
         pytest.param(
+            "docker --context remote run -d redis",
+            [("redis", "redis")],
+            id="global-option-with-a-value-before-run",
+        ),
+        pytest.param(
+            "docker -H tcp://host:2375 run -d postgres",
+            [("postgres", "postgres")],
+            id="host-option-before-run",
+        ),
+        pytest.param(
+            "docker --host=unix:///var/run/docker.sock create redis",
+            [("redis", "redis")],
+            id="global-option-with-equals-before-create",
+        ),
+        pytest.param("docker -D run -d redis", [("redis", "redis")], id="boolean-global-option"),
+        pytest.param(
             "docker run --rm ghcr.io/acme/app:1 python -c 'import redis'",
             [("redis", "redis")],
             id="arguments-after-the-image-are-read-too",
@@ -715,6 +749,9 @@ def test_run_reader_reports_every_mention_of_these_images_in_a_docker_run_comman
         "docker run -d -e REDIS_HOST=redis ghcr.io/acme/app:1",
         'if [ "$STACK" = redis ]; then docker run -d ghcr.io/acme/app:1; fi',
         "redis-cli ping && docker run -d ghcr.io/acme/app:1",
+        "docker --context redis ps",
+        "docker --context remote compose run --rm api redis",
+        "docker --context redis run -d ghcr.io/acme/app:1",
         "docker run -d redis/redis-stack:latest",
         "docker logs redis",
     ],
