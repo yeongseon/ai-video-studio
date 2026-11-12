@@ -587,6 +587,26 @@ def test_a_cold_cache_prefers_tmpdir_over_the_other_temp_variables(
     assert raised.value.filesystem == "scratch"
 
 
+def test_a_cold_cache_falls_back_to_the_standard_directories(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given no temp variable at all, and the first standard directory missing.
+    artifacts = tmp_path.resolve() / "artifacts"
+    artifacts.mkdir()
+    standard = tmp_path.resolve() / "standard"
+    standard.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    for name in ("TMPDIR", "TEMP", "TMP"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setattr(job_capacity, "_TEMP_FALLBACK_DIRECTORIES", (str(tmp_path / "absent"), str(standard)))
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", FakeDisk({artifacts: 9000 * MIB, standard: 120 * MIB}))
+    # When a job asks to start.
+    with pytest.raises(FilesystemLowSpace) as raised:
+        job_capacity.ensure_job_capacity("render_video", policy=_policy(), artifact_root=artifacts)
+    # Then the first usable standard directory decided.
+    assert raised.value.filesystem == "scratch"
+
+
 def test_a_scratch_directory_that_cannot_be_resolved_does_not_block_the_job(
     volumes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
 ) -> None:
