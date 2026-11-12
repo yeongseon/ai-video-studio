@@ -12,14 +12,16 @@ on an `image:` key or a Dockerfile `FROM` line. Tracked YAML is also parsed, and
 value (and the workflow job `container` shorthand) naming either image is read whatever its
 quoting, flow style, anchor or Compose tag.
 
-A `docker run` or `docker create` command, with or without global options such as `--context x`,
-`-H host` or `--config "a dir"`, is read without parsing it. From the command word to the
+A `docker run` or `docker create` command, with or without global options (`--context x`,
+`-H host`, `-Hunix:///x`, `--config "a dir"`, `-c=ctx`, ...), is read without parsing it. From the command word to the
 end of the statement (continued lines joined) every whole word that names either image, in any
 spelling, is a reference, except the value of an option that carries a name (`--name redis`). The
 `run` values of workflow steps are decoded first, so a folded scalar is read as the shell sees it.
 Quoting, command substitution and `bash -c` therefore cannot hide an image, and an untagged
 `docker run ... redis` is caught in every file that the guard scans. The price is that a word
-handed to the container's own command (`... python -c 'import redis'`) is reported too and has to be rewritten.
+handed to the container's own command (`... python -c 'import redis'`) is reported too and has to be
+rewritten, and that a config or context named `run` or `create`, or a boolean global option directly
+before `compose` (`docker --tls compose run`), is read as the subcommand.
 
 Each reference is compared byte for byte with the compose pin. A floor on the references each
 known consumer keeps is a secondary tripwire for a line rewritten into a spelling none of those
@@ -200,10 +202,18 @@ def find_yaml_images(text: str) -> list[tuple[str, str]]:
 # A `docker run` or `docker create` command. From its first word to the end of the statement every
 # whole word is read, and nothing is parsed, so command substitution, quoting, `bash -c` and
 # separators inside quoted values cannot hide an image.
+# Global options of `docker` (`--config`, `--context`, `-H`, `-c`, `-l`, `--tls`, ...) may sit between
+# `docker` and the subcommand. A long option takes `=value` or a separate value; a short option takes
+# a value attached to it (`-Hunix:///x`, `-c"ctx"`) or a separate one, never both, so that the word
+# after an attached value (`compose` in `docker -Hx compose run`) is not swallowed as its value.
 GLOBAL_OPTION_VALUE: Final = r"\"[^\"]*\"|'[^']*'"
+_SEPARATE_VALUE: Final = rf"\s+(?:{GLOBAL_OPTION_VALUE}|[^-\s]\S*)"
+_GLOBAL_OPTION: Final = (
+    rf"--[\w-]+(?:=(?:{GLOBAL_OPTION_VALUE}|\S*)|(?:{_SEPARATE_VALUE})?)"
+    rf"|-[A-Za-z](?:=(?:{GLOBAL_OPTION_VALUE}|\S*)|{GLOBAL_OPTION_VALUE}|\S+|(?:{_SEPARATE_VALUE})?)"
+)
 RUN_COMMAND: Final = re.compile(
-    rf"\bdocker(?:\s+-{{1,2}}[\w-]+(?:=(?:{GLOBAL_OPTION_VALUE}|\S+)|\s+(?:{GLOBAL_OPTION_VALUE}|[^-\s]\S*))?)*"
-    r"\s+(?:container\s+)?(?:run|create)\b"
+    rf"\bdocker(?:\s+(?:{_GLOBAL_OPTION}))*\s+(?:container\s+)?(?:run|create)\b"
 )
 # What ends a word in a shell command line without being part of an image reference: whitespace,
 # quotes, and the characters of redirections, pipes, lists, groups and substitutions. `=` is not
@@ -733,6 +743,31 @@ def test_yaml_reader_ignores_values_that_are_not_these_images(document: str) -> 
             id="quoted-global-option-value-after-equals",
         ),
         pytest.param(
+            "docker -Hunix:///var/run/docker.sock run -d redis",
+            [("redis", "redis")],
+            id="attached-host-value",
+        ),
+        pytest.param(
+            'docker -c"${DOCKER_CONTEXT}" run -d postgres',
+            [("postgres", "postgres")],
+            id="attached-quoted-context-value",
+        ),
+        pytest.param(
+            'docker -c="a b" run -d redis',
+            [("redis", "redis")],
+            id="short-option-equals-quoted-value-with-a-space",
+        ),
+        pytest.param(
+            "docker -H='unix:///a b' create postgres",
+            [("postgres", "postgres")],
+            id="short-option-equals-single-quoted-value",
+        ),
+        pytest.param(
+            "docker -c'my ctx' -ldebug -Htcp://h:2375 create redis",
+            [("redis", "redis")],
+            id="attached-values-of-several-short-options",
+        ),
+        pytest.param(
             "docker --config '/tmp/docker config' -H tcp://host:2375 create redis",
             [("redis", "redis")],
             id="single-quoted-value-and-a-second-global-option",
@@ -771,6 +806,8 @@ def test_run_reader_reports_every_mention_of_these_images_in_a_docker_run_comman
         "docker --context redis run -d ghcr.io/acme/app:1",
         'docker --config "/tmp/docker config" compose run --rm api redis',
         'docker --config "a run b" ps',
+        "docker -Hunix:///var/run/docker.sock compose run --rm api redis",
+        'docker -c"ctx" ps',
         "docker run -d redis/redis-stack:latest",
         "docker logs redis",
     ],

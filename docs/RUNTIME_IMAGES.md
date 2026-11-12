@@ -132,13 +132,15 @@ The drift guard reads every tracked YAML, Python, shell, TOML, Makefile and Dock
 for a reference written with any tag, qualified by a registry or namespace, inside a
 `${NAME:-default}` default, or untagged or digest-only on an `image:` key or a `FROM` line, and it
 parses the tracked YAML and reads every `image` value (and the workflow job `container` shorthand)
-whatever its quoting, flow style, anchor or Compose tag. A `docker run` or `docker create` command, with or without global options such as `--context x` or `--config "a dir"`,
+whatever its quoting, flow style, anchor or Compose tag. A `docker run` or `docker create` command, with or without global options (`--context x`, `-Hunix:///x`, `--config "a dir"`, `-c=ctx`, ...),
 is read without parsing it: from the command word to the end of the statement (continued lines joined, and the decoded `run` values of workflow
 steps, so folded scalars too) every whole word that names either image is a reference, except the
 value of an option that carries a name such as `--name redis`. Quoting, command substitution and
 `bash -c` therefore cannot hide an image, and an untagged `docker run ... redis` is caught in every
 file that the guard scans; the price is that a word handed to the container's own command, such as
-`python -c 'import redis'`, is reported as well and has to be rewritten. Each reference is compared
+`python -c 'import redis'`, is reported as well and has to be rewritten, and a config or context
+named `run` or `create`, or a boolean global option directly before `compose`, is read as the
+subcommand. Each reference is compared
 byte for byte with the Compose pin, so even `docker.io/library/postgres:...` is rejected when it
 differs from the canonical spelling. As a secondary tripwire, each known consumer must keep at
 least the number of references it has today; that count is per file, so it can be offset by an
