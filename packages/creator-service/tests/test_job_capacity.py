@@ -410,6 +410,41 @@ def test_environment_supplies_the_artifact_root_and_the_scratch_directory(
     assert raised.value.required_bytes == 500 * MIB
 
 
+def test_environment_supplies_the_scratch_directory(
+    volumes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given plenty of artifact space and a scratch filesystem under its floor, with both
+    # locations coming from the process's own configuration.
+    artifacts, scratch = volumes
+    monkeypatch.setenv("ARTIFACT_ROOT", str(artifacts))
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    monkeypatch.setenv("MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES", str(500 * MIB))
+    monkeypatch.setenv("MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES", str(500 * MIB))
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", FakeDisk({artifacts: 9000 * MIB, scratch: 120 * MIB}))
+    # When a job asks to start.
+    with pytest.raises(FilesystemLowSpace) as raised:
+        job_capacity.ensure_job_capacity("render_video")
+    # Then the temp directory the process is configured with is the one that was measured.
+    assert (raised.value.filesystem, raised.value.free_bytes) == ("scratch", 120 * MIB)
+
+
+def test_a_required_amount_that_is_not_a_whole_mebibyte_is_never_understated(
+    volumes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a floor of 1 000 000 000 bytes (953.67 MiB) and 900 MiB free.
+    artifacts, scratch = volumes
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", FakeDisk({artifacts: 900 * MIB, scratch: 9000 * MIB}))
+    policy = StoragePolicy(artifact_disk_low_watermark_bytes=1_000_000_000, temp_disk_low_watermark_bytes=500 * MIB)
+    # When the job is refused.
+    with pytest.raises(FilesystemLowSpace) as raised:
+        job_capacity.ensure_job_capacity("render_video", policy=policy, artifact_root=artifacts, scratch_root=scratch)
+    # Then free space is rounded down and both the requirement and the shortfall are rounded up,
+    # so the three numbers in the message stay consistent and never make the disk look healthier.
+    assert str(raised.value) == (
+        "Artifact storage has 900 MiB free but at least 954 MiB is required before a new job can start (54 MiB short)"
+    )
+
+
 def test_nothing_is_checked_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
     # Given a deployment that sets no watermark and a disk that would fail any check.
     monkeypatch.delenv("MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES", raising=False)
