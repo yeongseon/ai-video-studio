@@ -5,7 +5,7 @@ The local and CI stack runs PostgreSQL and Redis from exact-patch images pinned 
 service containers and `docker run` lines, the restore and release-lifecycle scripts, test
 fixtures) must be byte-identical to it, and
 `apps/api/tests/test_runtime_image_pins.py` fails if one drifts or if a moving tag such as
-`postgres:16-alpine` or `latest` comes back.
+`postgres:16-alpine`, `redis:alpine` or `latest` comes back.
 
 Python, Nginx, FFmpeg and Node pins are separate work: #1002, #1003 and #996. Proving that an
 existing data volume survives a pin change is #1021.
@@ -83,7 +83,10 @@ notes whenever the schema or the pin changes.
 
 The base operating system moves from Alpine 3.21 to 3.24 (musl libc in both). A libc change under
 an existing volume is the usual way text indexes go stale, and this change did not verify how the
-two musl releases order text; the `amcheck` pass of #1021 is the guard for it.
+two musl releases order text. #1021 runs PostgreSQL's `amcheck` over the indexes of a seeded volume
+after an in-place upgrade. That can reveal ordering or integrity problems in those indexes, but
+`amcheck` can show corruption and never its absence, so it does not certify an arbitrary existing
+volume. The backup taken before the first start remains the safeguard.
 
 ## Redis
 
@@ -94,16 +97,21 @@ line to another is a deliberate change with its own review, not a tag edit.
 
 ## Rollback
 
-- **Configuration**: `git revert` the commit that changed the pin; the test keeps all
-  references consistent again. The previous PostgreSQL reference was
-  `postgres:16.6-alpine` (index `sha256:1d04b9ba1d4996401f2552b51beda8187f175c0645c091e4781134fc9c9a3eef`).
-  Redis was the floating `redis:7.4-alpine`, which already resolved to the pinned 7.4.12 image on
-  2026-11-12; the previous exact patch is
+- **Configuration**: reverting this change restores the previous configuration exactly as it was,
+  including its floating tags and the mismatches this change removed, and it removes the guard.
+  To return to a specific earlier image instead, put these references into `docker-compose.yml`
+  and every other place the guard reports; the guard then keeps them consistent. The previous
+  PostgreSQL reference was `postgres:16.6-alpine` (index
+  `sha256:1d04b9ba1d4996401f2552b51beda8187f175c0645c091e4781134fc9c9a3eef`). Redis was the
+  floating `redis:7.4-alpine`, which already resolved to the pinned 7.4.12 image on 2026-11-12; the
+  previous exact patch is
   `redis:7.4.11-alpine@sha256:d9436322172a5b482c187bf1f363d3c4fea086fcca6b9c8a94de8f0f39ed3193`.
-- **Data**: PostgreSQL documents minor *upgrades*, not downgrades. Once a newer binary has
-  opened a data directory, do not assume an older image can. The rollback point for data is the
-  backup taken before the first start on the new patch. The same applies to the Redis append-only
-  and snapshot files.
+- **Data**: PostgreSQL states that a data directory is compatible with earlier and later minor
+  releases of the same major version, so in principle an older minor can open it. Do not rely on
+  that here: some fixes ask for a reindex or data cleanup that a downgrade does not undo, the base
+  operating system changed as well, and no test has opened a volume with the older image. The
+  rollback point for data is the backup taken before the first start on the new patch. The same
+  applies to the Redis append-only and snapshot files.
 
 ## Verification and limits
 
@@ -121,5 +129,11 @@ Alpine change, and refusal of a major bump on an existing volume. The arm64 mani
 pinned indexes but were not run.
 
 The drift guard is textual. It covers tracked YAML, Python, shell, TOML, Makefile and Dockerfile
-files. It does not read prose documentation, such as this page, and it cannot see a reference that
-is assembled at run time or written without a tag.
+files. It reads a reference written with any tag, qualified by a registry or namespace, inside a
+`${NAME:-default}` default, or untagged on an `image:` key or a `FROM` line, and compares it byte
+for byte with the Compose pin, so even `docker.io/library/postgres:...` is rejected when it differs
+from the canonical spelling. It does not read prose documentation, such as this page. It cannot
+see a reference assembled at run time (`$IMAGE`) or an untagged name on a `docker run` line, and
+it cannot tell whether a tag and its digest belong together: a tag edited without its digest,
+consistently everywhere, passes. The runtime check in #1021 asserts the version each running
+server reports, and the lookup in "Updating a pin" re-derives a digest from its tag.
