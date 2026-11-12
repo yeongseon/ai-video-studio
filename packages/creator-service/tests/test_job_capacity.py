@@ -197,6 +197,21 @@ def test_a_zero_watermark_disables_that_filesystem_check_without_measuring_it(
         assert scratch not in disk.queried
 
 
+@pytest.mark.parametrize("strict", ["artifact", "scratch"])
+def test_each_filesystem_is_held_to_its_own_floor(
+    volumes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, strict: str,
+) -> None:
+    # Given different floors (500 MiB on one filesystem, 100 MiB on the other) and 300 MiB free on both.
+    artifacts, scratch = volumes
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", FakeDisk({artifacts: 300 * MIB, scratch: 300 * MIB}))
+    policy = _policy(artifact_mib=500 if strict == "artifact" else 100, scratch_mib=500 if strict == "scratch" else 100)
+    # When the job asks to start.
+    with pytest.raises(FilesystemLowSpace) as raised:
+        job_capacity.ensure_job_capacity("render_video", policy=policy, artifact_root=artifacts, scratch_root=scratch)
+    # Then only the filesystem with the strict floor refuses, and it reports its own floor.
+    assert (raised.value.filesystem, raised.value.required_bytes) == (strict, 500 * MIB)
+
+
 def test_the_artifact_filesystem_is_reported_first_when_both_are_low(
     volumes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
 ) -> None:
