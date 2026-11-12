@@ -180,14 +180,59 @@ with error code `STORAGE_BUDGET`. `MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES` defaults
 to `0`; when positive it blocks new upload staging without blocking reads,
 downloads, or cleanup.
 
+### Job free-space admission
+
+Render, scene-image and audio jobs write media under `ARTIFACT_ROOT` and, while
+they run, into the temp (scratch) directory. Before such a job's first write the
+Worker compares the free space of each of those two filesystems with its
+watermark and refuses the job if either is below it. Each check is off when its
+setting is `0`, which is the default.
+
+| Filesystem | Setting | Floor it enforces |
+| --- | --- | --- |
+| Artifact: the filesystem that holds `ARTIFACT_ROOT` | `MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES` | Free bytes it must keep before a job may start |
+| Scratch: the temp directory | `MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES` | The same floor for jobs; upload staging also uses it, per upload |
+
+`.env.local.example` enables both for the local server. The artifact filesystem
+is checked first, a directory that does not exist yet is measured through its
+nearest existing parent, and nothing is created to measure it.
+
+A refused job leaves everything as it was. No directory, temp file or provider
+call is made, existing artifacts are never purged, truncated or rewritten to make
+room, and the quota reserved for the task is released unbilled.
+
+- **Task and run.** The task is recorded as failed with the code
+  `ARTIFACT_STORAGE_LOW` or `SCRATCH_STORAGE_LOW`, both retryable, and the run
+  moves to `FAILED` like any other failed step. Studio shows "Output storage is
+  low" or "Temporary storage is low" with the recovery steps. After freeing space,
+  restart the run from the failed stage (`POST /api/creator/runs/{id}/restart`)
+  and start the step again.
+- **Log.** One warning per refusal with `filesystem`, `free_bytes`,
+  `required_bytes`, `shortfall_bytes`, `task_name`, `run_id` and the measured
+  `path`. The exception text names the storage and the shortfall in MiB and no
+  path.
+- **Metric.** The counter `worker.job.low_space_refusals`, labelled with
+  `filesystem` (`artifact` or `scratch`) and `celery.task_name`.
+- **Unreadable disk.** If free space cannot be read, the job is admitted and a
+  warning with `measured=false` is logged; the write itself reports a real error.
+
+Limits. The floor is an admission check, not a reservation: a job admitted just
+above it can still run out of space, and jobs admitted together each see the
+same free space (keep Worker concurrency low and the floor generous). Text-only
+tasks (script, visual plan and subtitle generation) are not checked. The API
+does not check at enqueue time, so a refusal appears in the run's task list
+rather than as an immediate HTTP error. Where scratch lives and how much one run
+may write are not changed here.
+
 ### Worker-output scope
 
 This change does not make `creator_scene_assets` or `creator_artifacts`
 canonical `MediaAsset` records. Worker-generated scene images, paragraph and
 run audio, subtitles, and rendered videos therefore remain outside the
-workspace byte/asset budgets, temporary-disk admission control, and
-`MediaAsset` retention sweeps described here. Their existing artifact lifecycle
-continues to apply.
+workspace byte/asset budgets, upload-staging admission control, and
+`MediaAsset` retention sweeps described here; their media-writing jobs are
+admitted by the free-space check above instead. Their existing artifact
+lifecycle continues to apply.
 
 Canonical worker publication requires one durable operation that couples an
 idempotent task-delivery/output-role identity, the canonical object and
