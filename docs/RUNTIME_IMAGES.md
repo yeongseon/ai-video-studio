@@ -132,7 +132,7 @@ The drift guard reads every tracked YAML, Python, shell, TOML, Makefile and Dock
 for a reference written with any tag, qualified by a registry or namespace, inside a
 `${NAME:-default}` default, or untagged or digest-only on an `image:` key or a `FROM` line, and it
 parses the tracked YAML and reads every `image` value (and the workflow job `container` shorthand)
-whatever its quoting, flow style, anchor or Compose tag. A `docker run` or `docker create` command, with or without global options such as `--context`,
+whatever its quoting, flow style, anchor or Compose tag. A `docker run` or `docker create` command, with or without global options such as `--context x` or `--config "a dir"`,
 is read without parsing it: from the command word to the end of the statement (continued lines joined, and the decoded `run` values of workflow
 steps, so folded scalars too) every whole word that names either image is a reference, except the
 value of an option that carries a name such as `--name redis`. Quoting, command substitution and

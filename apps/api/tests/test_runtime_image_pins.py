@@ -12,8 +12,8 @@ on an `image:` key or a Dockerfile `FROM` line. Tracked YAML is also parsed, and
 value (and the workflow job `container` shorthand) naming either image is read whatever its
 quoting, flow style, anchor or Compose tag.
 
-A `docker run` or `docker create` command, with or without global options such as `--context` or
-`-H`, is read without parsing it. From the command word to the
+A `docker run` or `docker create` command, with or without global options such as `--context x`,
+`-H host` or `--config "a dir"`, is read without parsing it. From the command word to the
 end of the statement (continued lines joined) every whole word that names either image, in any
 spelling, is a reference, except the value of an option that carries a name (`--name redis`). The
 `run` values of workflow steps are decoded first, so a folded scalar is read as the shell sees it.
@@ -200,8 +200,10 @@ def find_yaml_images(text: str) -> list[tuple[str, str]]:
 # A `docker run` or `docker create` command. From its first word to the end of the statement every
 # whole word is read, and nothing is parsed, so command substitution, quoting, `bash -c` and
 # separators inside quoted values cannot hide an image.
+GLOBAL_OPTION_VALUE: Final = r"\"[^\"]*\"|'[^']*'"
 RUN_COMMAND: Final = re.compile(
-    r"\bdocker(?:\s+-{1,2}[\w-]+(?:=\S+|\s+[^-\s]\S*)?)*\s+(?:container\s+)?(?:run|create)\b"
+    rf"\bdocker(?:\s+-{{1,2}}[\w-]+(?:=(?:{GLOBAL_OPTION_VALUE}|\S+)|\s+(?:{GLOBAL_OPTION_VALUE}|[^-\s]\S*))?)*"
+    r"\s+(?:container\s+)?(?:run|create)\b"
 )
 # What ends a word in a shell command line without being part of an image reference: whitespace,
 # quotes, and the characters of redirections, pipes, lists, groups and substitutions. `=` is not
@@ -721,6 +723,21 @@ def test_yaml_reader_ignores_values_that_are_not_these_images(document: str) -> 
         ),
         pytest.param("docker -D run -d redis", [("redis", "redis")], id="boolean-global-option"),
         pytest.param(
+            'docker --config "${RUNNER_TEMP}/docker config" run -d redis',
+            [("redis", "redis")],
+            id="quoted-global-option-value-with-a-space",
+        ),
+        pytest.param(
+            'docker --config="/tmp/docker config" run -d postgres',
+            [("postgres", "postgres")],
+            id="quoted-global-option-value-after-equals",
+        ),
+        pytest.param(
+            "docker --config '/tmp/docker config' -H tcp://host:2375 create redis",
+            [("redis", "redis")],
+            id="single-quoted-value-and-a-second-global-option",
+        ),
+        pytest.param(
             "docker run --rm ghcr.io/acme/app:1 python -c 'import redis'",
             [("redis", "redis")],
             id="arguments-after-the-image-are-read-too",
@@ -752,6 +769,8 @@ def test_run_reader_reports_every_mention_of_these_images_in_a_docker_run_comman
         "docker --context redis ps",
         "docker --context remote compose run --rm api redis",
         "docker --context redis run -d ghcr.io/acme/app:1",
+        'docker --config "/tmp/docker config" compose run --rm api redis',
+        'docker --config "a run b" ps',
         "docker run -d redis/redis-stack:latest",
         "docker logs redis",
     ],
