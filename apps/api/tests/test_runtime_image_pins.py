@@ -16,8 +16,8 @@ end of the statement (continued lines joined) every whole word that names either
 spelling, is a reference, except the value of an option that carries a name (`--name redis`). The
 `run` values of workflow steps are decoded first, so a folded scalar is read as the shell sees it.
 Quoting, command substitution and `bash -c` therefore cannot hide an image, and an untagged
-`docker run ... redis` is caught wherever it is. The price is that a word handed to the
-container's own command (`... python -c 'import redis'`) is reported too and has to be rewritten.
+`docker run ... redis` is caught in every file that the guard scans. The price is that a word
+handed to the container's own command (`... python -c 'import redis'`) is reported too and has to be rewritten.
 
 Each reference is compared byte for byte with the compose pin. A floor on the references each
 known consumer keeps is a secondary tripwire for a line rewritten into a spelling none of those
@@ -196,6 +196,10 @@ def find_yaml_images(text: str) -> list[tuple[str, str]]:
 # whole word is read, and nothing is parsed, so command substitution, quoting, `bash -c` and
 # separators inside quoted values cannot hide an image.
 RUN_COMMAND: Final = re.compile(r"\bdocker\s+(?:container\s+)?(?:run|create)\b")
+# What ends a word in a shell command line without being part of an image reference: whitespace,
+# quotes, and the characters of redirections, pipes, lists, groups and substitutions. `=` is not
+# one of them, so `REDIS_HOST=redis` stays a single word that is not an image.
+WORD_BREAKS: Final = re.compile(r"[\s\"'`;&|<>(){}]+")
 # Options whose value is a name (a container, host or network), not an image: `--name redis`.
 NAME_OPTIONS: Final = frozenset(
     (
@@ -217,14 +221,13 @@ def find_run_mentions(command: str) -> list[tuple[str, str]]:
     first = RUN_COMMAND.search(text)
     found = []
     skip_value = False
-    for raw in text[first.start() :].split() if first else []:
-        token = raw.strip("\"'`();")
+    for word in WORD_BREAKS.split(text[first.start() :]) if first else []:
         if skip_value:
             skip_value = False
-        elif raw.startswith("-"):
-            skip_value = raw in NAME_OPTIONS
-        elif named := YAML_IMAGE.fullmatch(token):
-            found.append((named["image"], token))
+        elif word.startswith("-"):
+            skip_value = word in NAME_OPTIONS
+        elif named := YAML_IMAGE.fullmatch(word):
+            found.append((named["image"], word))
     return found
 
 
@@ -667,6 +670,21 @@ def test_yaml_reader_ignores_values_that_are_not_these_images(document: str) -> 
         ),
         pytest.param(
             'bash -c "docker run -d redis"', [("redis", "redis")], id="nested-in-a-quoted-command"
+        ),
+        pytest.param(
+            "docker run -d --name first-short-redis -p 127.0.0.1:56389:6379 redis>/dev/null",
+            [("redis", "redis")],
+            id="redirection-touching-the-image",
+        ),
+        pytest.param("docker run --rm redis&", [("redis", "redis")], id="background-touching"),
+        pytest.param(
+            "docker run -d redis|tee run.log", [("redis", "redis")], id="pipe-touching-the-image"
+        ),
+        pytest.param(
+            "{ docker run -d redis;}", [("redis", "redis")], id="brace-group-touching-the-image"
+        ),
+        pytest.param(
+            "docker run -d redis;echo done", [("redis", "redis")], id="semicolon-touching-the-image"
         ),
         pytest.param(
             "docker run --rm ghcr.io/acme/app:1 python -c 'import redis'",

@@ -136,8 +136,8 @@ Compose tag. A `docker run` or `docker create` command is read without parsing i
 word to the end of the statement (continued lines joined, and the decoded `run` values of workflow
 steps, so folded scalars too) every whole word that names either image is a reference, except the
 value of an option that carries a name such as `--name redis`. Quoting, command substitution and
-`bash -c` therefore cannot hide an image, and an untagged `docker run ... redis` is caught wherever
-it is; the price is that a word handed to the container's own command, such as
+`bash -c` therefore cannot hide an image, and an untagged `docker run ... redis` is caught in every
+file that the guard scans; the price is that a word handed to the container's own command, such as
 `python -c 'import redis'`, is reported as well and has to be rewritten. Each reference is compared
 byte for byte with the Compose pin, so even `docker.io/library/postgres:...` is rejected when it
 differs from the canonical spelling. As a secondary tripwire, each known consumer must keep at
