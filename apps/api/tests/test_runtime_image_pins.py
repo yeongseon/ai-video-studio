@@ -8,13 +8,20 @@ another, and no moving tag such as `postgres:16-alpine` or `latest` can come bac
 Every tracked YAML, Python, shell, TOML, Makefile and Dockerfile file is scanned as text for a
 reference written with any tag, qualified by a registry or namespace
 (`docker.io/library/postgres:...`), inside a `${NAME:-default}` default, or untagged or digest-only
-on an `image:` key or a Dockerfile `FROM` line. The image operand of every `docker run` and
-`docker create` command is read as well, with continued lines joined, so an untagged
-`docker run ... redis` is caught wherever it is. Tracked YAML is also parsed, and every `image`
-value naming either image is read whatever its quoting, flow style, anchor or Compose tag. Each
-reference is compared byte for byte with the compose pin. A floor on the references each known
-consumer keeps is a secondary tripwire for a line rewritten into a spelling none of those readers
-understands; it counts references per file, so an unrelated addition can offset it.
+on an `image:` key or a Dockerfile `FROM` line. Tracked YAML is also parsed, and every `image`
+value naming either image is read whatever its quoting, flow style, anchor or Compose tag.
+
+A `docker run` or `docker create` command is read without parsing it. From the command word to the
+end of the statement (continued lines joined) every whole word that names either image, in any
+spelling, is a reference, except the value of an option that carries a name (`--name redis`). The
+`run` values of workflow steps are decoded first, so a folded scalar is read as the shell sees it.
+Quoting, command substitution and `bash -c` therefore cannot hide an image, and an untagged
+`docker run ... redis` is caught wherever it is. The price is that a word handed to the
+container's own command (`... python -c 'import redis'`) is reported too and has to be rewritten.
+
+Each reference is compared byte for byte with the compose pin. A floor on the references each
+known consumer keeps is a secondary tripwire for a line rewritten into a spelling none of those
+readers understands; it counts references per file, so an unrelated addition can offset it.
 
 It does not read prose documentation (documentation-only pull requests run a reduced CI matrix
 that does not include this module). It cannot see a reference assembled at run time (`$IMAGE`) or
@@ -146,6 +153,34 @@ def _image_values(node: object, visited: set[int] | None = None) -> Iterator[str
             yield from _image_values(item, visited)
 
 
+def _run_values(node: object, visited: set[int] | None = None) -> Iterator[tuple[str, str]]:
+    visited = set() if visited is None else visited
+    if not isinstance(node, (dict, list)) or id(node) in visited:
+        return
+    visited.add(id(node))
+    if isinstance(node, dict):
+        command = node.get("run")
+        if isinstance(command, str):
+            yield str(node.get("name", "")), command
+        for value in node.values():
+            yield from _run_values(value, visited)
+    else:
+        for item in node:
+            yield from _run_values(item, visited)
+
+
+def find_yaml_run_mentions(text: str) -> list[tuple[str, str, str]]:
+    found = []
+    for document in yaml.load_all(text, Loader=_TolerantLoader):
+        for step, command in _run_values(document):
+            for _first, lines in _statements(command):
+                joined = " ".join(line.rstrip().removesuffix("\\") for line in lines)
+                found.extend(
+                    (step, image, reference) for image, reference in find_run_mentions(joined)
+                )
+    return found
+
+
 def find_yaml_images(text: str) -> list[tuple[str, str]]:
     found = []
     for document in yaml.load_all(text, Loader=_TolerantLoader):
@@ -157,46 +192,39 @@ def find_yaml_images(text: str) -> list[tuple[str, str]]:
     return found
 
 
-# Options of `docker run` and `docker create` that take a value, from the Docker CLI's flag
-# definitions (a boolean flag such as `-d` or `--rm` is not listed). The first token that is neither
-# an option nor an option's value is the image operand, so `--name redis` is a container name.
-RUN_OPTIONS_WITH_A_VALUE: Final = frozenset(
+# A `docker run` or `docker create` command. From its first word to the end of the statement every
+# whole word is read, and nothing is parsed, so command substitution, quoting, `bash -c` and
+# separators inside quoted values cannot hide an image.
+RUN_COMMAND: Final = re.compile(r"\bdocker\s+(?:container\s+)?(?:run|create)\b")
+# Options whose value is a name (a container, host or network), not an image: `--name redis`.
+NAME_OPTIONS: Final = frozenset(
     (
-        "-a -c -e -h -l -m -p -u -v -w --add-host --annotation --attach --blkio-weight "
-        "--blkio-weight-device --cap-add --cap-drop --cgroup-parent --cgroupns --cidfile "
-        "--cpu-count --cpu-percent --cpu-period --cpu-quota --cpu-rt-period --cpu-rt-runtime "
-        "--cpu-shares --cpus --cpuset-cpus --cpuset-mems --detach-keys --device "
-        "--device-cgroup-rule --device-read-bps --device-read-iops --device-write-bps "
-        "--device-write-iops --dns --dns-opt --dns-option --dns-search --domainname --entrypoint "
-        "--env --env-file --expose --gpus --group-add --health-cmd --health-interval "
-        "--health-retries --health-start-interval --health-start-period --health-timeout "
-        "--hostname --io-maxbandwidth --io-maxiops --ip --ip6 --ipc --isolation --kernel-memory "
-        "--label --label-file --link --link-local-ip --log-driver --log-opt --mac-address "
-        "--memory --memory-reservation --memory-swap --memory-swappiness --mount --name --net "
-        "--net-alias --network --network-alias --oom-score-adj --pid --pids-limit --platform "
-        "--publish --pull --restart --runtime --security-opt --shm-size --stop-signal "
-        "--stop-timeout --storage-opt --sysctl --tmpfs --ulimit --umask --user --userns --uts "
-        "--volume --volume-driver --volumes-from --workdir"
-    ).split()
+        "--name",
+        "--hostname",
+        "-h",
+        "--network",
+        "--net",
+        "--network-alias",
+        "--net-alias",
+        "--link",
+        "--volumes-from",
+    )
 )
-RUN_COMMAND: Final = re.compile(r"\bdocker\s+(?:container\s+)?(?:run|create)\b(?P<rest>[^;&|]*)")
 
 
-def find_run_images(command: str) -> list[tuple[str, str]]:
+def find_run_mentions(command: str) -> list[tuple[str, str]]:
+    text = _unwrap_defaults(command)
+    first = RUN_COMMAND.search(text)
     found = []
-    for run in RUN_COMMAND.finditer(_unwrap_defaults(command)):
-        skip_value = False
-        for token in run["rest"].split():
-            if skip_value:
-                skip_value = False
-            elif token.startswith("-"):
-                skip_value = token in RUN_OPTIONS_WITH_A_VALUE
-            else:
-                operand = token.strip("\"'")
-                named = YAML_IMAGE.fullmatch(operand)
-                if named:
-                    found.append((named["image"], operand))
-                break
+    skip_value = False
+    for raw in text[first.start() :].split() if first else []:
+        token = raw.strip("\"'`();")
+        if skip_value:
+            skip_value = False
+        elif raw.startswith("-"):
+            skip_value = raw in NAME_OPTIONS
+        elif named := YAML_IMAGE.fullmatch(token):
+            found.append((named["image"], token))
     return found
 
 
@@ -223,7 +251,7 @@ def scan_text(text: str) -> list[tuple[int, str, str]]:
                 found.append((first + offset, image, reference))
                 seen.add((image, reference))
         command = " ".join(line.rstrip().removesuffix("\\") for line in lines)
-        for image, reference in find_run_images(command):
+        for image, reference in find_run_mentions(command):
             if (image, reference) not in seen:
                 found.append((first, image, reference))
     return found
@@ -250,6 +278,14 @@ def _structural_references() -> list[tuple[str, str, str]]:
     return found
 
 
+def _yaml_run_references() -> list[tuple[str, str, str, str]]:
+    found = []
+    for path in _yaml_files():
+        for step, image, reference in find_yaml_run_mentions(path.read_text(encoding="utf-8")):
+            found.append((path.relative_to(ROOT).as_posix(), step, image, reference))
+    return found
+
+
 def test_compose_pins_each_service_to_an_exact_patch_and_digest() -> None:
     # Given the deployment definition of the database and the broker.
     for name, pattern in SHAPE.items():
@@ -261,17 +297,26 @@ def test_every_reference_in_the_repository_matches_the_compose_pin() -> None:
     # Given every tracked place that names either image, as text and as a YAML image value.
     references = _references()
     structural = _structural_references()
+    decoded = _yaml_run_references()
 
     # When comparing each with the deployment definition.
-    drift = [
-        f"{path}:{number}: {reference} (expected {_pin(image)})"
-        for path, number, image, reference in references
-        if reference != _pin(image)
-    ] + [
-        f"{path}: image {reference} (expected {_pin(image)})"
-        for path, image, reference in structural
-        if reference != _pin(image)
-    ]
+    drift = (
+        [
+            f"{path}:{number}: {reference} (expected {_pin(image)})"
+            for path, number, image, reference in references
+            if reference != _pin(image)
+        ]
+        + [
+            f"{path}: image {reference} (expected {_pin(image)})"
+            for path, image, reference in structural
+            if reference != _pin(image)
+        ]
+        + [
+            f"{path}: step {step!r} runs {reference} (expected {_pin(image)})"
+            for path, step, image, reference in decoded
+            if reference != _pin(image)
+        ]
+    )
 
     # Then nothing runs a different patch, a moving tag or an unpinned reference.
     assert not drift, "\n".join(drift)
@@ -330,6 +375,7 @@ def test_every_scanned_yaml_file_can_be_read_structurally() -> None:
     for path in _yaml_files():
         try:
             find_yaml_images(path.read_text(encoding="utf-8"))
+            find_yaml_run_mentions(path.read_text(encoding="utf-8"))
         except yaml.YAMLError as error:
             unreadable.append(f"{path.relative_to(ROOT).as_posix()}: {error}")
 
@@ -558,21 +604,6 @@ def test_yaml_reader_ignores_values_that_are_not_these_images(document: str) -> 
     assert found == []
 
 
-def test_run_option_list_holds_whole_option_names() -> None:
-    # Given the options of docker run that take a value, as embedded in this module.
-    options = RUN_OPTIONS_WITH_A_VALUE
-
-    # When checking each entry and a few known names on either side of the line.
-    malformed = sorted(
-        o for o in options if not re.fullmatch(r"-[a-z]|--[a-z][a-z0-9]*(?:-[a-z0-9]+)*", o)
-    )
-
-    # Then a name split in two or a boolean flag listed as a value cannot slip in unnoticed.
-    assert not malformed, malformed
-    assert {"-p", "--network", "--oom-score-adj", "--health-start-interval"} <= options
-    assert not {"-d", "--rm", "-i", "-t", "--init", "--privileged", "--detach"} & options
-
-
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
@@ -619,14 +650,37 @@ def test_run_option_list_holds_whole_option_names() -> None:
             [("redis", "redis"), ("postgres", "postgres:16")],
             id="two-commands",
         ),
+        pytest.param(
+            'CACHE_ID="$(docker run -d --name first-short-redis -p 127.0.0.1:56389:6379 redis)"',
+            [("redis", "redis")],
+            id="command-substitution",
+        ),
+        pytest.param(
+            'docker run -d --label "purpose=first short" postgres',
+            [("postgres", "postgres")],
+            id="quoted-option-value-with-a-space",
+        ),
+        pytest.param(
+            'docker run -d --health-cmd "pg_isready -U review || exit 1" postgres',
+            [("postgres", "postgres")],
+            id="quoted-separator-inside-an-option-value",
+        ),
+        pytest.param(
+            'bash -c "docker run -d redis"', [("redis", "redis")], id="nested-in-a-quoted-command"
+        ),
+        pytest.param(
+            "docker run --rm ghcr.io/acme/app:1 python -c 'import redis'",
+            [("redis", "redis")],
+            id="arguments-after-the-image-are-read-too",
+        ),
     ],
 )
-def test_run_reader_reports_the_image_operand_of_a_docker_run_command(
+def test_run_reader_reports_every_mention_of_these_images_in_a_docker_run_command(
     command: str, expected: list[tuple[str, str]]
 ) -> None:
     # Given a shell command that starts a container.
     # When the guard reads it.
-    found = find_run_images(command)
+    found = find_run_mentions(command)
 
     # Then the image operand is reported as written, with option values and commands skipped.
     assert found == expected
@@ -640,6 +694,9 @@ def test_run_reader_reports_the_image_operand_of_a_docker_run_command(
         "docker exec -it redis redis-cli ping",
         "docker compose run --rm api redis",
         "docker run -d --env REDIS_URL=redis://redis:6379 ghcr.io/acme/app:1",
+        "docker run -d -e REDIS_HOST=redis ghcr.io/acme/app:1",
+        'if [ "$STACK" = redis ]; then docker run -d ghcr.io/acme/app:1; fi',
+        "redis-cli ping && docker run -d ghcr.io/acme/app:1",
         "docker run -d redis/redis-stack:latest",
         "docker logs redis",
     ],
@@ -647,7 +704,7 @@ def test_run_reader_reports_the_image_operand_of_a_docker_run_command(
 def test_run_reader_ignores_commands_that_do_not_start_these_images(command: str) -> None:
     # Given a command that names one of the words as a container, network or service.
     # When the guard reads it.
-    found = find_run_images(command)
+    found = find_run_mentions(command)
 
     # Then nothing is reported.
     assert found == []
@@ -708,3 +765,50 @@ def test_yaml_reader_survives_a_recursive_alias() -> None:
 
     # Then the traversal terminates and still reports the image.
     assert found == [("postgres", "postgres")]
+
+
+def test_yaml_run_reader_survives_a_recursive_alias() -> None:
+    # Given a workflow whose anchor contains itself, next to a step that starts a container.
+    document = "x-loop: &loop [*loop]\nsteps:\n  - run: docker run -d redis\n"
+
+    # When the guard decodes its run values.
+    found = find_yaml_run_mentions(document)
+
+    # Then the traversal terminates and still reports the mention.
+    assert found == [("", "redis", "redis")]
+
+
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        pytest.param(
+            "steps:\n"
+            "  - name: Start additional disposable cache\n"
+            "    run: >-\n"
+            "      docker run -d --name extra-cache -p 127.0.0.1:56392:6379\n"
+            "      redis\n",
+            [("Start additional disposable cache", "redis", "redis")],
+            id="folded-scalar",
+        ),
+        pytest.param(
+            "steps:\n  - run: |\n      docker run -d --name a \\\n        -p 1:2 \\\n        redis\n",
+            [("", "redis", "redis")],
+            id="literal-block-with-continuations",
+        ),
+        pytest.param(
+            f"steps:\n  - name: db\n    run: docker run -d {PINNED_REDIS}\n",
+            [("db", "redis", PINNED_REDIS)],
+            id="pinned-reference",
+        ),
+        pytest.param("steps:\n  - run: echo hello\n", [], id="no-container"),
+    ],
+)
+def test_yaml_run_reader_reads_the_decoded_commands_of_workflow_steps(
+    document: str, expected: list[tuple[str, str, str]]
+) -> None:
+    # Given a workflow whose command is folded or continued across lines in the source text.
+    # When the guard decodes the YAML and reads each `run` value.
+    found = find_yaml_run_mentions(document)
+
+    # Then the decoded command is read as the shell would see it.
+    assert found == expected

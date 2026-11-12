@@ -130,16 +130,21 @@ pinned indexes but were not run.
 
 The drift guard reads every tracked YAML, Python, shell, TOML, Makefile and Dockerfile file as text
 for a reference written with any tag, qualified by a registry or namespace, inside a
-`${NAME:-default}` default, or untagged or digest-only on an `image:` key or a `FROM` line. It also
-reads the image operand of every `docker run` and `docker create` command (continued lines
-included), so an untagged `docker run ... redis` is caught wherever it is, and it parses the
-tracked YAML and reads every `image` value whatever its quoting, flow style, anchor or Compose tag.
-Each reference is compared byte for byte with the Compose pin, so even
-`docker.io/library/postgres:...` is rejected when it differs from the canonical spelling. As a
-secondary tripwire, each known consumer must keep at least the number of references it has today;
-that count is per file, so it can be offset by an unrelated addition and is not the primary
-defense. The guard does not read prose documentation, such as this page. It cannot see a reference
-assembled at run time (`$IMAGE`) or an image passed as an element of a Python argument list, and it
-cannot tell whether a tag and its digest belong together: a tag edited without its digest,
-consistently everywhere, passes. The runtime check in #1021 asserts the version each running
-server reports, and the lookup in "Updating a pin" re-derives a digest from its tag.
+`${NAME:-default}` default, or untagged or digest-only on an `image:` key or a `FROM` line, and it
+parses the tracked YAML and reads every `image` value whatever its quoting, flow style, anchor or
+Compose tag. A `docker run` or `docker create` command is read without parsing it: from the command
+word to the end of the statement (continued lines joined, and the decoded `run` values of workflow
+steps, so folded scalars too) every whole word that names either image is a reference, except the
+value of an option that carries a name such as `--name redis`. Quoting, command substitution and
+`bash -c` therefore cannot hide an image, and an untagged `docker run ... redis` is caught wherever
+it is; the price is that a word handed to the container's own command, such as
+`python -c 'import redis'`, is reported as well and has to be rewritten. Each reference is compared
+byte for byte with the Compose pin, so even `docker.io/library/postgres:...` is rejected when it
+differs from the canonical spelling. As a secondary tripwire, each known consumer must keep at
+least the number of references it has today; that count is per file, so it can be offset by an
+unrelated addition and is not the primary defense. The guard does not read prose documentation,
+such as this page. It cannot see a reference assembled at run time (`$IMAGE`) or an image passed as
+an element of a Python argument list, and it cannot tell whether a tag and its digest belong
+together: a tag edited without its digest, consistently everywhere, passes. The runtime check in
+#1021 asserts the version each running server reports, and the lookup in "Updating a pin"
+re-derives a digest from its tag.
