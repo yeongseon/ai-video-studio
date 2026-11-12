@@ -18,11 +18,9 @@ class StoragePolicy:
     max_stored_bytes: int = 0
     max_asset_count: int = 0
     max_reserved_bytes: int = 0
-    # Free bytes the temp (scratch) filesystem must keep: upload staging checks it per upload,
-    # and render/image/audio jobs check it before they start (job_capacity.ensure_job_capacity).
+    # Free bytes the temp filesystem must keep: upload staging checks it per upload. The same
+    # setting is the scratch floor of render/image/audio jobs (see job_capacity.JobCapacityPolicy).
     temp_disk_low_watermark_bytes: int = 0
-    # Free bytes the filesystem holding ARTIFACT_ROOT must keep before a job may start.
-    artifact_disk_low_watermark_bytes: int = 0
 
     @classmethod
     def from_env(cls) -> StoragePolicy:
@@ -32,9 +30,6 @@ class StoragePolicy:
             max_reserved_bytes=int(os.getenv("MEDIA_MAX_RESERVED_BYTES", "0")),
             temp_disk_low_watermark_bytes=int(
                 os.getenv("MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES", "0")
-            ),
-            artifact_disk_low_watermark_bytes=int(
-                os.getenv("MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES", "0")
             ),
         )
 

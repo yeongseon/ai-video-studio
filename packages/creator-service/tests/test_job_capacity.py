@@ -12,7 +12,8 @@ from pathlib import Path
 import pytest
 
 from creator_service import job_capacity
-from creator_service.storage_policy import FilesystemLowSpace, StoragePolicy
+from creator_service.job_capacity import JobCapacityPolicy
+from creator_service.storage_policy import FilesystemLowSpace
 
 MIB = 1024 * 1024
 _Usage = namedtuple("_Usage", "total used free")
@@ -60,10 +61,10 @@ def volumes(tmp_path: Path) -> tuple[Path, Path]:
     return artifacts, scratch
 
 
-def _policy(artifact_mib: int = 500, scratch_mib: int = 500) -> StoragePolicy:
-    return StoragePolicy(
-        artifact_disk_low_watermark_bytes=artifact_mib * MIB,
-        temp_disk_low_watermark_bytes=scratch_mib * MIB,
+def _policy(artifact_mib: int = 500, scratch_mib: int = 500) -> JobCapacityPolicy:
+    return JobCapacityPolicy(
+        artifact_low_watermark_bytes=artifact_mib * MIB,
+        scratch_low_watermark_bytes=scratch_mib * MIB,
     )
 
 
@@ -80,10 +81,10 @@ def test_policy_reads_both_job_watermarks_from_the_environment(monkeypatch: pyte
     monkeypatch.setenv("MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES", "2147483648")
     monkeypatch.setenv("MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES", "1073741824")
     # When the policy is read from the environment.
-    policy = StoragePolicy.from_env()
+    policy = JobCapacityPolicy.from_env()
     # Then each filesystem has its own floor.
-    assert policy.artifact_disk_low_watermark_bytes == 2147483648
-    assert policy.temp_disk_low_watermark_bytes == 1073741824
+    assert policy.artifact_low_watermark_bytes == 2147483648
+    assert policy.scratch_low_watermark_bytes == 1073741824
 
 
 def test_both_job_watermarks_default_to_disabled(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -91,10 +92,10 @@ def test_both_job_watermarks_default_to_disabled(monkeypatch: pytest.MonkeyPatch
     monkeypatch.delenv("MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES", raising=False)
     monkeypatch.delenv("MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES", raising=False)
     # When the policy is read.
-    policy = StoragePolicy.from_env()
+    policy = JobCapacityPolicy.from_env()
     # Then existing installations keep today's behavior: nothing is refused.
-    assert policy.artifact_disk_low_watermark_bytes == 0
-    assert policy.temp_disk_low_watermark_bytes == 0
+    assert policy.artifact_low_watermark_bytes == 0
+    assert policy.scratch_low_watermark_bytes == 0
 
 
 def test_job_is_refused_when_the_artifact_filesystem_is_below_its_watermark(
@@ -177,9 +178,9 @@ def test_a_zero_watermark_disables_that_filesystem_check_without_measuring_it(
 ) -> None:
     # Given a disabled watermark whose filesystem reports no free space at all.
     artifacts, scratch = volumes
-    policy = StoragePolicy(
-        artifact_disk_low_watermark_bytes=0 if disabled in ("artifact", "both") else 500 * MIB,
-        temp_disk_low_watermark_bytes=0 if disabled in ("scratch", "both") else 500 * MIB,
+    policy = JobCapacityPolicy(
+        artifact_low_watermark_bytes=0 if disabled in ("artifact", "both") else 500 * MIB,
+        scratch_low_watermark_bytes=0 if disabled in ("scratch", "both") else 500 * MIB,
     )
     free = {artifacts: 0 if disabled in ("artifact", "both") else 9000 * MIB,
             scratch: 0 if disabled in ("scratch", "both") else 9000 * MIB}
@@ -434,7 +435,7 @@ def test_a_required_amount_that_is_not_a_whole_mebibyte_is_never_understated(
     # Given a floor of 1 000 000 000 bytes (953.67 MiB) and 900 MiB free.
     artifacts, scratch = volumes
     monkeypatch.setattr(job_capacity.shutil, "disk_usage", FakeDisk({artifacts: 900 * MIB, scratch: 9000 * MIB}))
-    policy = StoragePolicy(artifact_disk_low_watermark_bytes=1_000_000_000, temp_disk_low_watermark_bytes=500 * MIB)
+    policy = JobCapacityPolicy(artifact_low_watermark_bytes=1_000_000_000, scratch_low_watermark_bytes=500 * MIB)
     # When the job is refused.
     with pytest.raises(FilesystemLowSpace) as raised:
         job_capacity.ensure_job_capacity("render_video", policy=policy, artifact_root=artifacts, scratch_root=scratch)
@@ -443,6 +444,168 @@ def test_a_required_amount_that_is_not_a_whole_mebibyte_is_never_understated(
     assert str(raised.value) == (
         "Artifact storage has 900 MiB free but at least 954 MiB is required before a new job can start (54 MiB short)"
     )
+
+
+def test_an_unrelated_malformed_budget_setting_does_not_affect_job_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given an upload-budget setting that nobody can parse and no job floor configured.
+    monkeypatch.setenv("MEDIA_MAX_ASSET_COUNT", "invalid")
+    monkeypatch.delenv("MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES", raising=False)
+    monkeypatch.delenv("MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES", raising=False)
+    # When a job asks to start.
+    job_capacity.ensure_job_capacity("render_video")
+    # Then admission only depends on its own settings, so it neither raises nor measures anything.
+
+
+@pytest.mark.parametrize("variable", ["MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES", "MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES"])
+def test_a_malformed_floor_is_rejected_by_name_rather_than_read_as_zero(
+    monkeypatch: pytest.MonkeyPatch, variable: str,
+) -> None:
+    # Given a floor written with a unit instead of a number of bytes.
+    monkeypatch.setenv(variable, "2GiB")
+    # When the job floors are read.
+    with pytest.raises(ValueError) as raised:
+        JobCapacityPolicy.from_env()
+    # Then the operator is told which setting is wrong; the check is never silently disabled.
+    assert variable in str(raised.value)
+
+
+@pytest.mark.parametrize("value", ["0", "-1"])
+def test_a_zero_or_negative_floor_disables_its_check(volumes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, value: str) -> None:
+    # Given both floors written as zero or a negative number, and disks that would fail any check.
+    artifacts, scratch = volumes
+    monkeypatch.setenv("MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES", value)
+    monkeypatch.setenv("MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES", value)
+    disk = FakeDisk({artifacts: 0, scratch: 0})
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", disk)
+    # When a job asks to start.
+    job_capacity.ensure_job_capacity("render_video", artifact_root=artifacts, scratch_root=scratch)
+    # Then nothing is measured or refused.
+    assert disk.queried == []
+
+
+def _forbid(monkeypatch: pytest.MonkeyPatch, target: object, name: str) -> list[str]:
+    calls: list[str] = []
+
+    def forbidden(*_args: object, **_kwargs: object) -> object:
+        calls.append(name)
+        raise AssertionError(f"{name} must not be called here")
+
+    monkeypatch.setattr(target, name, forbidden)
+    return calls
+
+
+def test_disabled_checks_never_resolve_a_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given both floors disabled, and the process temp directory not yet resolved (a cold cache).
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    resolved = _forbid(monkeypatch, tempfile, "gettempdir")
+    resolved += _forbid(monkeypatch, job_capacity, "_default_scratch_directory")
+    # When a job asks to start.
+    job_capacity.ensure_job_capacity("render_video", policy=JobCapacityPolicy(), artifact_root="/does/not/matter")
+    # Then admission is inert: it resolves nothing, so it cannot write or fail on a temp directory.
+    assert resolved == []
+
+
+def test_artifact_refusal_comes_before_the_scratch_directory_is_resolved(
+    volumes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given an artifact filesystem under its floor and a cold temp-directory cache.
+    artifacts, _scratch = volumes
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", FakeDisk({artifacts: 1 * MIB}))
+    resolved = _forbid(monkeypatch, tempfile, "gettempdir")
+    resolved += _forbid(monkeypatch, job_capacity, "_default_scratch_directory")
+    # When a job asks to start.
+    with pytest.raises(FilesystemLowSpace) as raised:
+        job_capacity.ensure_job_capacity("render_video", policy=_policy(), artifact_root=artifacts)
+    # Then it is refused for the artifact filesystem without touching the temp directory at all.
+    assert raised.value.filesystem == "artifact"
+    assert resolved == []
+
+
+def test_a_cold_temp_directory_cache_is_resolved_without_tempfiles_write_probe(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a process that has not used tempfile yet, TMPDIR naming a usable directory, and tempfile's
+    # own resolver (which creates, writes and deletes a probe file) made unavailable.
+    artifacts = tmp_path.resolve() / "artifacts"
+    artifacts.mkdir()
+    scratch = tmp_path.resolve() / "tmp-from-env"
+    scratch.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    monkeypatch.setenv("TMPDIR", str(scratch))
+    forbidden = _forbid(monkeypatch, tempfile, "gettempdir")
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", FakeDisk({artifacts: 9000 * MIB, scratch: 120 * MIB}))
+    # When a job asks to start.
+    with pytest.raises(FilesystemLowSpace) as raised:
+        job_capacity.ensure_job_capacity("render_video", policy=_policy(), artifact_root=artifacts)
+    # Then the directory tempfile would pick was measured, and the check wrote nothing into it.
+    assert (raised.value.filesystem, raised.value.free_bytes) == ("scratch", 120 * MIB)
+    assert list(scratch.iterdir()) == []
+    assert forbidden == []
+
+
+def test_a_cold_cache_skips_an_unusable_candidate_in_tempfiles_order(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given TMPDIR naming a directory that does not exist and TEMP naming a usable one.
+    artifacts = tmp_path.resolve() / "artifacts"
+    artifacts.mkdir()
+    usable = tmp_path.resolve() / "usable"
+    usable.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    monkeypatch.setenv("TMPDIR", str(tmp_path / "missing"))
+    monkeypatch.setenv("TEMP", str(usable))
+    monkeypatch.setenv("TMP", str(tmp_path / "also-missing"))
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", FakeDisk({artifacts: 9000 * MIB, usable: 120 * MIB}))
+    # When a job asks to start.
+    with pytest.raises(FilesystemLowSpace) as raised:
+        job_capacity.ensure_job_capacity("render_video", policy=_policy(), artifact_root=artifacts)
+    # Then the first usable candidate decided, like tempfile would.
+    assert raised.value.filesystem == "scratch"
+
+
+def test_a_cold_cache_prefers_tmpdir_over_the_other_temp_variables(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given TMPDIR, TEMP and TMP naming three usable directories.
+    artifacts = tmp_path.resolve() / "artifacts"
+    artifacts.mkdir()
+    chosen, other = tmp_path.resolve() / "from-tmpdir", tmp_path.resolve() / "from-others"
+    chosen.mkdir()
+    other.mkdir()
+    monkeypatch.setattr(tempfile, "tempdir", None)
+    monkeypatch.setenv("TMPDIR", str(chosen))
+    monkeypatch.setenv("TEMP", str(other))
+    monkeypatch.setenv("TMP", str(other))
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", FakeDisk({artifacts: 9000 * MIB, chosen: 120 * MIB}))
+    # When a job asks to start.
+    with pytest.raises(FilesystemLowSpace) as raised:
+        job_capacity.ensure_job_capacity("render_video", policy=_policy(), artifact_root=artifacts)
+    # Then TMPDIR decided, as it does for tempfile (the fake disk fails on any other directory).
+    assert raised.value.filesystem == "scratch"
+
+
+def test_a_scratch_directory_that_cannot_be_resolved_does_not_block_the_job(
+    volumes: tuple[Path, Path], monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture,
+) -> None:
+    # Given a process whose current directory (tempfile's last resort) is gone.
+    artifacts, _scratch = volumes
+    monkeypatch.setattr(tempfile, "tempdir", None)
+
+    def unresolvable() -> Path:
+        raise FileNotFoundError("no usable temporary directory")
+
+    monkeypatch.setattr(job_capacity, "_default_scratch_directory", unresolvable)
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", FakeDisk({artifacts: 9000 * MIB}))
+    # When a job asks to start.
+    with caplog.at_level(logging.WARNING, logger="creator_service.job_capacity"):
+        job_capacity.ensure_job_capacity("render_video", policy=_policy(), artifact_root=artifacts)
+    # Then it is admitted like any other unmeasurable filesystem, and the gap is visible.
+    records = [r for r in caplog.records if r.name == "creator_service.job_capacity"]
+    assert [getattr(r, "filesystem", None) for r in records] == ["scratch"]
+    assert getattr(records[0], "measured", None) is False
 
 
 def test_nothing_is_checked_by_default(monkeypatch: pytest.MonkeyPatch) -> None:
