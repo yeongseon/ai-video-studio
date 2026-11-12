@@ -5,19 +5,27 @@
 reference, so a bumped patch or digest cannot be applied in one place and silently missed in
 another, and no moving tag such as `postgres:16-alpine` or `latest` can come back.
 
-The check is textual and covers tracked YAML, Python, shell, TOML, Makefile and Dockerfile
-files. It reads a reference written with any tag, qualified by a registry or namespace
-(`docker.io/library/postgres:...`), inside a `${NAME:-default}` default, or untagged on an
-`image:` key or a Dockerfile `FROM` line, and compares it byte for byte with the compose pin.
+Every tracked YAML, Python, shell, TOML, Makefile and Dockerfile file is scanned as text for a
+reference written with any tag, qualified by a registry or namespace
+(`docker.io/library/postgres:...`), inside a `${NAME:-default}` default, or untagged or digest-only
+on an `image:` key or a Dockerfile `FROM` line. Tracked YAML is also parsed, and every `image`
+value naming either image is read whatever its quoting, flow style, anchor or Compose tag. Each
+reference is compared byte for byte with the compose pin. A floor on the references each known
+consumer keeps means a line rewritten into a spelling the text scan cannot read cannot silently
+disappear.
+
 It does not read prose documentation (documentation-only pull requests run a reduced CI matrix
-that does not include this module). It cannot see a reference assembled at run time (`$IMAGE`)
-or an untagged name on a `docker run` line. It also cannot tell whether a tag and its digest
-belong together: a tag edited without its digest, consistently everywhere, passes, which is why
-the follow-up runtime check (#1021) asserts the version each running server reports.
+that does not include this module). It cannot see a reference assembled at run time (`$IMAGE`),
+or an untagged name on a `docker run` line at a place that is not a known consumer. It also
+cannot tell whether a tag and its digest belong together: a tag edited without its digest,
+consistently everywhere, passes, which is why the follow-up runtime check (#1021) asserts the
+version each running server reports.
 """
 
 import re
 import subprocess
+from collections import Counter
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Final
 
@@ -46,9 +54,13 @@ TAGGED: Final = re.compile(
 # The same images with no tag, which Docker resolves to `latest`. A bare name is only unambiguous as
 # the value of an `image:` key or on a Dockerfile `FROM` line, so only those positions count.
 UNTAGGED: Final = re.compile(
-    rf"^\s*(?:-\s+)?(?:image:|(?i:FROM)(?:\s+--\S+)*)\s+[\"']?(?P<ref>{QUALIFIER}(?P<image>postgres|redis))[\"']?"
+    rf"^\s*(?:-\s+)?(?:image:|(?i:FROM)(?:\s+--\S+)*)\s+[\"']?"
+    rf"(?P<ref>{QUALIFIER}(?P<image>postgres|redis)(?:@[^\s\"']+)?)[\"']?"
     r"(?i:\s+AS\s+\S+)?\s*(?:#.*)?$"
 )
+# An `image` value of a parsed YAML document. Here every tag counts (`redis:123` is a tag, not a
+# port) and so does a digest with no tag, malformed or not, because the key itself says it is an image.
+YAML_IMAGE: Final = re.compile(rf"{QUALIFIER}(?P<image>postgres|redis)(?::\w[\w.-]*)?(?:@\S+)?")
 # `${NAME:-default}` and its `-`, `=`, `+` and `?` variants, with or without the colon: the default
 # text is a reference that a reader (and Compose) will use, so it is scanned like any other.
 INTERPOLATION: Final = re.compile(r"\$\{[A-Za-z_]\w*:?[-=+?]([^{}]*)\}")
@@ -83,8 +95,13 @@ def _tracked_text_files() -> list[Path]:
     ]
 
 
+def _unwrap_defaults(text: str) -> str:
+    unwrapped = INTERPOLATION.sub(r" \1 ", text)
+    return text if unwrapped == text else _unwrap_defaults(unwrapped)
+
+
 def find_references(line: str) -> list[tuple[str, str]]:
-    text = INTERPOLATION.sub(r" \1 ", line)
+    text = _unwrap_defaults(line)
     found = [
         (match["image"], match[0])
         for match in TAGGED.finditer(text)
@@ -93,6 +110,45 @@ def find_references(line: str) -> list[tuple[str, str]]:
     bare = UNTAGGED.match(text)
     if bare:
         found.append((bare["image"], bare["ref"]))
+    return found
+
+
+class _TolerantLoader(yaml.SafeLoader):
+    """SafeLoader that reads Compose's custom tags (`!override`, `!reset`) as plain values."""
+
+
+def _plain(loader: yaml.SafeLoader, _suffix: str, node: yaml.Node) -> object:
+    if isinstance(node, yaml.ScalarNode):
+        return loader.construct_scalar(node)
+    if isinstance(node, yaml.SequenceNode):
+        return loader.construct_sequence(node, deep=True)
+    return loader.construct_mapping(node, deep=True)
+
+
+_TolerantLoader.add_multi_constructor("!", _plain)
+
+
+def _image_values(node: object) -> Iterator[str]:
+    if isinstance(node, dict):
+        for key, value in node.items():
+            if key == "image":
+                for item in value if isinstance(value, list) else [value]:
+                    if isinstance(item, str):
+                        yield item
+            yield from _image_values(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _image_values(item)
+
+
+def find_yaml_images(text: str) -> list[tuple[str, str]]:
+    found = []
+    for document in yaml.load_all(text, Loader=_TolerantLoader):
+        for value in _image_values(document):
+            reference = _unwrap_defaults(value).strip()
+            match = YAML_IMAGE.fullmatch(reference)
+            if match:
+                found.append((match["image"], reference))
     return found
 
 
@@ -107,6 +163,18 @@ def _references() -> list[tuple[str, int, str, str]]:
     return found
 
 
+def _yaml_files() -> list[Path]:
+    return [path for path in _tracked_text_files() if path.suffix in {".yml", ".yaml"}]
+
+
+def _structural_references() -> list[tuple[str, str, str]]:
+    found = []
+    for path in _yaml_files():
+        for image, reference in find_yaml_images(path.read_text(encoding="utf-8")):
+            found.append((path.relative_to(ROOT).as_posix(), image, reference))
+    return found
+
+
 def test_compose_pins_each_service_to_an_exact_patch_and_digest() -> None:
     # Given the deployment definition of the database and the broker.
     for name, pattern in SHAPE.items():
@@ -115,13 +183,18 @@ def test_compose_pins_each_service_to_an_exact_patch_and_digest() -> None:
 
 
 def test_every_reference_in_the_repository_matches_the_compose_pin() -> None:
-    # Given every tracked place that names either image.
+    # Given every tracked place that names either image, as text and as a YAML image value.
     references = _references()
+    structural = _structural_references()
 
     # When comparing each with the deployment definition.
     drift = [
         f"{path}:{number}: {reference} (expected {_pin(image)})"
         for path, number, image, reference in references
+        if reference != _pin(image)
+    ] + [
+        f"{path}: image {reference} (expected {_pin(image)})"
+        for path, image, reference in structural
         if reference != _pin(image)
     ]
 
@@ -150,6 +223,43 @@ def test_the_scan_reaches_every_kind_of_file_that_can_start_these_images() -> No
 
     # Then none is outside the scan, so a narrowed filter cannot silently blind the check.
     assert not missing, missing
+
+
+KNOWN_CONSUMERS: Final = {
+    ".github/workflows/ci.yml": 7,
+    "docker-compose.yml": 2,
+    "scripts/restore_drill.py": 1,
+    "scripts/release_lifecycle_acceptance.sh": 1,
+    "tests/test_restore_database_negative.py": 1,
+}
+
+
+def test_every_known_consumer_still_names_the_images() -> None:
+    # Given the places known to start these images and the references the text scan finds in each.
+    found = Counter(path for path, _number, _image, _reference in _references())
+
+    # When comparing each place with the number of references it had when this guard was written.
+    shrunk = {
+        path: (found[path], floor) for path, floor in KNOWN_CONSUMERS.items() if found[path] < floor
+    }
+
+    # Then a reference rewritten into a spelling the guard cannot read cannot silently disappear.
+    assert not shrunk, shrunk
+
+
+def test_every_scanned_yaml_file_can_be_read_structurally() -> None:
+    # Given every tracked YAML file the guard scans.
+    unreadable = []
+
+    # When each is parsed for its image values.
+    for path in _yaml_files():
+        try:
+            find_yaml_images(path.read_text(encoding="utf-8"))
+        except yaml.YAMLError as error:
+            unreadable.append(f"{path.relative_to(ROOT).as_posix()}: {error}")
+
+    # Then none is skipped, so quoting, flow style or an anchor cannot hide an image key.
+    assert not unreadable, "\n".join(unreadable)
 
 
 def test_core_services_never_use_a_moving_image() -> None:
@@ -227,6 +337,18 @@ PINNED_REDIS: Final = f"redis:7.4.12-alpine@{DIGEST}"
         ),
         pytest.param("FROM postgres", [("postgres", "postgres")], id="untagged-from"),
         pytest.param(
+            f"image: redis@{DIGEST}", [("redis", f"redis@{DIGEST}")], id="digest-only-image-key"
+        ),
+        pytest.param(f"FROM redis@{DIGEST}", [("redis", f"redis@{DIGEST}")], id="digest-only-from"),
+        pytest.param(
+            "FROM redis@sha256:abc",
+            [("redis", "redis@sha256:abc")],
+            id="malformed-digest-only-from",
+        ),
+        pytest.param(
+            "image: ${A:-${B:-redis}}", [("redis", "redis")], id="untagged-nested-defaults"
+        ),
+        pytest.param(
             "FROM --platform=linux/amd64 library/redis AS cache",
             [("redis", "library/redis")],
             id="untagged-qualified-from-with-flag-and-alias",
@@ -274,4 +396,88 @@ def test_matcher_ignores_text_that_is_not_an_image_reference(line: str) -> None:
     found = find_references(line)
 
     # Then nothing is reported, so the stricter spellings above cannot cause false alarms.
+    assert found == []
+
+
+@pytest.mark.parametrize(
+    ("document", "expected"),
+    [
+        pytest.param(
+            f"image: {PINNED_POSTGRES}\n", [("postgres", PINNED_POSTGRES)], id="the-pin-itself"
+        ),
+        pytest.param('"image": postgres\n', [("postgres", "postgres")], id="quoted-key"),
+        pytest.param(
+            "services: {postgres: {image: postgres, env: {A: b}}}\n",
+            [("postgres", "postgres")],
+            id="flow-mapping",
+        ),
+        pytest.param(
+            'image: "redis:alpine"  # cache\n',
+            [("redis", "redis:alpine")],
+            id="quoted-value-with-comment",
+        ),
+        pytest.param(
+            "x: &pg postgres\ny:\n  image: *pg\n", [("postgres", "postgres")], id="anchor-alias"
+        ),
+        pytest.param(f"image: redis@{DIGEST}\n", [("redis", f"redis@{DIGEST}")], id="digest-only"),
+        pytest.param(
+            "image: redis@sha256:abc\n", [("redis", "redis@sha256:abc")], id="malformed-digest-only"
+        ),
+        pytest.param(
+            "image: docker.io/library/postgres:latest\n",
+            [("postgres", "docker.io/library/postgres:latest")],
+            id="qualified-latest",
+        ),
+        pytest.param(
+            "image: redis:123\n", [("redis", "redis:123")], id="numeric-tag-is-a-tag-here"
+        ),
+        pytest.param(
+            "image: ${A:-${B:-redis}}\n", [("redis", "redis")], id="untagged-nested-defaults"
+        ),
+        pytest.param(
+            "matrix:\n  image: [postgres:16, redis]\n",
+            [("postgres", "postgres:16"), ("redis", "redis")],
+            id="matrix-list",
+        ),
+        pytest.param(
+            'services:\n  postgres:\n    ports: !override ["127.0.0.1:5432:5432"]\n'
+            "    image: postgres:16\n",
+            [("postgres", "postgres:16")],
+            id="compose-custom-tag",
+        ),
+        pytest.param(
+            "image: postgres\n---\nimage: redis:7\n",
+            [("postgres", "postgres"), ("redis", "redis:7")],
+            id="several-documents",
+        ),
+    ],
+)
+def test_yaml_reader_reports_every_image_value_that_names_these_images(
+    document: str, expected: list[tuple[str, str]]
+) -> None:
+    # Given a YAML document that sets an image key in some presentation.
+    # When the guard parses it.
+    found = find_yaml_images(document)
+
+    # Then the value is reported as written, whatever the quoting, flow style or anchor.
+    assert found == expected
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        "image: redis/redis-stack:latest\n",
+        "image: ghcr.io/${{ github.repository }}/api@${{ needs.build.outputs.digest }}\n",
+        "images: [postgres, redis]\n",
+        "image:\n",
+        "command: docker run postgres\n",
+        "services:\n  postgres:\n    environment:\n      POSTGRES_DB: app\n",
+    ],
+)
+def test_yaml_reader_ignores_values_that_are_not_these_images(document: str) -> None:
+    # Given a different image, an unrelated key, an empty value or a service name.
+    # When the guard parses it.
+    found = find_yaml_images(document)
+
+    # Then nothing is reported.
     assert found == []
