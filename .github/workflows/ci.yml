@@ -117,7 +117,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
       - name: Install Python dependencies
         run: python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt
       - name: Install packages in editable mode
@@ -171,7 +171,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
       - name: Install Python dependencies
         run: python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt
       - name: Install packages in editable mode
@@ -231,7 +231,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
       - name: Install runtime and test dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg nginx
