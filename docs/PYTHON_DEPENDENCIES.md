@@ -5,7 +5,7 @@ are not meant to agree.
 
 | | `constraints.txt` | `uv.lock` |
 |---|---|---|
-| Scope | What the deployable runtime and CI install: the API and Worker requirements, their dev tools, the three workspace packages **without** provider extras, and Playwright | The whole uv workspace (`creator-domain`, `creator-service`, `creator-provider`) with **every** provider extra |
+| Scope | The dependency closure of every `pip install -c constraints.txt` in CI, the Dockerfiles and the Makefile: the API and Worker requirements, their dev tools, the three workspace packages **without** provider extras, and Playwright | The whole uv workspace (`creator-domain`, `creator-service`, `creator-provider`) with **every** provider extra |
 | Installed by | Every `pip install -c constraints.txt`: the API and Worker images, the CI jobs, `make install` | Nothing. CI only runs `uv lock --check` on it |
 | Generated from | `constraints.in`, with `make lock-constraints` | The package metadata, with `make lock` |
 | Platform | CPython 3.12 on Linux | Universal |
@@ -30,7 +30,9 @@ in the file: not a package for another project, not an operating-system package,
 provider SDK that no consumer installs. If a deployment needs a provider extra, add a consumer for
 it and its input to `constraints.in` in the same change.
 
-Tools that CI installs without the file (`uv`, `basedpyright`) and build backends are outside it.
+Outside it: the tools that CI installs without the file (`uv`, `basedpyright`), the release tooling of
+the CD workflow (`pydantic`), `pip` itself and build backends, and the `watchfiles` that the `dev`
+stages of the Dockerfiles install.
 
 ## Regenerating and checking
 
@@ -49,9 +51,17 @@ The CI lint job runs the check. It fails for a pin that no input needs, a pin th
 version that conflicts with a requirement, and a requirement that changed without regeneration. It
 accepts a hand-edited version that still satisfies every input, because the file is a lock, not a
 promise that each version is the newest. `apps/api/tests/test_python_constraints.py` checks the
-offline half: pins are exact and unique, every pin carries an annotation that names a requirements file,
+offline half (and, as a floor that does not depend on the other consumers, that both images install
+their requirements under the file): pins are exact and unique, every pin carries an annotation that names a requirements file,
 a workspace package or another pin, the exact pins of the requirements files agree with it, and `constraints.in` declares exactly what
 the `pip install -c constraints.txt` commands in CI, the Makefile and the Dockerfiles use.
+
+The offline tests are heuristics with known edges. They read `.github/workflows/ci.yml`, the Makefile
+and `apps/*/Dockerfile`, and only the lines that contain `-c constraints.txt`, so a constrained
+install added anywhere else is not discovered. A pip command is cut at `&&`, `;` and `|`. The
+annotation test checks that each annotation names a file, workspace package or pin that exists and
+that each pin can be reached from an input; it cannot tell that an annotation is true, which is
+what the regeneration check proves.
 
 ## State when this was written (2026-11-12)
 
