@@ -131,13 +131,15 @@ pinned indexes but were not run.
 The drift guard reads every tracked YAML, Python, shell, TOML, Makefile and Dockerfile file as text
 for a reference written with any tag, qualified by a registry or namespace, inside a
 `${NAME:-default}` default, or untagged or digest-only on an `image:` key or a `FROM` line. It also
-parses the tracked YAML and reads every `image` value, whatever its quoting, flow style, anchor or
-Compose tag, and it requires each known consumer to keep at least the number of references it has
-today, so a line rewritten into a spelling the text scan cannot read cannot silently disappear.
-Each reference is compared byte for byte with the Compose pin, so even `docker.io/library/postgres:...`
-is rejected when it differs from the canonical spelling. It does not read prose documentation, such
-as this page. It cannot see a reference assembled at run time (`$IMAGE`) or an untagged name on a
-`docker run` line at a place that is not a known consumer, and it cannot tell whether a tag and its
-digest belong together: a tag edited without its digest, consistently everywhere, passes. The
-runtime check in #1021 asserts the version each running server reports, and the lookup in "Updating
-a pin" re-derives a digest from its tag.
+reads the image operand of every `docker run` and `docker create` command (continued lines
+included), so an untagged `docker run ... redis` is caught wherever it is, and it parses the
+tracked YAML and reads every `image` value whatever its quoting, flow style, anchor or Compose tag.
+Each reference is compared byte for byte with the Compose pin, so even
+`docker.io/library/postgres:...` is rejected when it differs from the canonical spelling. As a
+secondary tripwire, each known consumer must keep at least the number of references it has today;
+that count is per file, so it can be offset by an unrelated addition and is not the primary
+defense. The guard does not read prose documentation, such as this page. It cannot see a reference
+assembled at run time (`$IMAGE`) or an image passed as an element of a Python argument list, and it
+cannot tell whether a tag and its digest belong together: a tag edited without its digest,
+consistently everywhere, passes. The runtime check in #1021 asserts the version each running
+server reports, and the lookup in "Updating a pin" re-derives a digest from its tag.

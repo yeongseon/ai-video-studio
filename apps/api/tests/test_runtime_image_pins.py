@@ -8,18 +8,19 @@ another, and no moving tag such as `postgres:16-alpine` or `latest` can come bac
 Every tracked YAML, Python, shell, TOML, Makefile and Dockerfile file is scanned as text for a
 reference written with any tag, qualified by a registry or namespace
 (`docker.io/library/postgres:...`), inside a `${NAME:-default}` default, or untagged or digest-only
-on an `image:` key or a Dockerfile `FROM` line. Tracked YAML is also parsed, and every `image`
+on an `image:` key or a Dockerfile `FROM` line. The image operand of every `docker run` and
+`docker create` command is read as well, with continued lines joined, so an untagged
+`docker run ... redis` is caught wherever it is. Tracked YAML is also parsed, and every `image`
 value naming either image is read whatever its quoting, flow style, anchor or Compose tag. Each
 reference is compared byte for byte with the compose pin. A floor on the references each known
-consumer keeps means a line rewritten into a spelling the text scan cannot read cannot silently
-disappear.
+consumer keeps is a secondary tripwire for a line rewritten into a spelling none of those readers
+understands; it counts references per file, so an unrelated addition can offset it.
 
 It does not read prose documentation (documentation-only pull requests run a reduced CI matrix
-that does not include this module). It cannot see a reference assembled at run time (`$IMAGE`),
-or an untagged name on a `docker run` line at a place that is not a known consumer. It also
-cannot tell whether a tag and its digest belong together: a tag edited without its digest,
-consistently everywhere, passes, which is why the follow-up runtime check (#1021) asserts the
-version each running server reports.
+that does not include this module). It cannot see a reference assembled at run time (`$IMAGE`) or
+an image passed as an element of a Python argument list. It also cannot tell whether a tag and its
+digest belong together: a tag edited without its digest, consistently everywhere, passes, which is
+why the follow-up runtime check (#1021) asserts the version each running server reports.
 """
 
 import re
@@ -128,17 +129,21 @@ def _plain(loader: yaml.SafeLoader, _suffix: str, node: yaml.Node) -> object:
 _TolerantLoader.add_multi_constructor("!", _plain)
 
 
-def _image_values(node: object) -> Iterator[str]:
+def _image_values(node: object, visited: set[int] | None = None) -> Iterator[str]:
+    visited = set() if visited is None else visited
+    if not isinstance(node, (dict, list)) or id(node) in visited:
+        return
+    visited.add(id(node))
     if isinstance(node, dict):
         for key, value in node.items():
             if key == "image":
                 for item in value if isinstance(value, list) else [value]:
                     if isinstance(item, str):
                         yield item
-            yield from _image_values(value)
-    elif isinstance(node, list):
+            yield from _image_values(value, visited)
+    else:
         for item in node:
-            yield from _image_values(item)
+            yield from _image_values(item, visited)
 
 
 def find_yaml_images(text: str) -> list[tuple[str, str]]:
@@ -152,14 +157,84 @@ def find_yaml_images(text: str) -> list[tuple[str, str]]:
     return found
 
 
+# Options of `docker run` and `docker create` that take a value, from the Docker CLI's flag
+# definitions (a boolean flag such as `-d` or `--rm` is not listed). The first token that is neither
+# an option nor an option's value is the image operand, so `--name redis` is a container name.
+RUN_OPTIONS_WITH_A_VALUE: Final = frozenset(
+    (
+        "-a -c -e -h -l -m -p -u -v -w --add-host --annotation --attach --blkio-weight "
+        "--blkio-weight-device --cap-add --cap-drop --cgroup-parent --cgroupns --cidfile "
+        "--cpu-count --cpu-percent --cpu-period --cpu-quota --cpu-rt-period --cpu-rt-runtime "
+        "--cpu-shares --cpus --cpuset-cpus --cpuset-mems --detach-keys --device "
+        "--device-cgroup-rule --device-read-bps --device-read-iops --device-write-bps "
+        "--device-write-iops --dns --dns-opt --dns-option --dns-search --domainname --entrypoint "
+        "--env --env-file --expose --gpus --group-add --health-cmd --health-interval "
+        "--health-retries --health-start-interval --health-start-period --health-timeout "
+        "--hostname --io-maxbandwidth --io-maxiops --ip --ip6 --ipc --isolation --kernel-memory "
+        "--label --label-file --link --link-local-ip --log-driver --log-opt --mac-address "
+        "--memory --memory-reservation --memory-swap --memory-swappiness --mount --name --net "
+        "--net-alias --network --network-alias --oom-score-adj --pid --pids-limit --platform "
+        "--publish --pull --restart --runtime --security-opt --shm-size --stop-signal "
+        "--stop-timeout --storage-opt --sysctl --tmpfs --ulimit --umask --user --userns --uts "
+        "--volume --volume-driver --volumes-from --workdir"
+    ).split()
+)
+RUN_COMMAND: Final = re.compile(r"\bdocker\s+(?:container\s+)?(?:run|create)\b(?P<rest>[^;&|]*)")
+
+
+def find_run_images(command: str) -> list[tuple[str, str]]:
+    found = []
+    for run in RUN_COMMAND.finditer(_unwrap_defaults(command)):
+        skip_value = False
+        for token in run["rest"].split():
+            if skip_value:
+                skip_value = False
+            elif token.startswith("-"):
+                skip_value = token in RUN_OPTIONS_WITH_A_VALUE
+            else:
+                operand = token.strip("\"'")
+                named = YAML_IMAGE.fullmatch(operand)
+                if named:
+                    found.append((named["image"], operand))
+                break
+    return found
+
+
+def _statements(text: str) -> Iterator[tuple[int, list[str]]]:
+    group: list[str] = []
+    first = 1
+    for number, line in enumerate(text.splitlines(), start=1):
+        if not group:
+            first = number
+        group.append(line)
+        if not line.rstrip().endswith("\\"):
+            yield first, group
+            group = []
+    if group:
+        yield first, group
+
+
+def scan_text(text: str) -> list[tuple[int, str, str]]:
+    found = []
+    for first, lines in _statements(text):
+        seen = set()
+        for offset, line in enumerate(lines):
+            for image, reference in find_references(line):
+                found.append((first + offset, image, reference))
+                seen.add((image, reference))
+        command = " ".join(line.rstrip().removesuffix("\\") for line in lines)
+        for image, reference in find_run_images(command):
+            if (image, reference) not in seen:
+                found.append((first, image, reference))
+    return found
+
+
 def _references() -> list[tuple[str, int, str, str]]:
     found = []
     for path in _tracked_text_files():
-        for number, line in enumerate(
-            path.read_text(encoding="utf-8", errors="replace").splitlines(), start=1
-        ):
-            for image, reference in find_references(line):
-                found.append((path.relative_to(ROOT).as_posix(), number, image, reference))
+        text = path.read_text(encoding="utf-8", errors="replace")
+        for number, image, reference in scan_text(text):
+            found.append((path.relative_to(ROOT).as_posix(), number, image, reference))
     return found
 
 
@@ -481,3 +556,155 @@ def test_yaml_reader_ignores_values_that_are_not_these_images(document: str) -> 
 
     # Then nothing is reported.
     assert found == []
+
+
+def test_run_option_list_holds_whole_option_names() -> None:
+    # Given the options of docker run that take a value, as embedded in this module.
+    options = RUN_OPTIONS_WITH_A_VALUE
+
+    # When checking each entry and a few known names on either side of the line.
+    malformed = sorted(
+        o for o in options if not re.fullmatch(r"-[a-z]|--[a-z][a-z0-9]*(?:-[a-z0-9]+)*", o)
+    )
+
+    # Then a name split in two or a boolean flag listed as a value cannot slip in unnoticed.
+    assert not malformed, malformed
+    assert {"-p", "--network", "--oom-score-adj", "--health-start-interval"} <= options
+    assert not {"-d", "--rm", "-i", "-t", "--init", "--privileged", "--detach"} & options
+
+
+@pytest.mark.parametrize(
+    ("command", "expected"),
+    [
+        pytest.param("docker run -d --name cache redis", [("redis", "redis")], id="untagged"),
+        pytest.param(
+            "docker run -d --name redis -p 6379:6379 redis:alpine",
+            [("redis", "redis:alpine")],
+            id="container-named-like-an-image",
+        ),
+        pytest.param(
+            "docker run --rm -e POSTGRES_PASSWORD=x -v data:/var/lib/postgresql/data postgres",
+            [("postgres", "postgres")],
+            id="options-with-values-before-the-image",
+        ),
+        pytest.param("docker run --name=redis redis", [("redis", "redis")], id="name-with-equals"),
+        pytest.param(
+            "docker create --name db postgres:16", [("postgres", "postgres:16")], id="create"
+        ),
+        pytest.param("docker container run -d redis", [("redis", "redis")], id="container-run"),
+        pytest.param(
+            "docker run postgres psql -U app",
+            [("postgres", "postgres")],
+            id="command-after-the-image",
+        ),
+        pytest.param(
+            "docker run -d docker.io/library/redis",
+            [("redis", "docker.io/library/redis")],
+            id="qualified",
+        ),
+        pytest.param('docker run -d "redis"', [("redis", "redis")], id="quoted"),
+        pytest.param(
+            "docker run -d ${REDIS_IMAGE:-redis}", [("redis", "redis")], id="interpolation-default"
+        ),
+        pytest.param(
+            f"docker run -d redis@{DIGEST}", [("redis", f"redis@{DIGEST}")], id="digest-only"
+        ),
+        pytest.param(
+            "docker run -d --restart unless-stopped redis",
+            [("redis", "redis")],
+            id="restart-policy-value",
+        ),
+        pytest.param(
+            "docker run -d redis && docker run -d postgres:16",
+            [("redis", "redis"), ("postgres", "postgres:16")],
+            id="two-commands",
+        ),
+    ],
+)
+def test_run_reader_reports_the_image_operand_of_a_docker_run_command(
+    command: str, expected: list[tuple[str, str]]
+) -> None:
+    # Given a shell command that starts a container.
+    # When the guard reads it.
+    found = find_run_images(command)
+
+    # Then the image operand is reported as written, with option values and commands skipped.
+    assert found == expected
+
+
+@pytest.mark.parametrize(
+    "command",
+    [
+        "docker run -d --network redis ghcr.io/acme/app:1",
+        "docker run -d --name postgres ghcr.io/acme/app:1",
+        "docker exec -it redis redis-cli ping",
+        "docker compose run --rm api redis",
+        "docker run -d --env REDIS_URL=redis://redis:6379 ghcr.io/acme/app:1",
+        "docker run -d redis/redis-stack:latest",
+        "docker logs redis",
+    ],
+)
+def test_run_reader_ignores_commands_that_do_not_start_these_images(command: str) -> None:
+    # Given a command that names one of the words as a container, network or service.
+    # When the guard reads it.
+    found = find_run_images(command)
+
+    # Then nothing is reported.
+    assert found == []
+
+
+def test_scan_text_reads_a_command_continued_across_lines() -> None:
+    # Given a docker run whose image operand sits on the last of three continued lines.
+    text = (
+        "docker run -d --name topology-redis --network worker-topology \\\n"
+        "  -p 127.0.0.1:56391:6379 \\\n"
+        "  redis\n"
+    )
+
+    # When the file text is scanned.
+    found = scan_text(text)
+
+    # Then the untagged image is reported at the first line of the statement.
+    assert found == [(1, "redis", "redis")]
+
+
+def test_scan_text_reports_a_pinned_continued_command_once() -> None:
+    # Given the same command with the pinned reference on the last continued line.
+    text = f"docker run -d --name x \\\n  -p 1:2 \\\n  {PINNED_REDIS}\n"
+
+    # When the file text is scanned.
+    found = scan_text(text)
+
+    # Then the reference is reported once, where it is written.
+    assert found == [(3, "redis", PINNED_REDIS)]
+
+
+def test_an_added_reference_cannot_hide_an_untagged_one() -> None:
+    # Given a workflow that gained a second pinned PostgreSQL service while an existing docker run
+    # lost its tag, so the number of readable references did not change.
+    text = (
+        "services:\n"
+        "  postgres:\n"
+        f"    image: {PINNED_POSTGRES}\n"
+        "  extra-postgres:\n"
+        f"    image: {PINNED_POSTGRES}\n"
+        "run: docker run -d --name first-short-redis -p 127.0.0.1:56389:6379 redis\n"
+    )
+
+    # When the file text is scanned.
+    references = [(image, reference) for _number, image, reference in scan_text(text)]
+
+    # Then the untagged reference is reported beside the pinned ones, so no count can mask it.
+    assert ("redis", "redis") in references
+    assert references.count(("postgres", PINNED_POSTGRES)) == 2
+
+
+def test_yaml_reader_survives_a_recursive_alias() -> None:
+    # Given a document whose anchor contains itself, next to a real image key.
+    document = "x-loop: &loop [*loop]\nimage: postgres\n"
+
+    # When the guard parses it.
+    found = find_yaml_images(document)
+
+    # Then the traversal terminates and still reports the image.
+    assert found == [("postgres", "postgres")]
