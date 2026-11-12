@@ -186,43 +186,64 @@ Render, scene-image and audio jobs write media under `ARTIFACT_ROOT` and, while
 they run, into the temp (scratch) directory. Before such a job's first write the
 Worker compares the free space of each of those two filesystems with its
 watermark and refuses the job if either is below it. Each check is off when its
-setting is `0`, which is the default.
+setting is `0` or negative, which is the default.
 
 | Filesystem | Setting | Floor it enforces |
 | --- | --- | --- |
 | Artifact: the filesystem that holds `ARTIFACT_ROOT` | `MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES` | Free bytes it must keep before a job may start |
 | Scratch: the temp directory | `MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES` | The same floor for jobs; upload staging also uses it, per upload |
 
-`.env.local.example` enables both for the local server. The artifact filesystem
-is checked first, a directory that does not exist yet is measured through its
-nearest existing parent, and nothing is created to measure it.
+`.env.local.example` enables both for the local server. A floor above a
+filesystem's free space refuses every job, so lower it on a small disk or a small
+`tmpfs` temp directory. Only these two settings are read for this check. A
+malformed value (for example `2GiB`) fails the job with an internal error that
+names the setting; it is never read as zero.
 
-A refused job leaves everything as it was. No directory, temp file or provider
-call is made, existing artifacts are never purged, truncated or rewritten to make
-room, and the quota reserved for the task is released unbilled.
+The check itself never writes. A disabled check resolves nothing, the artifact
+filesystem is checked before the temp directory is looked up, the temp directory
+is resolved without `tempfile`'s probe file, and a directory that does not exist
+yet is measured through its nearest existing parent without creating it. The
+artifact floor is measured at `ARTIFACT_ROOT` itself; a different filesystem
+mounted below it is not measured separately.
 
+What a refusal does:
+
+- **The job.** No directory, file or provider call is made, existing artifacts
+  are never purged, truncated or rewritten to make room, and Celery does not
+  retry the task.
+- **Quota.** The reservation owned by the task is released when this was the
+  task's first delivery. A retried delivery that is refused keeps whatever an
+  earlier provider attempt already authorized, so that exposure stays charged.
 - **Task and run.** The task is recorded as failed with the code
-  `ARTIFACT_STORAGE_LOW` or `SCRATCH_STORAGE_LOW`, both retryable, and the run
-  moves to `FAILED` like any other failed step. Studio shows "Output storage is
-  low" or "Temporary storage is low" with the recovery steps. After freeing space,
-  restart the run from the failed stage (`POST /api/creator/runs/{id}/restart`)
-  and start the step again.
-- **Log.** One warning per refusal with `filesystem`, `free_bytes`,
-  `required_bytes`, `shortfall_bytes`, `task_name`, `run_id` and the measured
-  `path`. The exception text names the storage and the shortfall in MiB and no
-  path.
+  `ARTIFACT_STORAGE_LOW` or `SCRATCH_STORAGE_LOW`, both retryable. The run moves
+  to `FAILED` when it is in a stage this task may fail; a scene image
+  regenerated while the run is in review leaves the run where it is, with only
+  that task failed. Studio shows "Output storage is low" or "Temporary storage is
+  low" with the recovery steps, not the shortfall.
+- **Recovery.** Free space, then recover as after any other failed media step:
+  the API can restart a `FAILED` run from a generating stage
+  (`POST /api/creator/runs/{id}/restart`), and the step is started again. That
+  creates a new task with a new quota reservation; a refused task is never
+  resumed.
+- **Log.** The admission check logs one warning per refusal with `filesystem`,
+  `free_bytes`, `required_bytes`, `shortfall_bytes`, `task_name`, `run_id` and the
+  measured `path`; failure handling and the dead-letter bookkeeping log
+  separately. The exception text names the storage and the shortfall in MiB and
+  no path.
 - **Metric.** The counter `worker.job.low_space_refusals`, labelled with
   `filesystem` (`artifact` or `scratch`) and `celery.task_name`.
-- **Unreadable disk.** If free space cannot be read, the job is admitted and a
-  warning with `measured=false` is logged; the write itself reports a real error.
+- **Unreadable disk.** If free space cannot be measured, the job is admitted and
+  a warning with `measured=false` is logged; the write itself reports a real
+  error.
 
 Limits. The floor is an admission check, not a reservation: a job admitted just
 above it can still run out of space, and jobs admitted together each see the
-same free space (keep Worker concurrency low and the floor generous). Text-only
-tasks (script, visual plan and subtitle generation) are not checked. The API
-does not check at enqueue time, so a refusal appears in the run's task list
-rather than as an immediate HTTP error. Where scratch lives and how much one run
-may write are not changed here.
+same free space (keep Worker concurrency low and the floor generous). It does not
+coordinate with the upload byte lease that shares the temp setting. Text-only
+tasks (script, visual plan and subtitle generation) and upload staging's artifact
+side are not checked. The API does not check at enqueue time, so a refusal
+appears in the run's task list rather than as an immediate HTTP error. Where
+scratch lives and how much one run may write are not changed here.
 
 ### Worker-output scope
 
