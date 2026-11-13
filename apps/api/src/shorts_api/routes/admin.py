@@ -25,6 +25,7 @@ from shorts_api.admin_rate_limit import DestructiveOpRateLimiter as DestructiveO
 
 from creator_service.admin_service import admin_service
 from creator_service.blocking_io import run_admin_limiter
+from shorts_api.lifecycle import configured_admin_api_key
 
 logger = logging.getLogger(__name__)
 audit_logger = logging.getLogger("admin.audit")
@@ -50,7 +51,7 @@ async def require_admin(x_admin_key: str | None = Header(default=None)) -> str:
     if not x_admin_key:
         raise HTTPException(status_code=401, detail="Admin access denied")
 
-    expected = os.environ.get("ADMIN_API_KEY", "")
+    expected = configured_admin_api_key()
     environment = os.getenv("ENVIRONMENT", "development").strip().lower()
     if environment == "production" and (not expected or len(expected) < 16):
         logger.error("ADMIN_API_KEY is not set or too short (min 16 chars)")

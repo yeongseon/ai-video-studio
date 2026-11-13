@@ -9,8 +9,10 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Final
 
 from creator_service.db import close_pool
+from creator_service.production_checks import ProductionConfigError
 from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
@@ -129,25 +131,43 @@ def _handle_sigint(_signum: int, _frame: object | None) -> None:
 
 
 
+KNOWN_EXAMPLE_ADMIN_KEYS: Final = frozenset({
+    "local-admin-key-change-me",
+    "<a-strong-random-string>",
+})
+
+
+def configured_admin_api_key() -> str:
+    """Return no credential for publicly shipped examples, even without startup validation."""
+    key = os.environ.get("ADMIN_API_KEY", "")
+    return "" if key in KNOWN_EXAMPLE_ADMIN_KEYS else key
+
+
 def validate_admin_api_key(
     environment: str | None = None,
     admin_key: str | None = None,
     *,
     _is_test_runtime: bool | None = None,
 ) -> None:
-    """Validate ADMIN_API_KEY at startup. Fail-fast in production."""
+    """Reject public examples everywhere and require a 16-character key in production."""
     import os as _os
 
     # Skip validation only when explicitly requested via parameter
     if _is_test_runtime:
         return
 
+    key = admin_key if admin_key is not None else _os.environ.get("ADMIN_API_KEY", "")
+    if key in KNOWN_EXAMPLE_ADMIN_KEYS:
+        raise ProductionConfigError(
+            "ADMIN_API_KEY is a publicly known example value. "
+            "Please unset it (admin API disabled) or generate a new key with openssl rand -hex 32."
+        )
+
     raw_env = environment if environment is not None else _os.getenv("ENVIRONMENT", "development")
     env = raw_env.strip().lower() if raw_env else "development"
     if env != "production":
         return
 
-    key = admin_key if admin_key is not None else _os.environ.get("ADMIN_API_KEY", "")
     if not key or len(key) < 16:
         logger.critical(
             "ADMIN_API_KEY is not set or too short (min 16 chars); "

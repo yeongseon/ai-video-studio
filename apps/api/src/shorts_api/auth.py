@@ -5,7 +5,6 @@ from __future__ import annotations
 import contextvars
 import hashlib
 import hmac
-import os
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
@@ -26,6 +25,7 @@ from shorts_api.auth_lookup import (
     resolve_api_key,
     resolve_workspace_id as _resolve_workspace_id,
 )
+from shorts_api.lifecycle import configured_admin_api_key
 
 _PUBLIC_PATHS = frozenset({"/healthz"})
 _current_user_ctx: contextvars.ContextVar["CurrentUser | None"] = contextvars.ContextVar(
@@ -110,7 +110,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 
         if request.url.path.startswith(_ADMIN_PATH_PREFIX):
             admin_key = request.headers.get("x-admin-key")
-            expected_admin_key = os.environ.get("ADMIN_API_KEY", "")
+            expected_admin_key = configured_admin_api_key()
             if not admin_key or not expected_admin_key:
                 return JSONResponse(
                     status_code=401,
