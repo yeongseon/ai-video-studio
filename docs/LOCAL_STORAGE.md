@@ -22,10 +22,13 @@ copied blindly from this example. Start in the repository root, using Bash:
 ```bash
 SRC="$(pwd -P)/data/artifacts"
 DEST="/data/ai-video-studio/artifacts"
+APP_UID="${APP_UID:-1000}"
+APP_GID="${APP_GID:-1000}"
 STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sfs-storage.XXXXXX")"
 MANIFEST="$STATE_DIR/artifacts-before-migration.sha256"
 ENV_FILE="$STATE_DIR/storage-receipt.json"
 export SRC DEST MANIFEST ENV_FILE
+export APP_UID APP_GID
 df -h "$SRC" /data
 findmnt --target /data --output TARGET,SOURCE,FSTYPE,OPTIONS
 stat -c '%n uid=%u gid=%g mode=%a' "$SRC" /data
@@ -43,6 +46,15 @@ stat -c '%n uid=%u gid=%g mode=%a' "$SRC" "$DEST"
 ```
 
 ## Ownership and configuration
+
+`APP_UID`/`APP_GID` default to the image IDs, `1000:1000`. Override them only to
+match an explicitly configured application identity (tests use the invoking user's
+IDs); these migration variables do not change the container user.
+Run Copy as the configured identity with access to every source entry, or as an
+administrator able to perform its ownership correction. Run Verify, Switch,
+Inspect and Rollback as the project `.env` owner, not a different admin account.
+That user must read/traverse the entire `0750` destination (for example via its
+application group), the source and the private state directory.
 
 Both `apps/api/Dockerfile` and `apps/worker-orchestrator/Dockerfile` explicitly
 create group `appuser` with GID **1000** and user `appuser` with UID **1000**, then
@@ -131,15 +143,15 @@ test ! -e "$MANIFEST"
 (cd "$SRC" && find . -type f -exec sha256sum -- {} +) > "$MANIFEST"
 test -s "$MANIFEST"
 rsync --archive --no-owner --no-group -- "$SRC/" "$DEST/"
-if [ "$(id -u):$(id -g)" != "1000:1000" ]; then
-  chown -R 1000:1000 -- "$DEST"
+if [ "$(id -u):$(id -g)" != "$APP_UID:$APP_GID" ]; then
+  chown -R "$APP_UID:$APP_GID" -- "$DEST"
 fi
 chmod 0750 -- "$DEST"
 ```
 
 The trailing slashes copy the contents, preserving relative paths, hidden files
 and empty directories. The copy must exit successfully; investigate any errors.
-Run as `1000:1000` with access to every source entry, or as the administrator who
+Run as the configured `APP_UID:APP_GID` with access to every source entry, or as the administrator who
 can perform the mandatory `chown`. Archive mode copies source modes, including the
 root directory's mode; the final `chmod` restores the dedicated root to `0750`.
 Check traversal and write permissions throughout the tree before restarting writers.
@@ -187,8 +199,8 @@ trap 'rm -rf "$inventory"' EXIT
 (cd "$SRC" && find . -type f -print0 | LC_ALL=C sort -z) > "$inventory/source"
 (cd "$DEST" && find . -type f -print0 | LC_ALL=C sort -z) > "$inventory/destination"
 cmp "$inventory/source" "$inventory/destination"
-find "$DEST" \( ! -uid 1000 -o ! -gid 1000 \) -print > "$inventory/wrong-owner"
-test ! -s "$inventory/wrong-owner" || { echo "DEST must be owned by 1000:1000 throughout" >&2; exit 1; }
+find "$DEST" \( ! -uid "$APP_UID" -o ! -gid "$APP_GID" \) -print > "$inventory/wrong-owner"
+test ! -s "$inventory/wrong-owner" || { echo "DEST must be owned by the configured APP_UID:APP_GID throughout" >&2; exit 1; }
 python3 - <<'PY'
 import hashlib, json, os, pathlib, re, stat, tempfile
 

@@ -46,7 +46,7 @@ def test_plain_compose_when_migrated_uses_persistent_storage(
     if overlay:
         files.extend(["-f", f"docker-compose.{overlay}.yml"])
 
-    # When resolving exactly the plain Compose mechanism used by Makefile and cutover.
+    # When resolving exactly the plain Compose mechanism used by Makefile.
     result = subprocess.run(
         ["docker", "compose", *files, "config", "--format", "json"], cwd=project,
         env={"PATH": os.environ["PATH"], "COMPOSE_PROJECT_NAME": "migration-entrypoints"},
@@ -125,22 +125,28 @@ def test_env_receipt_when_aliasing_dotenv_is_refused(migration: Migration, secti
     assert dotenv.read_bytes() == original
 
 
-def test_switch_when_destination_group_is_wrong_refuses(migration: Migration) -> None:
-    # Given a copied tree with a group other than the container's, where permitted by the host.
+@pytest.mark.parametrize("identity", ["APP_UID", "APP_GID"])
+def test_switch_when_destination_group_is_wrong_refuses(migration: Migration, identity: str) -> None:
+    # Given a copied tree and a configured identity different from its actual owner/group.
     assert migration.run("Copy").returncode == 0
-    wrong_groups = [gid for gid in os.getgroups() if gid != 1000]
-    if os.geteuid() == 0:
-        wrong_groups.append(0)
-    if not wrong_groups:
-        # An unprivileged uid-1000 process cannot manufacture a different owner/group.
-        return
-    os.chown(migration.destination / "run-7", -1, wrong_groups[0])
+    owner = os.getuid() if identity == "APP_UID" else os.getgid()
     # When switching.
-    result = migration.run("Switch")
+    result = migration.run("Switch", extra_env={identity: str(owner + 1)})
     # Then wrong ownership blocks persistence.
     assert result.returncode != 0
     assert not migration.env_file.exists()
     assert (migration.root / ".env").read_text() == f"API_KEY={SECRET}\n"
+
+
+def test_copy_when_configured_identity_is_unavailable_refuses(migration: Migration) -> None:
+    # Given an unprivileged operator who cannot assign a different UID.
+    if os.geteuid() == 0:
+        pytest.skip("root can assign any UID")
+    # When Copy is configured for a different application identity.
+    result = migration.run("Copy", extra_env={"APP_UID": str(os.getuid() + 1)})
+    # Then ownership correction fails closed rather than reporting a usable copy.
+    assert result.returncode != 0
+    assert not migration.env_file.exists()
 
 
 def test_inspect_when_scaled_prints_every_artifact_writer(migration: Migration, project: Path) -> None:

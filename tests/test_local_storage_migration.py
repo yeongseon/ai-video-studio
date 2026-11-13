@@ -12,6 +12,7 @@ from typing import Final
 from creator_service.object_storage import LocalStorageBackend
 from local_storage_migration_cases import (
     test_env_receipt_when_aliasing_dotenv_is_refused as test_env_receipt_when_aliasing_dotenv_is_refused,
+    test_copy_when_configured_identity_is_unavailable_refuses as test_copy_when_configured_identity_is_unavailable_refuses,
     test_inspect_when_scaled_prints_every_artifact_writer as test_inspect_when_scaled_prints_every_artifact_writer,
     test_plain_compose_when_migrated_uses_persistent_storage as test_plain_compose_when_migrated_uses_persistent_storage,
     test_switch_when_destination_group_is_wrong_refuses as test_switch_when_destination_group_is_wrong_refuses,
@@ -48,7 +49,8 @@ class Migration:
     ) -> subprocess.CompletedProcess[str]:
         env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"),
                "SRC": str(self.source), "DEST": str(destination or self.destination),
-               "MANIFEST": str(self.manifest), "ENV_FILE": str(self.env_file)}
+               "MANIFEST": str(self.manifest), "ENV_FILE": str(self.env_file),
+               "APP_UID": str(os.getuid()), "APP_GID": str(os.getgid())}
         env.update(extra_env or {})
         return subprocess.run(
             ["bash", "-c", _command(section)],
@@ -69,7 +71,7 @@ def migration(tmp_path: Path) -> Migration:
     (source / "run-7/final video.mp4").write_bytes(b"published\x00fixture\xff")
     (source / ".hidden-input").write_bytes(b"original input")
     (source / "empty-directory").mkdir()
-    destination = tmp_path / "hdd #1"
+    destination = tmp_path / "hdd #1 $media"
     destination.mkdir()
     (tmp_path / ".env").write_text(f"API_KEY={SECRET}\n", encoding="utf-8")
     return Migration(tmp_path, source, destination, tmp_path / "source.sha256", tmp_path / "storage.env")
