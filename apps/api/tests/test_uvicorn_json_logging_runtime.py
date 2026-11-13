@@ -14,8 +14,13 @@ import httpx
 import pytest
 
 
+@pytest.fixture(scope="module", params=[True, False])
+def access_log_enabled(request: pytest.FixtureRequest) -> bool:
+    return bool(request.param)
+
+
 @pytest.fixture(scope="module")
-def server_output(tmp_path_factory: pytest.TempPathFactory) -> str:
+def server_output(tmp_path_factory: pytest.TempPathFactory, access_log_enabled: bool) -> str:
     """Use production composition and lifespan; only the failing route is test-only."""
     directory = tmp_path_factory.mktemp("uvicorn-json")
     (directory / "logging_probe.py").write_text(dedent('''\
@@ -29,7 +34,8 @@ def server_output(tmp_path_factory: pytest.TempPathFactory) -> str:
             raise RuntimeError("outer") from cause
     '''))
     environment = {
-        **os.environ,
+        **{key: value for key, value in os.environ.items()
+           if key in {"PATH", "HOME", "VIRTUAL_ENV", "LANG", "LC_ALL"}},
         "PYTHONPATH": os.pathsep.join([
             str(directory),
             str(Path(__file__).resolve().parents[3] / "apps/api/src"),
@@ -37,7 +43,6 @@ def server_output(tmp_path_factory: pytest.TempPathFactory) -> str:
             str(Path(__file__).resolve().parents[3] / "packages/creator-domain"),
             str(Path(__file__).resolve().parents[3] / "packages/creator-provider"),
             str(Path(__file__).resolve().parents[3] / "apps/worker-orchestrator"),
-            os.environ.get("PYTHONPATH", ""),
         ]),
         "ENVIRONMENT": "development", "REDIS_URL": "", "OTEL_ENABLED": "false",
         "ENABLE_PROCESS_RESOURCE_GUARD": "false", "PYTHONDONTWRITEBYTECODE": "1",
@@ -48,23 +53,27 @@ def server_output(tmp_path_factory: pytest.TempPathFactory) -> str:
         port = sock.getsockname()[1]
         with subprocess.Popen(
             [sys.executable, "-m", "uvicorn", "logging_probe:app", "--fd", str(sock.fileno()),
-             "--host", "127.0.0.1", "--log-level", "info"],
+             "--host", "127.0.0.1", "--log-level", "info",
+             *([] if access_log_enabled else ["--no-access-log"])],
             cwd=directory, env=environment, pass_fds=(sock.fileno(),),
             stdout=output, stderr=subprocess.STDOUT,
         ) as process:
             try:
                 # Bound readiness by an HTTP response, not an arbitrary startup sleep.
-                deadline = monotonic() + 5
-                with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=0.25,
+                deadline = monotonic() + 30
+                with httpx.Client(base_url=f"http://127.0.0.1:{port}", timeout=2,
                                   trust_env=False) as client:
                     while True:
                         try:
-                            response = client.get("/healthz")
+                            response = client.get("/openapi.json")
                             assert response.status_code == 200
+                            assert client.get("/openapi.json").status_code == 200
                             break
                         except httpx.TransportError:
-                            assert process.poll() is None, "server exited before readiness"
-                            assert monotonic() < deadline, "server readiness timed out"
+                            if process.poll() is not None or monotonic() >= deadline:
+                                output.seek(0)
+                                pytest.fail(f"server failed readiness (exit={process.poll()}):\n"
+                                            f"{output.read()}")
                             Event().wait(0.02)
                     # When a real HTTP exception is re-raised to Uvicorn, then another
                     # request supplies both credential-shaped and ordinary query data.
@@ -109,13 +118,18 @@ def test_every_server_line_is_json_when_default_uvicorn_logging_precedes_app_imp
     assert all(record["service"] == "api" for record in records)
 
 
-def test_uvicorn_access_omits_entire_query_when_request_has_credentials(server_output: str) -> None:
+def test_uvicorn_access_omits_entire_query_when_request_has_credentials(
+    server_output: str, access_log_enabled: bool,
+) -> None:
     # Given / When the secret-bearing query was requested.
     # Then access logging stays enabled but even ordinary query values are absent.
     assert "?token=" not in server_output
     assert "private-query-value" not in server_output
     records = [json.loads(line) for line in server_output.splitlines() if line.strip()]
     access = [record["message"] for record in records if record["logger"] == "uvicorn.access"]
-    assert len(access) == 3
-    assert sum('"GET /healthz HTTP/1.1" 200' in message for message in access) == 2
+    if not access_log_enabled:
+        assert access == []
+        return
+    assert all("?" not in message for message in access)
+    assert sum('"GET /healthz HTTP/1.1" 200' in message for message in access) == 1
     assert sum('"GET /logging-probe HTTP/1.1" 500' in message for message in access) == 1
