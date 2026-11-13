@@ -275,12 +275,14 @@ def setup_json_logging(service_name: str, level: str = "INFO") -> None:
     root_logger.handlers = [handler]
     root_logger.setLevel(getattr(logging, level))
 
-    # Uvicorn installs its defaults before importing the application. Keep its
-    # configured levels, but remove every handler that bypasses root redaction.
+    # Requires app import AFTER Uvicorn Config.__init__ (import-string CLI startup).
+    # uvicorn.run(app_object) / Config(app=obj) after import reapplies dictConfig.
+    # Keep configured levels and deliberately silenced loggers (--no-access-log).
     for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.asgi"):
         server_logger = logging.getLogger(name)
-        server_logger.handlers.clear()
-        server_logger.propagate = True
+        if server_logger.handlers:
+            server_logger.handlers.clear()
+            server_logger.propagate = True
     access_logger = logging.getLogger("uvicorn.access")
     if not any(isinstance(item, UvicornAccessFilter) for item in access_logger.filters):
         access_logger.addFilter(UvicornAccessFilter())

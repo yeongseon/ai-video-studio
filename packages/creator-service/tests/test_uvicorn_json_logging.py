@@ -8,7 +8,7 @@ import weakref
 from collections.abc import Iterator
 
 import pytest
-from uvicorn.config import LOGGING_CONFIG
+from uvicorn.config import LOGGING_CONFIG, Config
 
 from creator_service.logging_config import JsonFormatter, setup_json_logging
 
@@ -27,6 +27,18 @@ def isolated_logging(monkeypatch: pytest.MonkeyPatch) -> Iterator[None]:
     monkeypatch.setattr(logging, "_handlerList", [])
     yield
     logging.shutdown()
+
+
+@pytest.mark.parametrize("access_log", [False, True])
+def test_access_logging_preserves_operator_setting_when_setup_runs(access_log: bool) -> None:
+    # Given the real Config constructor, which applies defaults and the operator flag.
+    Config(app="unused:app", access_log=access_log)
+    # When application import configures logging, including repeated setup.
+    setup_json_logging("api")
+    setup_json_logging("api")
+    # Then the protocol's access-log decision still honors the operator setting.
+    assert logging.getLogger("uvicorn.access").hasHandlers() is access_log
+    assert len(logging.getLogger("uvicorn.access").filters) == 1
 
 
 def test_uvicorn_defaults_flow_to_one_json_handler_when_setup_runs() -> None:
