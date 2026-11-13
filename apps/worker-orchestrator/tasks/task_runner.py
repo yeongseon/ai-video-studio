@@ -18,6 +18,7 @@ Usage:
             allowed_stages=frozenset({RunStage.FOO_GENERATING}),
             safe_stages=frozenset({RunStage.FOO_GENERATING.value}),
             success_stage=RunStage.FOO_REVIEW.value,
+            requires_free_space=False,  # True for tasks that write media (video, image, audio)
         )
 
         async def execute(ctx: TaskContext) -> TaskResult:
@@ -55,6 +56,7 @@ from creator_provider.gpu_lock import (
 )
 from creator_provider.versioned_assets import clear_loaded_asset_versions, get_loaded_asset_versions
 from creator_service.actionable_errors import build_run_failure_summary
+from creator_service.job_capacity import ensure_job_capacity
 from creator_service.run_service import run_service as _run_service
 from creator_service.task_tracking_service import task_tracking_service as _task_tracking_service
 from creator_service.usage_service import resolve_workspace_id_from_run
@@ -92,6 +94,9 @@ class TaskRunnerConfig:
     skip_stage_guard: bool = False
     raise_on_stage_guard: bool = True
     no_fail_transition_exceptions: tuple[type[Exception], ...] = (TaskInputError,)
+    # Media-writing tasks (video, image, audio) are refused before their first write when the
+    # artifact or scratch filesystem is below its free-space watermark.
+    requires_free_space: bool = False
 
 
 @dataclass
@@ -272,6 +277,12 @@ async def _run_task_inner(
         },
     )
 
+    # 3b. Refuse before any output exists when a filesystem this task writes to is low on space.
+    # Raised after the claim and stage guard so the refusal is recorded on the task, and before
+    # quota re-admission and provider work so nothing is billed and nothing is written.
+    if config.requires_free_space:
+        ensure_job_capacity(config.task_name, run_id=run_id)
+
     # 4. Execute task-specific logic
     from creator_service.usage_service import usage_service
 
@@ -396,9 +407,12 @@ async def _handle_general_failure(
     exc: Exception,
     usage_storage: UsageStorageBackend,
     claim_token: str | None = None,
-    billing_outcome: BillingOutcome = BillingOutcome.NOT_STARTED,
+    billing_outcome: BillingOutcome | None = BillingOutcome.NOT_STARTED,
 ) -> bool:
-    """Consolidate error-handler async work into a single coroutine."""
+    """Consolidate error-handler async work into a single coroutine.
+
+    ``billing_outcome=None`` lets the durable attempt history decide how the reservation ends.
+    """
     try:
         code, message = _safe_failure_record(exc)
         if claim_token is not None:

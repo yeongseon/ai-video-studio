@@ -83,8 +83,6 @@ services:
         limits:
           memory: ${MAX_MEMORY_MB:-4096}M
 
-  # Celery Beat scheduler
-
   # Celery Beat scheduler — required for any beat_schedule entry to actually fire.
   # Without this, reconcile_stale_dispatches / retry_failed_artifact_deletions never run (#585).
   beat:
@@ -93,6 +91,12 @@ services:
       dockerfile: apps/worker-orchestrator/Dockerfile
       target: runtime
     command: ["celery", "-A", "celery_app.celery_app", "beat", "--loglevel=info", "--schedule=/tmp/celerybeat-schedule"]
+    healthcheck:
+      test: ["CMD", "python", "-m", "beat_health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 90s
     env_file:
       - .env
     volumes:

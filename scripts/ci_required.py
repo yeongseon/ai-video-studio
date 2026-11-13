@@ -14,6 +14,7 @@ EXPECTED_JOBS: Final = (
     "restore-drill",
     "lint",
     "test",
+    "test-worker",
     "first-short-runtime",
     "worker-topology-runtime",
     "docker",

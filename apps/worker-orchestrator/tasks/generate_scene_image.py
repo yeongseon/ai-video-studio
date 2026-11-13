@@ -98,6 +98,7 @@ def generate_scene_image(
         safe_stages=_SAFE_SUCCESS_STAGES,
         safe_failure_stages=_SAFE_FAILURE_STAGES,
         success_stage=None,
+        requires_free_space=True,
     )
 
     async def execute_batch(ctx: TaskContext, batch: SceneBatch) -> TaskResult:
