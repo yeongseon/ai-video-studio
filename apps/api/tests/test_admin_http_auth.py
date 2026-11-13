@@ -2,10 +2,45 @@
 
 from importlib import import_module
 
+import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from shorts_api.auth import ApiKeyMiddleware
 
 app = import_module("shorts_api.main").app
 admin = import_module("shorts_api.routes.admin")
+
+
+@pytest.mark.parametrize("key", ["local-admin-key-change-me", "<a-strong-random-string>"])
+def test_admin_middleware_disables_public_example(monkeypatch: pytest.MonkeyPatch, key: str) -> None:
+    # Given middleware alone: neither startup validation nor the router can mask its decision.
+    monkeypatch.setenv("ADMIN_API_KEY", key)
+    isolated = FastAPI()
+    isolated.add_middleware(ApiKeyMiddleware)
+    # When requesting an unknown admin path with the configured example.
+    with TestClient(isolated) as client:
+        response = client.get("/api/admin/nonexistent", headers={"X-Admin-Key": key})
+    # Then the disabled-key response wins over routing (404).
+    assert response.status_code == 401
+    assert response.json() == {"detail": "Admin access denied"}
+
+
+@pytest.mark.parametrize("environment, status", [("development", 403), ("production", 503)])
+@pytest.mark.parametrize("key", ["local-admin-key-change-me", "<a-strong-random-string>"])
+def test_admin_router_disables_public_example(
+    monkeypatch: pytest.MonkeyPatch, environment: str, status: int, key: str,
+) -> None:
+    # Given the actual router without middleware or startup validation.
+    monkeypatch.setenv("ADMIN_API_KEY", key)
+    monkeypatch.setenv("ENVIRONMENT", environment)
+    monkeypatch.setattr(admin.admin_service, "get_system_health", _mock_get_system_health)
+    isolated = FastAPI()
+    isolated.include_router(admin.router, prefix="/api/admin")
+    # When
+    with TestClient(isolated) as client:
+        response = client.get("/api/admin/health", headers={"X-Admin-Key": key})
+    # Then
+    assert response.status_code == status
 
 
 def _mock_health_payload() -> dict[str, object]:
