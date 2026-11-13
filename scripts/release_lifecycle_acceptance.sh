@@ -23,7 +23,7 @@ docker network create "$NETWORK" >/dev/null
 mkdir -p "$EVIDENCE_DIR"
 docker run -d --name "$POSTGRES" --network "$NETWORK" \
   -e POSTGRES_USER=review -e POSTGRES_PASSWORD=review-local-only \
-  -e POSTGRES_DB=release_lifecycle postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139 >/dev/null
+  -e POSTGRES_DB=release_lifecycle postgres:16.16-alpine@sha256:0adbf25a9e96d38823bb813f3ac0ed41fadb665c88f1df7fe6dbfb060cbdc106 >/dev/null
 timeout 60 bash -c "until docker exec '$POSTGRES' pg_isready -U review; do sleep 1; done"
 
 docker run --rm --network "$NETWORK" -e DATABASE_URL="$DATABASE_URL" release-lifecycle-n alembic upgrade head
