@@ -82,3 +82,13 @@ def test_local_example_does_not_invite_direct_lan_api_access() -> None:
 
     # Then it does not suggest reaching the loopback-only API from another LAN device.
     assert "another device on the LAN" not in text
+
+
+@pytest.mark.parametrize("path", [".env.local.example", ".env.example"])
+def test_shipped_admin_key_is_disabled(path: str) -> None:
+    # Given the example copied by an operator.
+    text = _text(path)
+    # When reading the effective admin assignment.
+    values = [line.partition("=")[2].strip() for line in text.splitlines() if line.startswith("ADMIN_API_KEY=")]
+    # Then it cannot enable the admin API with a publicly known credential.
+    assert values == [""]

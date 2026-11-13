@@ -9,8 +9,10 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from typing import Final
 
 from creator_service.db import close_pool
+from creator_service.production_checks import ProductionConfigError
 from fastapi import FastAPI
 
 logger = logging.getLogger(__name__)
@@ -129,25 +131,55 @@ def _handle_sigint(_signum: int, _frame: object | None) -> None:
 
 
 
+KNOWN_EXAMPLE_ADMIN_KEYS: Final = frozenset(key.casefold() for key in {
+    "local-admin-key-change-me",
+    "<a-strong-random-string>",
+})
+
+
+def _is_known_example_admin_key(key: str) -> bool:
+    normalized = key.strip()
+    if len(normalized) >= 2 and normalized[0] in {"'", '"'} and normalized[-1] == normalized[0]:
+        normalized = normalized[1:-1].strip()
+    return normalized.casefold() in KNOWN_EXAMPLE_ADMIN_KEYS
+
+
+def configured_admin_api_key() -> str:
+    """Return no credential for publicly shipped examples, even without startup validation."""
+    key = os.environ.get("ADMIN_API_KEY", "")
+    return "" if _is_known_example_admin_key(key) else key
+
+
 def validate_admin_api_key(
     environment: str | None = None,
     admin_key: str | None = None,
     *,
     _is_test_runtime: bool | None = None,
 ) -> None:
-    """Validate ADMIN_API_KEY at startup. Fail-fast in production."""
+    """Reject public examples everywhere and require a 16-character key in production."""
     import os as _os
 
     # Skip validation only when explicitly requested via parameter
     if _is_test_runtime:
         return
 
+    key = admin_key if admin_key is not None else _os.environ.get("ADMIN_API_KEY", "")
     raw_env = environment if environment is not None else _os.getenv("ENVIRONMENT", "development")
     env = raw_env.strip().lower() if raw_env else "development"
+    if _is_known_example_admin_key(key):
+        advice = (
+            "Please generate a new key (production requires one)"
+            if env == "production"
+            else "Please unset it (admin API disabled) or generate a new key"
+        )
+        raise ProductionConfigError(
+            "ADMIN_API_KEY is a publicly known example value. "
+            f"{advice} with openssl rand -hex 32."
+        )
+
     if env != "production":
         return
 
-    key = admin_key if admin_key is not None else _os.environ.get("ADMIN_API_KEY", "")
     if not key or len(key) < 16:
         logger.critical(
             "ADMIN_API_KEY is not set or too short (min 16 chars); "

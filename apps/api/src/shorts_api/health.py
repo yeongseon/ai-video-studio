@@ -13,7 +13,7 @@ from starlette import status
 from starlette.responses import Response
 
 from shorts_api.auth import CurrentUser, get_current_user
-from shorts_api.lifecycle import REDIS_URL, shutdown_state
+from shorts_api.lifecycle import REDIS_URL, configured_admin_api_key, shutdown_state
 
 model_health = ModelHealthService()
 
@@ -71,7 +71,7 @@ async def healthz() -> dict[str, str]:
 
 def _is_admin_request(request: Request) -> bool:
     """Check if request carries a valid admin key."""
-    admin_key = os.getenv("ADMIN_API_KEY", "")
+    admin_key = configured_admin_api_key()
     if not admin_key:
         return False
     provided = request.headers.get("X-Admin-Key", "")

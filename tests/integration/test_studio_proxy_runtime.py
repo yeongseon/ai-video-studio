@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from contextlib import closing
+from http.client import HTTPConnection
+import json
 from pathlib import Path
-import shutil
 import socket
 import struct
 import subprocess
@@ -12,6 +14,74 @@ import httpx
 import pytest
 
 from studio_proxy_runtime_support import StudioProxyRuntime, studio_proxy_runtime
+from studio_header_proxy_support import header_proxy
+
+
+@pytest.mark.parametrize("method, path", [
+    ("POST", "/api/admin/cache/clear"),
+    ("POST", "/api/creator/projects"),
+    ("POST", "/api/creator/workspaces/1/assets"),
+    ("POST", "/api/creator/workspaces/1/assets/audio"),
+    ("POST", "/api/creator/workspaces/1/assets/videos"),
+    ("GET", "/health"), ("GET", "/healthz"),
+    ("GET", "/docs"), ("GET", "/openapi.json"),
+])
+def test_nginx_omits_client_admin_key_at_upstream(
+    header_proxy: tuple[str, str], method: str, path: str,
+) -> None:
+    # Given the shipped template served by real nginx, with a wire-level header echo upstream.
+    origin, token = header_proxy
+    # When a same-origin client forges admin authorization and destructive confirmation.
+    with httpx.Client(base_url=origin, timeout=5) as client:
+        response = client.request(method, path, headers={
+            "Origin": origin, "X-Admin-Key": "synthetic-forged-admin-key-1036",
+            "X-Confirm-Action": "yes",
+        })
+    # Then admin credentials are absent on the wire, while the creator-key policy is unchanged.
+    assert response.status_code == 200
+    received = {name.lower(): value for name, value in response.json().items()}
+    assert "x-admin-key" not in received
+    assert received["x-confirm-action"] == "yes"
+    if path != "/healthz":
+        assert received["x-api-key"] == token
+
+
+@pytest.mark.parametrize("header_names", [
+    ("x-admin-key",), ("X-ADMIN-KEY",), ("X-Admin-Key", "X-Admin-Key"),
+    ("X_Admin_Key",), ("X-Admin-Key",),
+])
+def test_nginx_omits_admin_header_variants_without_origin(
+    header_proxy: tuple[str, str], header_names: tuple[str, ...],
+) -> None:
+    # Given the real nginx proxy and a plain curl-style admin GET without Origin.
+    origin, token = header_proxy
+    # When header names, including duplicate fields, arrive on the wire unchanged.
+    with closing(HTTPConnection(origin.removeprefix("http://"), timeout=5)) as connection:
+        connection.putrequest("GET", "/api/admin/health")
+        for name in header_names:
+            connection.putheader(name, "synthetic-forged-admin-key-1036")
+        connection.putheader("X-Confirm-Action", "yes")
+        connection.endheaders()
+        with connection.getresponse() as response:
+            received = {name.lower(): value for name, value in json.loads(response.read()).items()}
+            assert response.status == 200
+    # Then neither spelling reaches the upstream, while creator auth still does.
+    assert "x-admin-key" not in received
+    assert "x_admin_key" not in received
+    assert received["x-api-key"] == token
+
+
+@pytest.mark.parametrize("header_proxy", [True], indirect=True)
+@pytest.mark.parametrize("header_names", [
+    ("x-admin-key",), ("X-ADMIN-KEY",), ("X-Admin-Key", "X-Admin-Key"), ("X-Admin-Key",),
+])
+def test_admin_header_wire_assertion_detects_missing_strip(
+    header_proxy: tuple[str, str], header_names: tuple[str, ...],
+) -> None:
+    # Given only a rendered temporary template has the general API strip removed.
+    # When / Then the same wire assertion must detect leaked admin credentials.
+    with pytest.raises(AssertionError, match="x-admin-key"):
+        test_nginx_omits_admin_header_variants_without_origin(header_proxy, header_names)
 
 
 @dataclass(frozen=True, slots=True)
