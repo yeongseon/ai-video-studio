@@ -54,7 +54,9 @@ _LOG_ROUTE_PATHS: Final = frozenset({"/api/creator", "/api/admin", "/docs/oauth2
 
 def _redact_log_path(match: re.Match[str]) -> str:
     path = match.group()
-    return path if path.startswith(_LOG_ROUTE_PREFIXES) or path in _LOG_ROUTE_PATHS else _REDACTED
+    if path.startswith(_LOG_ROUTE_PREFIXES) or path in _LOG_ROUTE_PATHS:
+        return _LONG_HEX.sub(_REDACTED, _LOG_TOKEN_PREFIX.sub(_REDACTED, path))
+    return _REDACTED
 
 
 def redact_error_message(text: str) -> str:
@@ -97,10 +99,11 @@ def redact_log_text(text: str, trusted_lines: frozenset[str] = frozenset()) -> s
                 safe = line
             else:
                 safe = line
-                for pattern in _LOG_CREDENTIAL_PATTERNS:
+                for pattern in (_LOG_CREDENTIAL_URI, _URL, _BEARER, _WINDOWS_PATH):
                     safe = pattern.sub(_REDACTED, safe)
-                safe = _WINDOWS_PATH.sub(_REDACTED, safe)
                 safe = _LOG_PATH.sub(_redact_log_path, safe)
+                safe = _LOG_TOKEN_PREFIX.sub(_REDACTED, safe)
+                safe = _LONG_HEX.sub(_REDACTED, safe)
                 safe = safe[:_MAX_STRING]
         line_size = len(safe.encode("utf-8", errors="replace")) + 1
         if size + line_size > _MAX_LOG_BYTES - 64:

@@ -1,6 +1,7 @@
 import io
 import json
 import logging
+from uuid import uuid4
 
 import pytest
 from creator_service.logging_config import JsonFormatter
@@ -85,3 +86,25 @@ def test_health_route_survives_alongside_multisegment_routes() -> None:
     raw = JsonFormatter("api").format(logging.makeLogRecord({"msg": message}))
     # Then
     assert json.loads(raw)["message"] == message
+
+
+@pytest.mark.parametrize("template,tail", [
+    ("upload failed for workspaces/7/assets/{hex}-Q3_layoffs_board_deck.mp4",
+     "-Q3_layoffs_board_deck.mp4"),
+    ("[Errno 2] No such file or directory: "
+     "'/app/data/workspaces/7/assets/{hex}-patient_jane_doe_mri.mp4'",
+     "-patient_jane_doe_mri.mp4"),
+    ("/app/data/{hex}/home_address_notes.txt", "/home_address_notes.txt"),
+    ("/app/data/sk-proj-abcdef/file.txt", "/file.txt"),
+])
+def test_filesystem_tail_is_hidden_when_path_contains_credentials(template: str, tail: str) -> None:
+    # Given real upload storage-key shapes and a token-bearing filesystem path.
+    message = template.format(hex=uuid4().hex)
+    record = logging.makeLogRecord({"msg": message, "detail": {"file": message}})
+
+    # When the JSON boundary formats both message and nested extras.
+    raw = JsonFormatter("api").format(record)
+
+    # Then redacting a credential must not expose the remaining filename or path suffix.
+    assert tail not in raw
+    assert "<redacted>" in raw
