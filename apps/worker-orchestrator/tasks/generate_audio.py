@@ -305,11 +305,18 @@ def generate_audio(
 
                         _ffmpeg = FFmpegService()
                         _ffmpeg.concatenate_audio(section_audio_paths, audio_path)
-                        _merge_word_timing_sidecars(
-                            list(zip(section_audio_paths, section_spoken_texts)),
-                            audio_path,
-                            _ffmpeg,
-                        )
+                        try:
+                            _merge_word_timing_sidecars(
+                                list(zip(section_audio_paths, section_spoken_texts)),
+                                audio_path,
+                                _ffmpeg,
+                            )
+                        except (ProviderError, OSError, RuntimeError, TypeError, ValueError):
+                            _invalidate_word_timing_sidecar(audio_path)
+                            logger.warning(
+                                "Skipping unusable TTS timing metadata for run %d", run_id,
+                                exc_info=True,
+                            )
                         per_section_generated = True
                         logger.info(
                             "Per-section TTS generated for run %d (%d sections)",
