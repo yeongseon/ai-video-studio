@@ -12,11 +12,16 @@ import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
-from typing import Final
+from typing import Final, Protocol
 
 _CONFIGURATION_ERRNOS: Final = frozenset({
     errno.ENAMETOOLONG, errno.EACCES, errno.EPERM, errno.ENOTDIR, errno.ELOOP, errno.EINVAL,
 })
+
+
+class ConcatWriter(Protocol):
+    def write(self, text: str, /) -> int: ...
+    def flush(self) -> None: ...
 
 
 class RenderScratchConfigurationError(ValueError):
@@ -143,22 +148,24 @@ def render_scratch(output: Path, prefix: str) -> Iterator[Path]:
     try:
         yield directory
     finally:
-        shutil.rmtree(directory)
+        shutil.rmtree(directory, ignore_errors=True)
 
 
 @contextmanager
-def audio_concat_list(output: Path) -> Iterator[Path]:
+def audio_concat_list(output: Path) -> Iterator[tuple[Path, ConcatWriter]]:
     """Keep the old system-temp file when unset; relocate only transient concat input."""
     if configured_scratch_root() is not None:
         with render_scratch(output, "audio-concat-") as directory:
-            yield directory / "concat.txt"
+            path = directory / "concat.txt"
+            with path.open("x") as stream:
+                yield path, stream
     else:
-        with tempfile.NamedTemporaryFile(suffix=".txt", delete=False) as stream:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as stream:
             path = Path(stream.name)
-        try:
-            yield path
-        finally:
-            path.unlink(missing_ok=True)
+            try:
+                yield path, stream
+            finally:
+                path.unlink(missing_ok=True)
 
 
 def create_sfx_scratch(output: Path) -> Path:

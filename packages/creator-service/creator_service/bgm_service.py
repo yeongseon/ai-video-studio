@@ -237,10 +237,10 @@ class BgmService:
 
         # Generate SFX clips to temp files
         tmp_dir = create_sfx_scratch(out)
-        out.parent.mkdir(parents=True, exist_ok=True)
         sfx_paths: list[tuple[float, str]] = []
 
         try:
+            out.parent.mkdir(parents=True, exist_ok=True)
             for i, (ts, sfx_type) in enumerate(sfx_timestamps):
                 sfx_path = str(tmp_dir / f"sfx_{i}.mp3")
                 try:

@@ -316,10 +316,10 @@ class FFmpegService:
 
         # Create temp directory for intermediate segments
         tmp_dir = create_render_scratch(output_path, ".render_tmp_")
-        output_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_output: Path | None = None
 
         try:
+            output_path.parent.mkdir(parents=True, exist_ok=True)
             # --- Pass 1: Render each scene as individual .ts segment ---
             segment_paths: list[Path] = []
             gc.collect()
@@ -472,13 +472,13 @@ class FFmpegService:
         output path.  The caller is responsible for ensuring input files exist.
         """
         out = Path(output_path)
-        with audio_concat_list(out) as concat_list:
+        with audio_concat_list(out) as (concat_list, stream):
             out.parent.mkdir(parents=True, exist_ok=True)
-            with concat_list.open("w") as f:
-                for p in audio_paths:
-                    abs_p = str(Path(p).resolve())
-                    escaped = abs_p.replace("'", "'\\''")
-                    f.write(f"file '{escaped}'\n")
+            for p in audio_paths:
+                abs_p = str(Path(p).resolve())
+                escaped = abs_p.replace("'", "'\\''")
+                stream.write(f"file '{escaped}'\n")
+            stream.flush()
             cmd = [
                 "ffmpeg",
                 "-y",

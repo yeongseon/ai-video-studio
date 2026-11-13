@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import subprocess
 from pathlib import Path
 
@@ -312,9 +313,9 @@ def render_plan(plan: RenderPlan, output_path: Path) -> Path:
 
     profile = render_profile_from_plan(plan)
     tmp_dir = create_render_scratch(output_path, ".render_plan_")
-    output_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_output = output_path.with_suffix(f".tmp.{os.getpid()}.{os.urandom(4).hex()}.mp4")
     try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         segment_paths: list[Path] = []
         budgets = allocate_frames([segment.duration_seconds for segment in plan.segments], profile.fps)
         for index, segment in enumerate(plan.segments):
@@ -361,7 +362,7 @@ def render_plan(plan: RenderPlan, output_path: Path) -> Path:
         tmp_output.rename(output_path)
         return output_path
     finally:
-        tmp_output.unlink(missing_ok=True)
-        for leftover in tmp_dir.glob("*"):
-            leftover.unlink(missing_ok=True)
-        tmp_dir.rmdir()
+        try:
+            tmp_output.unlink(missing_ok=True)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
