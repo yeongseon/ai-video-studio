@@ -80,7 +80,7 @@ def test_output_parent_failure_cleans_allocated_scratch(
     parent.write_bytes(b"not a directory")
     output = parent / "output.mp4"
     # When the public entry point fails to create its output parent.
-    with pytest.raises(OSError):
+    with pytest.raises(OSError) as raised:
         match renderer:
             case "legacy":
                 FFmpegService().render(RenderInput([tmp_path / "image.png"], None, None, [1]), output)
@@ -97,6 +97,8 @@ def test_output_parent_failure_cleans_allocated_scratch(
                 raise AssertionError(renderer)
     # Then neither configured scratch nor the old system-temp SFX directory leaks.
     assert list(root.iterdir()) == []
+    if renderer == "plan":
+        assert isinstance(raised.value, FileExistsError)
 
 
 def test_plan_cleanup_does_not_follow_swapped_symlink(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:

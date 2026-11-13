@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 
 from creator_domain.models import RenderPlan, RenderSegment, RenderSegmentKind
@@ -365,6 +366,7 @@ def render_plan(plan: RenderPlan, output_path: Path) -> Path:
         return output_path
     finally:
         try:
-            tmp_output.unlink(missing_ok=True)
+            with suppress(FileNotFoundError, NotADirectoryError):
+                tmp_output.unlink()
         finally:
             cleanup_render_scratch(tmp_dir, logger)
