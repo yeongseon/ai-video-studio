@@ -206,18 +206,21 @@ import hashlib, json, os, pathlib, re, stat, tempfile
 
 dotenv = pathlib.Path.cwd() / ".env"
 receipt = pathlib.Path(os.environ["ENV_FILE"])
+if any(name in os.environ for name in ("ARTIFACTS_HOST_DIR", "COMPOSE_ENV_FILES", "COMPOSE_DISABLE_ENV_FILE")):
+    raise SystemExit("Remove Compose process overrides before Switch")
 if receipt.resolve() == dotenv.resolve():
     raise SystemExit("ENV_FILE must not alias project .env")
-info = dotenv.lstat()
-if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
-    raise SystemExit(".env must be a regular, singly linked file owned by the operator")
-original = dotenv.read_bytes()
+with os.fdopen(os.open(dotenv, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+    info = os.fstat(stream.fileno())
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
+        raise SystemExit(".env must be a regular, singly linked file owned by the operator")
+    original = stream.read()
 if re.search(rb"(?m)^[ \t]*(?:export[ \t]+)?ARTIFACTS_HOST_DIR[ \t]*(?:=|:|\r?$)", original):
     raise SystemExit(".env already defines ARTIFACTS_HOST_DIR; reconcile it before migration")
 separator = b"" if not original or original.endswith(b"\n") else b"\n"
 line = f"ARTIFACTS_HOST_DIR='{os.environ['DEST']}'\n".encode()
 record = {"size": len(original), "sha256": hashlib.sha256(original).hexdigest(),
-          "addition": (separator + line).decode()}
+          "addition": (separator + line).decode(), "separator": separator.decode(), "line": line.decode()}
 fd, temporary = tempfile.mkstemp(prefix=".env-storage-", dir=dotenv.parent)
 try:
     with os.fdopen(fd, "wb") as stream:
@@ -226,12 +229,20 @@ try:
         os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
         os.fchown(stream.fileno(), info.st_uid, info.st_gid)
         os.fsync(stream.fileno())
-    with receipt.open("x", encoding="utf-8") as stream:
-        os.chmod(receipt, 0o600)
+    receipt_fd = os.open(receipt, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(receipt_fd, "w", encoding="utf-8") as stream:
         json.dump(record, stream)
         stream.flush()
         os.fsync(stream.fileno())
+    latest = dotenv.lstat()
+    if (latest.st_dev, latest.st_ino, latest.st_mtime_ns, latest.st_size) != (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size):
+        raise SystemExit(".env changed during Switch; reconcile manually")
     os.replace(temporary, dotenv)
+    directory_fd = os.open(dotenv.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 finally:
     if os.path.exists(temporary):
         os.unlink(temporary)
@@ -240,15 +251,18 @@ PY
 
 This atomically appends exactly one storage line to the project `.env`, preserving
 all existing bytes, ownership and mode, without printing or backing up secrets.
-The private receipt records only the addition and the original size/hash. A crash
+The private receipt records only the addition and the original size/hash; do not
+share it, since the hash could help guess low-entropy secrets. A crash
 before the rename may leave a receipt but no switch: inspect before retrying; never
 overwrite a receipt blindly. Do not edit `.env` concurrently with these blocks.
 Ensure no exported `ARTIFACTS_HOST_DIR`, `COMPOSE_ENV_FILES`, `COMPOSE_DISABLE_ENV_FILE`
 or explicit `--env-file` bypasses this project configuration. Remove conflicting
 shell/service-manager overrides before acceptance and future maintenance.
 Plain `docker compose`, `make docker-up`, `make docker-local-up`/`docker-local-build`
-and the plain Compose calls in `scripts/cutover_runtime_acceptance.sh` now resolve
-the same persisted value without extra env-file flags. Do not replace `.env` from
+resolve the persisted value without extra env-file flags.
+`scripts/cutover_runtime_acceptance.sh` is a disposable CI acceptance harness that
+overwrites `.env`; **never run it on a migrated or production checkout**.
+Do not replace `.env` from
 an example after migration: doing so loses this setting as well as credentials.
 
 ### Inspect
@@ -298,38 +312,54 @@ case "$SRC" in *"'"* | *$'\n'* | *\\) echo "SRC must not contain quotes or newli
 case "$SRC" in /*) ;; *) echo "SRC must be an absolute path" >&2; exit 1 ;; esac
 (cd "$SRC" && sha256sum --check --strict "$MANIFEST")
 python3 - <<'PY'
-import hashlib, json, os, pathlib, stat, tempfile
+import hashlib, json, os, pathlib, re, stat, tempfile
 
 dotenv = pathlib.Path.cwd() / ".env"
 receipt = pathlib.Path(os.environ["ENV_FILE"])
 if receipt.resolve() == dotenv.resolve():
     raise SystemExit("ENV_FILE must not alias project .env")
-info = dotenv.lstat()
-if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
-    raise SystemExit(".env must be a regular, singly linked file owned by the operator")
+with os.fdopen(os.open(dotenv, os.O_RDONLY | os.O_NOFOLLOW), "rb") as stream:
+    info = os.fstat(stream.fileno())
+    if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
+        raise SystemExit(".env must be a regular, singly linked file owned by the operator")
+    current = stream.read()
 record = json.loads(receipt.read_text(encoding="utf-8"))
-current = dotenv.read_bytes()
 size, addition = record["size"], record["addition"].encode()
+separator, line = record["separator"].encode(), record["line"].encode()
+if separator not in (b"", b"\n") or addition != separator + line or not re.fullmatch(rb"ARTIFACTS_HOST_DIR='/[^'\r\n]*'\n", line) or line.endswith(b"\\'\n"):
+    raise SystemExit("Receipt must describe exactly one literal ARTIFACTS_HOST_DIR line")
 prefix, suffix = current[:size], current[size:]
 if hashlib.sha256(prefix).hexdigest() != record["sha256"] or not suffix.startswith(addition):
     raise SystemExit(".env changed since Switch; reconcile manually without discarding secrets")
+rest = suffix[len(addition):]
+keep = separator if rest else b""
+restored = prefix + keep + rest
 fd, temporary = tempfile.mkstemp(prefix=".env-storage-", dir=dotenv.parent)
 try:
     with os.fdopen(fd, "wb") as stream:
-        stream.write(prefix + suffix[len(addition):])
+        stream.write(restored)
         stream.flush()
         os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
         os.fchown(stream.fileno(), info.st_uid, info.st_gid)
         os.fsync(stream.fileno())
+    latest = dotenv.lstat()
+    if (latest.st_dev, latest.st_ino, latest.st_mtime_ns, latest.st_size) != (info.st_dev, info.st_ino, info.st_mtime_ns, info.st_size):
+        raise SystemExit(".env changed during Rollback; reconcile manually")
     os.replace(temporary, dotenv)
+    directory_fd = os.open(dotenv.parent, os.O_RDONLY | os.O_DIRECTORY)
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
 finally:
     if os.path.exists(temporary):
         os.unlink(temporary)
 PY
 ```
 
-Rollback removes exactly the addition recorded by Switch, including a separator
-added for a missing final newline. It refuses a changed original prefix and retains
+Rollback removes exactly the storage line recorded by Switch, keeping the added
+separator if later settings follow; otherwise it restores the original bytes.
+It refuses a changed original prefix and retains
 later appended settings. The default `./data/artifacts` must be the original source
 for this procedure; an already customized storage setting requires a separate plan.
 Inspect plain Compose config again, then have the operator recreate affected

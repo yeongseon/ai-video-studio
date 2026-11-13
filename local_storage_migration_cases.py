@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -89,6 +91,7 @@ def test_switch_when_updating_dotenv_preserves_bytes_and_permissions(
     assert dotenv.stat().st_mode & 0o777 == mode
     assert SECRET not in result.stdout + result.stderr
     assert SECRET not in migration.env_file.read_text()
+    assert migration.env_file.stat().st_mode & 0o777 == 0o600
     assert migration.run("Rollback").returncode == 0
     assert dotenv.read_bytes() == original
     assert dotenv.stat().st_mode & 0o777 == mode
@@ -164,3 +167,57 @@ def test_inspect_when_scaled_prints_every_artifact_writer(migration: Migration, 
         *(f"worker-{stage} ['{migration.destination}'] unset" for stage in ("script", "image", "audio", "render")),
     }
     assert SECRET not in result.stdout + result.stderr
+
+
+@pytest.mark.parametrize("ending", [b"", b"\n"])
+@pytest.mark.parametrize("later", [b"", b"LATER=1\n"])
+def test_rollback_when_settings_are_appended_preserves_line_boundaries(
+    migration: Migration, ending: bytes, later: bytes,
+) -> None:
+    # Given an original dotenv with or without a final newline, then a later setting.
+    dotenv = migration.root / ".env"
+    original = b"POSTGRES_PASSWORD=synthetic-secret-value" + ending
+    dotenv.write_bytes(original)
+    assert migration.run("Copy").returncode == 0
+    assert migration.run("Switch").returncode == 0
+    with dotenv.open("ab") as stream:
+        stream.write(later)
+    # When removing the migration setting.
+    result = migration.run("Rollback")
+    # Then later settings stay separated, while no append restores the exact original.
+    assert result.returncode == 0, result.stderr
+    separator = b"\n" if later and not ending else b""
+    assert dotenv.read_bytes() == original + separator + later
+
+
+@pytest.mark.parametrize("variable", ["ARTIFACTS_HOST_DIR", "COMPOSE_ENV_FILES", "COMPOSE_DISABLE_ENV_FILE"])
+def test_switch_when_process_overrides_dotenv_refuses(migration: Migration, variable: str) -> None:
+    # Given an exported override, including an empty value that still changes Compose behavior.
+    assert migration.run("Copy").returncode == 0
+    dotenv = migration.root / ".env"
+    original = dotenv.read_bytes()
+    # When switching with a conflicting process variable.
+    result = migration.run("Switch", extra_env={variable: ""})
+    # Then the migration cannot claim the persisted setting controls Compose.
+    assert result.returncode != 0
+    assert dotenv.read_bytes() == original
+    assert not migration.env_file.exists()
+
+
+def test_rollback_when_receipt_targets_another_setting_refuses(migration: Migration) -> None:
+    # Given a receipt whose hash matches but whose addition targets a non-storage setting.
+    assert migration.run("Copy").returncode == 0
+    dotenv = migration.root / ".env"
+    original = dotenv.read_bytes()
+    addition = "LATER=1\n"
+    current = original + addition.encode()
+    dotenv.write_bytes(current)
+    migration.env_file.write_text(json.dumps({
+        "size": len(original), "sha256": hashlib.sha256(original).hexdigest(),
+        "addition": addition, "separator": "", "line": addition,
+    }))
+    # When rolling back with the altered receipt.
+    result = migration.run("Rollback")
+    # Then the unrelated setting cannot be stripped.
+    assert result.returncode != 0
+    assert dotenv.read_bytes() == current
