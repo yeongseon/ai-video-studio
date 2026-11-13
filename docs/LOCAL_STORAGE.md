@@ -24,11 +24,14 @@ SRC="$(pwd -P)/data/artifacts"
 DEST="/data/ai-video-studio/artifacts"
 APP_UID="${APP_UID:-1000}"
 APP_GID="${APP_GID:-1000}"
-STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sfs-storage.XXXXXX")"
+install -d -m 0700 "$HOME/.local/state/short-form-studio-storage"
+STATE_DIR="$(mktemp -d "$HOME/.local/state/short-form-studio-storage/$(date -u +%Y%m%dT%H%M%SZ).XXXXXX")"
+printf '%s\n' "$STATE_DIR"
 MANIFEST="$STATE_DIR/artifacts-before-migration.sha256"
 ENV_FILE="$STATE_DIR/storage-receipt.json"
 export SRC DEST MANIFEST ENV_FILE
 export APP_UID APP_GID
+export STATE_DIR
 df -h "$SRC" /data
 findmnt --target /data --output TARGET,SOURCE,FSTYPE,OPTIONS
 stat -c '%n uid=%u gid=%g mode=%a' "$SRC" /data
@@ -110,8 +113,13 @@ are supported). Symlinks and special files require separate review, not followin
 links outside the tree. **Paste or source the initial variable block into the
 operator's Bash shell** so its exports persist. Keep its private state directory
 outside the checkout and both media trees; it contains private artifact filenames.
-Do not delete it during acceptance (temporary-directory cleanup may remove it; use
-a private persistent directory outside the checkout for a long maintenance window).
+The default is persistent and private (`0700`), not under volatile `/tmp`.
+Do not delete it during acceptance. Save the echoed path securely. In a new shell,
+do not rerun setup and create a fresh empty directory: re-export `STATE_DIR` to the
+saved absolute directory, `MANIFEST="$STATE_DIR/artifacts-before-migration.sha256"`
+and `ENV_FILE="$STATE_DIR/storage-receipt.json"`, plus the original `SRC`, `DEST`,
+`APP_UID` and `APP_GID`. Ensure Copy's administrator and the `.env` owner can access
+the same private state directory without making it public.
 `ENV_FILE` is a storage-only rollback receipt, never the project `.env` or its alias.
 `SRC` and `DEST` must be absolute paths without single quotes or
 newlines, and not ending in a backslash, and the blocks refuse anything else. Spaces, `$` and `#` are fine: the override
@@ -255,6 +263,10 @@ The private receipt records only the addition and the original size/hash; do not
 share it, since the hash could help guess low-entropy secrets. A crash
 before the rename may leave a receipt but no switch: inspect before retrying; never
 overwrite a receipt blindly. Do not edit `.env` concurrently with these blocks.
+After an interrupted Switch or Rollback, look for leftover `.env-storage-*` files
+in the checkout and securely shred those plaintext secret copies before any build
+or sharing. Git ignores them, but that is not secure erasure; on copy-on-write,
+snapshot or SSD filesystems follow the host's secure-erasure policy as well.
 Ensure no exported `ARTIFACTS_HOST_DIR`, `COMPOSE_ENV_FILES`, `COMPOSE_DISABLE_ENV_FILE`
 or explicit `--env-file` bypasses this project configuration. Remove conflicting
 shell/service-manager overrides before acceptance and future maintenance.
@@ -362,6 +374,13 @@ separator if later settings follow; otherwise it restores the original bytes.
 It refuses a changed original prefix and retains
 later appended settings. The default `./data/artifacts` must be the original source
 for this procedure; an already customized storage setting requires a separate plan.
+If the receipt is lost, keep writers stopped and use the `.env` owner's private
+editor to remove exactly the one `ARTIFACTS_HOST_DIR='...'` line added by Switch
+(including only that line's trailing newline), preserving all credentials, other
+settings and any separator before later settings. Do not regenerate `.env` from
+an example or guess which of multiple storage lines to remove; reconcile manually
+if the migrated line cannot be identified. Re-verify the old source against the
+saved manifest; if it too is lost, recover trusted integrity evidence before use.
 Inspect plain Compose config again, then have the operator recreate affected
 containers and repeat authorized existing-asset checks before allowing writes.
 No reverse-copy or deletion is needed during this pre-write acceptance window.

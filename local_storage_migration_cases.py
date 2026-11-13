@@ -221,3 +221,17 @@ def test_rollback_when_receipt_targets_another_setting_refuses(migration: Migrat
     # Then the unrelated setting cannot be stripped.
     assert result.returncode != 0
     assert dotenv.read_bytes() == current
+
+
+def test_interrupted_dotenv_temporary_when_staged_is_ignored() -> None:
+    # Given the checkout ignore policy and a possible interrupted atomic-write filename.
+    root = Path(__file__).resolve().parent
+    # When Git checks whether that secrets-bearing path can be staged normally.
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", ".env-storage-crash-test"], cwd=root,
+        env={**os.environ, "GIT_MASTER": "1"},
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    # Then the temporary copy is ignored without creating or reading any real secrets.
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == ".env-storage-crash-test"

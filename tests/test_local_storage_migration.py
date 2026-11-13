@@ -14,6 +14,7 @@ from local_storage_migration_cases import (
     test_env_receipt_when_aliasing_dotenv_is_refused as test_env_receipt_when_aliasing_dotenv_is_refused,
     test_copy_when_configured_identity_is_unavailable_refuses as test_copy_when_configured_identity_is_unavailable_refuses,
     test_inspect_when_scaled_prints_every_artifact_writer as test_inspect_when_scaled_prints_every_artifact_writer,
+    test_interrupted_dotenv_temporary_when_staged_is_ignored as test_interrupted_dotenv_temporary_when_staged_is_ignored,
     test_plain_compose_when_migrated_uses_persistent_storage as test_plain_compose_when_migrated_uses_persistent_storage,
     test_rollback_when_settings_are_appended_preserves_line_boundaries as test_rollback_when_settings_are_appended_preserves_line_boundaries,
     test_rollback_when_receipt_targets_another_setting_refuses as test_rollback_when_receipt_targets_another_setting_refuses,
@@ -240,18 +241,24 @@ def test_variable_defaults_when_sourced_keep_private_metadata_outside_checkout(m
     # Given the variable setup from the first Bash block, without host-specific probes.
     text = GUIDE.read_text(encoding="utf-8")
     block = text.split("```bash\n", 1)[1].split("```", 1)[0].split("df -h", 1)[0]
-    # When sourcing it into an operator shell with a private temporary directory.
+    # When sourcing it into an operator shell with an isolated home and temporary directory.
+    home = migration.root / "operator-home"
+    home.mkdir()
     result = subprocess.run(
         ["bash", "-c", block + '\nprintf "%s\\n%s\\n" "$MANIFEST" "$ENV_FILE"'],
-        cwd=migration.root, env={"PATH": os.environ["PATH"], "TMPDIR": str(migration.destination)},
+        cwd=migration.root, env={"PATH": os.environ["PATH"], "HOME": str(home),
+                                 "TMPDIR": str(migration.destination)},
         capture_output=True, text=True, check=False, timeout=30,
     )
     # Then neither default can be accidentally staged from the checkout.
     assert result.returncode == 0, result.stderr
-    paths = [Path(line) for line in result.stdout.splitlines()]
+    lines = result.stdout.splitlines()
+    paths = [Path(line) for line in lines[-2:]]
     assert len(paths) == 2
-    assert all(path.is_relative_to(migration.destination) for path in paths)
+    assert all(path.is_relative_to(home / ".local/state/short-form-studio-storage") for path in paths)
     assert paths[0] != paths[1]
+    assert lines[0] == str(paths[0].parent)
+    assert paths[0].parent.stat().st_mode & 0o777 == 0o700
 
 
 def test_copy_when_destination_is_a_symlink_to_existing_media_changes_nothing(migration: Migration) -> None:
