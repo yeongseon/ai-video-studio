@@ -236,6 +236,7 @@ uses the same primitive and rejects keys containing `..` or starting with `/` in
 re-rooting them (callers translate legacy absolute keys to root-relative ones first).
 `ARTIFACT_ROOT` must therefore be identical for the API and the worker: a mismatch fails
 closed, leaving the row to be retried until `max_retries`.
+Symlinked intermediate directories under `ARTIFACT_ROOT` are unsupported for deletion: local deletion fails closed with `StorageDeletionError` and is retried, then abandoned; only `ARTIFACT_ROOT` itself may be a symlink.
 
 Residual risk, tracked in #1004: the watch bounds a late write, it does not rule one out. A
 remote-object-store upload that outlives the watch **and** whose worker dies before
