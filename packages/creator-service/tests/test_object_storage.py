@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import importlib
+import os
 import subprocess
 import sys
 from io import BytesIO
@@ -92,10 +93,10 @@ def test_local_delete_normalizes_non_missing_os_error(
     key = "run-5/render.mp4"
     backend.upload(key, b"video-bytes")
 
-    def fail_unlink(_path: Path) -> None:
+    def fail_unlink(_path: str, *, dir_fd: int | None = None) -> None:
         raise PermissionError("denied")
 
-    monkeypatch.setattr(Path, "unlink", fail_unlink)
+    monkeypatch.setattr(os, "unlink", fail_unlink)
 
     # When deletion crosses the storage adapter boundary.
     with pytest.raises(module.StorageDeletionError) as failure:

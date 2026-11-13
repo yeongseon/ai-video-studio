@@ -3,6 +3,7 @@ import contextlib
 from concurrent.futures import ThreadPoolExecutor
 import threading
 from collections.abc import AsyncIterator
+from pathlib import Path
 
 import asyncpg
 import pytest
@@ -10,6 +11,7 @@ from creator_service.artifact_download_service import (
     ArtifactDownloadService,
     InMemoryArtifactDownloadStorage,
 )
+from creator_service.rejected_scene_cleanup import SCENE_UPLOAD_LATE_WATCH_MARKER
 
 from project_deletion_support import DeletionDatabase
 
@@ -63,14 +65,26 @@ async def _wait_for_active_transaction(
 async def test_retry_workers_hold_each_row_lock_through_storage_deletion(
     deletion_database: DeletionDatabase,
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     # Given one pending artifact and a backend that blocks the first retry worker.
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setenv("STORAGE_BACKEND", "local")
+    local_path = tmp_path / "fresh.png"
+    local_path.write_bytes(b"fresh")
+    await deletion_database.pool.execute(
+        "INSERT INTO creator_runs (id, project_id, workspace_id) VALUES (1, 1, 1)",
+    )
     await deletion_database.pool.execute("""
-        INSERT INTO creator_runs (id, project_id, workspace_id) VALUES (1, 1, 1);
         INSERT INTO creator_artifacts (
-            run_id, project_id, artifact_type, file_path, storage_key, delete_requested_at
-        ) VALUES (1, 1, 'video', '1/video.mp4', '1/video.mp4', NOW());
-    """)
+            run_id, project_id, artifact_type, scene_id, file_path, storage_key,
+            metadata_json, delete_requested_at
+        ) VALUES (1, 1, 'visual_asset', 'fresh', $1, '1/scenes/fresh.png',
+                  'scene_upload_cleanup_intent', NOW());
+    """, str(local_path))
+    await deletion_database.pool.execute(
+        "UPDATE creator_artifacts SET created_at = NOW() - INTERVAL '6 minutes' WHERE run_id = 1",
+    )
     backend = BlockingDeleteBackend()
 
     @contextlib.asynccontextmanager
@@ -81,8 +95,7 @@ async def test_retry_workers_hold_each_row_lock_through_storage_deletion(
         )
         try:
             async with connection.transaction():
-                if backend.transaction_backend_pid == 0:
-                    backend.transaction_backend_pid = connection.get_server_pid()
+                backend.transaction_backend_pid = connection.get_server_pid()
                 yield connection
         finally:
             await connection.close()
@@ -119,10 +132,12 @@ async def test_retry_workers_hold_each_row_lock_through_storage_deletion(
 
     # Then SKIP LOCKED makes the contender return without invoking deletion.
     assert second_result == 0
-    assert calls_while_first_is_blocked == ["1/video.mp4"]
+    assert calls_while_first_is_blocked == ["1/scenes/fresh.png"]
     assert first_result == 1
 
-    assert backend.calls == ["1/video.mp4"]
+    assert backend.calls == ["1/scenes/fresh.png"]
+    assert not local_path.exists()
+    # An unresolved upload intent outlives its first reclaim as a late-write watch.
     assert await deletion_database.pool.fetchval(
-        "SELECT count(*) FROM creator_artifacts WHERE run_id=1",
-    ) == 0
+        "SELECT delete_error FROM creator_artifacts WHERE run_id=1",
+    ) == SCENE_UPLOAD_LATE_WATCH_MARKER

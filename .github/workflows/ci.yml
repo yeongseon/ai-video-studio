@@ -68,6 +68,9 @@ jobs:
           tests/test_architecture_diagrams.py
           tests/test_ci_docs_contract_inventory.py
           tests/test_ci_docs_contract_inventory_hardening.py
+          tests/test_local_compose_bindings.py
+          tests/test_local_bind.py
+          tests/test_local_docs_contract.py
           apps/api/tests/test_quickstart_docs.py
           apps/api/tests/test_quickstart_execution.py
           apps/api/tests/test_first_short_walkthrough.py
@@ -150,7 +153,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
         env:
           POSTGRES_USER: review
           POSTGRES_PASSWORD: review-local-only
@@ -225,7 +228,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
         env:
           POSTGRES_USER: review
           POSTGRES_PASSWORD: review-local-only
@@ -269,18 +272,32 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version-file: .node-version
-      - name: Install runtime and test dependencies
+      - name: Install host packages (ffmpeg, nginx)
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg nginx
-          python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt
-          python3 -m pip install -c constraints.txt -e packages/creator-domain -e packages/creator-provider -e packages/creator-service
+          ffmpeg -version
+          ffprobe -version
+          nginx -v
+      - name: Install constrained Python requirements
+        run: python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt
+      - name: Install packages in editable mode
+        run: python3 -m pip install -c constraints.txt -e packages/creator-domain -e packages/creator-provider -e packages/creator-service
+      - name: Install Playwright and Chromium
+        run: |
           python3 -m pip install -c constraints.txt playwright
           python3 -m playwright install chromium
-          npm --prefix apps/studio-web ci
+      - name: Install frontend dependencies
+        run: npm --prefix apps/studio-web ci
+      - name: Record resolved tool versions
+        run: |
+          python3 --version
+          node --version
+          npm --version
+          python3 -m pip show playwright
       - name: Start disposable loopback databases
         run: |
-          docker run -d --name first-short-postgres -e POSTGRES_USER=review -e POSTGRES_PASSWORD=review-local-only -e POSTGRES_DB=first_short -p 127.0.0.1:55439:5432 postgres:16-alpine
-          docker run -d --name first-short-redis -p 127.0.0.1:56389:6379 redis:7.4-alpine
+          docker run -d --name first-short-postgres -e POSTGRES_USER=review -e POSTGRES_PASSWORD=review-local-only -e POSTGRES_DB=first_short -p 127.0.0.1:55439:5432 postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+          docker run -d --name first-short-redis -p 127.0.0.1:56389:6379 redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
           timeout 60 bash -c 'until docker exec first-short-postgres pg_isready -U review; do sleep 1; done'
       - name: Verify durable assets and real first-video workflow
         env:
@@ -294,7 +311,7 @@ jobs:
           python3 -m pytest packages/creator-service/tests/test_stale_pending_reconciler_fencing.py packages/creator-service/tests/test_reconciler_cleanup_claims.py packages/creator-service/tests/test_broker_recovery_resume.py -v --basetemp=/tmp/reconciler-fencing-runtime
           PYTHONPATH=tests/integration python3 -m pytest packages/creator-service/tests/test_postgres_media_asset_storage.py packages/creator-service/tests/test_temp_byte_lease.py tests/integration/test_first_short_runtime.py tests/integration/test_studio_proxy_runtime.py tests/integration/test_authorized_media_runtime.py -v --basetemp=/tmp/first-short-runtime
           PYTHONPATH=tests/integration python3 -m pytest tests/integration/test_studio_upload_browser.py tests/integration/test_timeline_preview_browser.py -v --basetemp=/tmp/studio-browser-runtime
-          PYTHONPATH=tests/integration python3 -m pytest tests/integration/test_postgres_project_deletion.py tests/integration/test_postgres_project_deletion_cascade.py tests/integration/test_postgres_project_scene_cleanup.py tests/integration/test_postgres_project_deletion_barrier.py tests/integration/test_postgres_scene_acceptance_fence.py tests/integration/test_postgres_artifact_deletion_retry_fence.py tests/integration/test_postgres_project_deletion_fail_closed.py tests/integration/test_project_status_migration.py tests/integration/test_postgres_enum_check_drift.py tests/integration/test_project_deletion_prerequisites.py -v --basetemp=/tmp/project-deletion-runtime
+          PYTHONPATH=tests/integration python3 -m pytest tests/integration/test_postgres_project_deletion.py tests/integration/test_postgres_project_deletion_cascade.py tests/integration/test_postgres_project_scene_cleanup.py tests/integration/test_postgres_project_deletion_barrier.py tests/integration/test_postgres_scene_acceptance_fence.py tests/integration/test_postgres_artifact_deletion_retry_fence.py tests/integration/test_postgres_scene_upload_cleanup_intent.py tests/integration/test_postgres_scene_upload_intent_retry_guard.py tests/integration/test_postgres_scene_upload_intent_acceptance_race.py tests/integration/test_postgres_scene_upload_intent_gc_fence.py tests/integration/test_postgres_scene_upload_acceptance_protocol.py tests/integration/test_postgres_scene_upload_intent_read_surfaces.py tests/integration/test_postgres_scene_upload_late_write_watch.py tests/integration/test_postgres_project_deletion_fail_closed.py tests/integration/test_project_status_migration.py tests/integration/test_postgres_enum_check_drift.py tests/integration/test_project_deletion_prerequisites.py -v --basetemp=/tmp/project-deletion-runtime
           python3 -m pytest packages/creator-service/tests/test_spend_reservations.py packages/creator-service/tests/test_owned_quota_lifecycle.py packages/creator-service/tests/test_postgres_spend_lifecycle.py packages/creator-service/tests/test_task_claim_ownership.py -v --basetemp=/tmp/spend-lifecycle-runtime
           PYTHONPATH=apps/worker-orchestrator python3 -m pytest apps/worker-orchestrator/tests/test_terminal_validation_guards.py apps/worker-orchestrator/tests/test_terminal_validation_failure.py apps/worker-orchestrator/tests/test_visual_plan_terminal_validation.py -v --basetemp=/tmp/terminal-validation-runtime
           PYTHONPATH=apps/worker-orchestrator python3 -m pytest apps/worker-orchestrator/tests/test_late_worker_outcomes.py apps/worker-orchestrator/tests/test_worker_outcome_claims.py packages/creator-service/tests/test_revocation_dispatch_race.py -v --basetemp=/tmp/late-worker-outcomes-runtime
@@ -343,8 +360,8 @@ jobs:
           docker network create worker-topology
           docker run -d --name topology-postgres --network worker-topology -p 127.0.0.1:55441:5432 \
             -e POSTGRES_DB=topology -e POSTGRES_USER=review -e POSTGRES_PASSWORD=review-local-only \
-            postgres:16.6-alpine
-          docker run -d --name topology-redis --network worker-topology -p 127.0.0.1:56391:6379 redis:7.4-alpine
+            postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+          docker run -d --name topology-redis --network worker-topology -p 127.0.0.1:56391:6379 redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
           docker build --target runtime -f apps/worker-orchestrator/Dockerfile -t worker-topology-image .
           docker image inspect worker-topology-image --format '{{.Id}}' > /tmp/worker-topology-runtime/image-digest.txt
           docker image inspect worker-topology-image --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' \
@@ -362,8 +379,8 @@ jobs:
           manifest = {
               "dockerfile": "apps/worker-orchestrator/Dockerfile",
               "image": "worker-topology-image",
-              "postgres": "postgres:16.6-alpine",
-              "redis": "redis:7.4-alpine",
+              "postgres": "postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+              "redis": "redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe",
               "celery": "5.6.3",
               "scenarios": ["authenticated-stop", "quota-release", "artifact-suppression", "hard-timeout", "active-redelivery", "stale-attempt-fencing", "ffmpeg-cleanup", "fairness"],
           }

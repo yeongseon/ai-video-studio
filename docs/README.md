@@ -25,7 +25,8 @@ Widening reduced classes later requires evidence and Oracle review.
 | [ACA_STAGING_TOPOLOGY.md](ACA_STAGING_TOPOLOGY.md) | Secure target ACA staging topology and configuration contract; not deployment evidence |
 | [BACKUP_RESTORE.md](BACKUP_RESTORE.md) | Coordinated database and media backup/restore runbook |
 | [LIGHTWEIGHT.md](LIGHTWEIGHT.md) | Run without Celery/Redis |
-| [LOCAL_DOCKER.md](LOCAL_DOCKER.md) | Local Docker Compose setup with LAN access |
+| [LOCAL_DOCKER.md](LOCAL_DOCKER.md) | Local Docker Compose setup, private by default with an explicit trusted-LAN opt-in |
 | [RUN_STORAGE_CONTRACT.md](RUN_STORAGE_CONTRACT.md) | Versioned run storage adapter update contract |
 | [QUEUE_DURABILITY.md](QUEUE_DURABILITY.md) | Redis durability, broker replacement recovery, and DLQ retention contract |
+| [RUNTIME_IMAGES.md](RUNTIME_IMAGES.md) | Pinned PostgreSQL and Redis images: how to update a pin, minor-upgrade notes and rollback |
 | [PYTHON_DEPENDENCIES.md](PYTHON_DEPENDENCIES.md) | Python pins: which file is installed where, how `constraints.txt` is generated and checked |

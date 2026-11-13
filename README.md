@@ -239,7 +239,9 @@ revision; it does not bypass the generated pipeline's script or visual reviews.
 
 ### Prerequisites
 
-- Docker and Docker Compose v2+
+- Docker Engine >= 28.0.0 and Docker Compose v2+ (older Engines let hosts on the same
+  L2 segment reach ports published to localhost:
+  [moby/moby#45610](https://github.com/moby/moby/issues/45610))
 - (Optional) NVIDIA GPU + Container Toolkit for local AI models
 
 ### 1. Clone and configure
@@ -281,7 +283,7 @@ docker compose --profile gpu up -d
 > **Development:** `docker compose -f docker-compose.yml -f docker-compose.dev.yml up -d`
 > enables backend/worker source mounting and frontend live-reload (Vite dev server on port 5173).
 
-> **Security:** `studio-web` binds to `127.0.0.1:5174` by default so the UI is not exposed on the local network.
+> **Security:** `studio-web` binds to `127.0.0.1:5174` by default so the UI is not exposed on the local network (on Docker Engine >= 28.0.0, see Prerequisites).
 > For public deployments, keep this behind an authenticated reverse proxy and add proper application authentication.
 
 ### 3. Run database migrations
@@ -486,7 +488,7 @@ See [`docs/LIGHTWEIGHT.md`](docs/LIGHTWEIGHT.md) for setup and tradeoffs.
 - [Security Model](docs/SECURITY.md) -- Authentication, trust boundaries, network policy
 - [Deployment Guide](docs/CUTOVER.md) -- Production deployment checklist
 - [Lightweight Mode](docs/LIGHTWEIGHT.md) -- Run without Celery/Redis
-- [Local Docker Compose Setup](docs/LOCAL_DOCKER.md) -- Run the full stack on a local server with LAN access
+- [Local Docker Compose Setup](docs/LOCAL_DOCKER.md) -- Run the full stack on a local server, private by default with an explicit trusted-LAN opt-in
 
 ## License
 
