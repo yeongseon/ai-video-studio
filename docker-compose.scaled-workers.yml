@@ -38,7 +38,7 @@ services:
       target: runtime
     command: ["celery", "-A", "celery_app.celery_app", "worker", "--loglevel=info", "--pool=solo", "--concurrency=1", "-Q", "script,creator"]
     volumes:
-      - ./data/artifacts:/app/data/artifacts
+      - ${ARTIFACTS_HOST_DIR:-./data/artifacts}:/app/data/artifacts
       - dlq_data:/var/lib/short-form-studio/dlq
     env_file:
       - .env
@@ -57,7 +57,7 @@ services:
       target: runtime
     command: ["celery", "-A", "celery_app.celery_app", "worker", "--loglevel=info", "--pool=prefork", "--concurrency=2", "-Q", "image"]
     volumes:
-      - ./data/artifacts:/app/data/artifacts
+      - ${ARTIFACTS_HOST_DIR:-./data/artifacts}:/app/data/artifacts
       - dlq_data:/var/lib/short-form-studio/dlq
     env_file:
       - .env
@@ -76,7 +76,7 @@ services:
       target: runtime
     command: ["celery", "-A", "celery_app.celery_app", "worker", "--loglevel=info", "--pool=solo", "--concurrency=1", "-Q", "audio"]
     volumes:
-      - ./data/artifacts:/app/data/artifacts
+      - ${ARTIFACTS_HOST_DIR:-./data/artifacts}:/app/data/artifacts
       - dlq_data:/var/lib/short-form-studio/dlq
     env_file:
       - .env
@@ -95,7 +95,7 @@ services:
       target: runtime
     command: ["celery", "-A", "celery_app.celery_app", "worker", "--loglevel=info", "--pool=solo", "--concurrency=1", "-Q", "render"]
     volumes:
-      - ./data/artifacts:/app/data/artifacts
+      - ${ARTIFACTS_HOST_DIR:-./data/artifacts}:/app/data/artifacts
       - dlq_data:/var/lib/short-form-studio/dlq
     env_file:
       - .env

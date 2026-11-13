@@ -110,10 +110,21 @@ def test_docs_job_runs_documentation_contract_checks() -> None:
     assert "tests/test_local_compose_bindings.py" in commands
     assert "tests/test_local_bind.py" in commands
     assert "tests/test_local_docs_contract.py" in commands
+    assert "tests/test_local_storage_migration.py" in commands
+    assert "rsync --version" in commands
+    assert "sha256sum --version" in commands
     assert "-e packages/creator-domain" in commands
     assert "-e packages/creator-provider" in commands
     assert "-e packages/creator-service" in commands
     _assert_docs_job_has_no_failure_mask(workflow)
+
+
+def test_local_storage_compose_checks_are_invoked() -> None:
+    # Given the workflow validation jobs.
+    workflow = _workflow()
+    # When checking storage inspection coverage.
+    # Then CI runs real config inspection.
+    assert "tests/test_local_storage_compose.py" in _test_commands(workflow)
 
 
 @pytest.mark.parametrize("scope", ["job", "step"])
