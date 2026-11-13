@@ -41,10 +41,10 @@ docker-logs:
 # --- Local Server (LAN-accessible) ---
 
 docker-local-up:
-	docker compose -f docker-compose.yml -f docker-compose.local-server.yml up -d postgres redis api worker studio-web
+	docker compose -f docker-compose.yml -f docker-compose.local-server.yml up -d postgres redis api worker beat studio-web
 
 docker-local-build:
-	docker compose -f docker-compose.yml -f docker-compose.local-server.yml up -d --build postgres redis api worker studio-web
+	docker compose -f docker-compose.yml -f docker-compose.local-server.yml up -d --build postgres redis api worker beat studio-web
 
 docker-local-migrate:
 	docker compose run --rm api alembic upgrade head
@@ -56,7 +56,7 @@ docker-local-bootstrap:
 	@echo "  make docker-local-up"
 
 docker-local-logs:
-	docker compose -f docker-compose.yml -f docker-compose.local-server.yml logs -f api worker studio-web
+	docker compose -f docker-compose.yml -f docker-compose.local-server.yml logs -f api worker beat studio-web
 
 docker-local-down:
 	docker compose -f docker-compose.yml -f docker-compose.local-server.yml down

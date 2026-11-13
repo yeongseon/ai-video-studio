@@ -10,6 +10,7 @@ from pydantic import JsonValue
 import pytest
 
 from shorts_api.task_dispatch_adapter import ApplicationTaskDispatcher
+from tests.worker_image_support import load_image_sibling
 
 
 def test_celery_submission_preserves_id_arguments_and_trace(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -32,6 +33,7 @@ def test_cancel_terminates_the_exact_task(monkeypatch: pytest.MonkeyPatch) -> No
     module = module_from_spec(spec)
     monkeypatch.setitem(sys.modules, "celery_app", module)
     monkeypatch.setitem(sys.modules, "worker_loop", None)
+    load_image_sibling(monkeypatch, "beat_health")
     spec.loader.exec_module(module)
 
     # When cancellation reaches Celery's control boundary.
