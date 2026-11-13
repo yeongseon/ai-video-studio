@@ -41,10 +41,10 @@ docker-logs:
 # --- Local Server (LAN-accessible) ---
 
 docker-local-up:
-	docker compose -f docker-compose.yml -f docker-compose.local-server.yml up -d postgres redis api worker studio-web
+	docker compose -f docker-compose.yml -f docker-compose.local-server.yml up -d postgres redis api worker beat studio-web
 
 docker-local-build:
-	docker compose -f docker-compose.yml -f docker-compose.local-server.yml up -d --build postgres redis api worker studio-web
+	docker compose -f docker-compose.yml -f docker-compose.local-server.yml up -d --build postgres redis api worker beat studio-web
 
 docker-local-migrate:
 	docker compose run --rm api alembic upgrade head
@@ -56,7 +56,7 @@ docker-local-bootstrap:
 	@echo "  make docker-local-up"
 
 docker-local-logs:
-	docker compose -f docker-compose.yml -f docker-compose.local-server.yml logs -f api worker studio-web
+	docker compose -f docker-compose.yml -f docker-compose.local-server.yml logs -f api worker beat studio-web
 
 docker-local-down:
 	docker compose -f docker-compose.yml -f docker-compose.local-server.yml down
@@ -66,22 +66,32 @@ docker-local-status:
 
 # --- Dependency locking ---
 # Two lockfiles serve different purposes:
-#   uv.lock           — workspace packages (creator-domain/service/provider)
-#   constraints.txt   — full deployment pin (api + worker + packages + transitive)
+#   uv.lock           — the uv workspace: the three packages with every provider extra
+#   constraints.txt   — what the API and Worker images, CI and `make install` install,
+#                       generated from constraints.in (see the Python dependencies guide)
 #
-# lock:       regenerate uv.lock for workspace packages.
-#             constraints.txt must be regenerated separately when api/worker
-#             requirements change (see lock-constraints below).
+# lock:                    regenerate uv.lock.
+# lock-constraints:        regenerate constraints.txt from constraints.in. Existing pins are
+#                          kept as preferences, so only what a changed input forces moves;
+#                          review the diff. Use the uv version that CI pins.
+# lock-constraints-check:  fail unless constraints.txt is what that regeneration produces.
+UV_COMPILE_CONSTRAINTS = uv pip compile constraints.in --python-version 3.12 \
+	--python-platform linux --no-header --no-emit-package creator-domain \
+	--no-emit-package creator-provider --no-emit-package creator-service
+
 lock:
 	uv lock
 	@echo "uv.lock regenerated"
 
 lock-constraints:
-	uv pip compile apps/api/requirements.txt apps/api/requirements-dev.txt \
-		apps/worker-orchestrator/requirements.txt \
-		apps/worker-orchestrator/requirements-dev.txt \
-		--output-file constraints.txt
-	@echo "constraints.txt regenerated"
+	$(UV_COMPILE_CONSTRAINTS) --output-file constraints.txt
+	@echo "constraints.txt regenerated from constraints.in: review the diff"
+
+lock-constraints-check:
+	@tmp="$$(mktemp)" && trap 'rm -f "$$tmp"' EXIT && cp constraints.txt "$$tmp" \
+		&& $(UV_COMPILE_CONSTRAINTS) --output-file "$$tmp" --quiet \
+		&& diff -u constraints.txt "$$tmp" \
+		&& echo "constraints.txt matches constraints.in"
 
 lock-check:
 	uv lock --check

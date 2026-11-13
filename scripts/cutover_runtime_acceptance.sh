@@ -182,7 +182,7 @@ run_recovery_now
 [ "$(code -H "X-API-Key: ${API_KEY}" http://127.0.0.1:8000/api/creator/users/me)" = 200 ] \
   || fail "creator endpoint did not return 200 with the exported key"
 
-for task in reconcile_stale_dispatches retry_failed_artifact_deletions sweep_expired_artifacts; do
+for task in reconcile_stale_dispatches retry_failed_artifact_deletions sweep_expired_artifacts beat_heartbeat; do
   timeout 60 bash -c "until docker compose exec -T worker celery -A celery_app.celery_app inspect registered 2>/dev/null | grep -q '$task'; do sleep 2; done"
   printf 'registered: %s\n' "$task"
 done

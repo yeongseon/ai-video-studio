@@ -9,6 +9,7 @@ from uuid import uuid4
 from celery.exceptions import Ignore, SoftTimeLimitExceeded
 from creator_provider.exceptions import ProviderTimeoutError, RateLimitError
 from creator_domain.models.stage import RunStage
+from creator_service.storage_policy import FilesystemLowSpace
 
 if TYPE_CHECKING:
     from tasks.task_runner import TaskContext, TaskResult, TaskRunnerConfig
@@ -63,6 +64,7 @@ def run_task(
     task_id = str(getattr(request, "id", None) or f"run-{validated_run_id}")
     safe_failure_stages = config.safe_failure_stages or config.safe_stages
     billing_outcome = runner.BillingOutcome.NOT_STARTED
+    execution_entered = False
     claimed = False
     from creator_service.task_tracking_service import TaskTrackingService
 
@@ -107,7 +109,8 @@ def run_task(
             runner.logger.warning("Failed to settle owned quota reservation", exc_info=True)
 
     async def execute_owned(ctx: TaskContext) -> TaskResult:
-        nonlocal billing_outcome
+        nonlocal billing_outcome, execution_entered
+        execution_entered = True
         ctx.delivery_attempt = getattr(celery_self.request, "retries", 0)
         try:
             return await execute(ctx)
@@ -219,6 +222,11 @@ def run_task(
                 case runner.BillingOutcome.UNKNOWN:
                     settle_owned(billable_unknown=True)
             raise
+        # A refusal before execution says nothing about this task's spend: an earlier delivery may
+        # have authorized and started a provider attempt before Celery retried it. Let the durable
+        # attempt history decide (settle if any attempt exists, otherwise cancel) instead of
+        # assuming this delivery's empty local state means "nothing was started".
+        history_decides = isinstance(exc, FilesystemLowSpace) and not execution_entered
         try:
             from creator_service.usage_service import usage_service
 
@@ -231,7 +239,7 @@ def run_task(
                     exc,
                     usage_service.storage,
                     claim_token,
-                    billing_outcome,
+                    None if history_decides else billing_outcome,
                 )
             )
         except Exception:

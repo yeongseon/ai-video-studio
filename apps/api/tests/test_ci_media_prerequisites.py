@@ -20,20 +20,20 @@ class Workflow(BaseModel, frozen=True):
     jobs: dict[str, Job]
 
 
-@pytest.mark.parametrize("test_command", [
-    "python3 -m pytest packages/creator-domain/tests/",
-    "python3 -m pytest packages/creator-provider/tests/",
-    "python3 -m pytest packages/creator-service/tests/",
-    "cd apps/api && python3 -m pytest tests/",
-    "cd apps/worker-orchestrator && python3 -m pytest tests/",
+@pytest.mark.parametrize(("job", "test_command"), [
+    ("test", "python3 -m pytest packages/creator-domain/tests/"),
+    ("test", "python3 -m pytest packages/creator-provider/tests/"),
+    ("test", "python3 -m pytest packages/creator-service/tests/"),
+    ("test", "cd apps/api && python3 -m pytest tests/"),
+    ("test-worker", "cd apps/worker-orchestrator && python3 -m pytest tests/"),
 ])
-def test_host_media_prerequisites_precede_test_execution(test_command: str) -> None:
-    # Given the actual test job; installs in Docker/runtime jobs do not count.
+def test_host_media_prerequisites_precede_test_execution(job: str, test_command: str) -> None:
+    # Given the actual job that runs this suite; installs in Docker/runtime jobs do not count.
     root = Path(__file__).resolve().parents[3]
     workflow = Workflow.model_validate(
         yaml.safe_load((root / ".github/workflows/ci.yml").read_text())
     )
-    steps = workflow.jobs["test"].steps
+    steps = workflow.jobs[job].steps
 
     # When locating executable commands in unconditional, fail-fast setup steps.
     commands = [
@@ -51,11 +51,11 @@ def test_host_media_prerequisites_precede_test_execution(test_command: str) -> N
     positions = []
     for command in required:
         matches = [index for index, (_, tokens) in enumerate(commands) if tokens == command]
-        assert matches, f"test job must execute {shlex.join(command)}"
+        assert matches, f"{job} job must execute {shlex.join(command)}"
         positions.append(matches[0])
     test_steps = [index for index, step in enumerate(steps) if test_command in step.run]
 
     # Then update/install/version checks run in order before every real test suite.
     assert positions == sorted(positions)
-    assert test_steps, f"test job must retain {test_command}"
+    assert test_steps, f"{job} job must retain {test_command}"
     assert commands[positions[-1]][0] < min(test_steps)
