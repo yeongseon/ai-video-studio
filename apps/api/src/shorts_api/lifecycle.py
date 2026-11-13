@@ -131,16 +131,23 @@ def _handle_sigint(_signum: int, _frame: object | None) -> None:
 
 
 
-KNOWN_EXAMPLE_ADMIN_KEYS: Final = frozenset({
+KNOWN_EXAMPLE_ADMIN_KEYS: Final = frozenset(key.casefold() for key in {
     "local-admin-key-change-me",
     "<a-strong-random-string>",
 })
 
 
+def _is_known_example_admin_key(key: str) -> bool:
+    normalized = key.strip()
+    if len(normalized) >= 2 and normalized[0] in {"'", '"'} and normalized[-1] == normalized[0]:
+        normalized = normalized[1:-1].strip()
+    return normalized.casefold() in KNOWN_EXAMPLE_ADMIN_KEYS
+
+
 def configured_admin_api_key() -> str:
     """Return no credential for publicly shipped examples, even without startup validation."""
     key = os.environ.get("ADMIN_API_KEY", "")
-    return "" if key in KNOWN_EXAMPLE_ADMIN_KEYS else key
+    return "" if _is_known_example_admin_key(key) else key
 
 
 def validate_admin_api_key(
@@ -157,14 +164,19 @@ def validate_admin_api_key(
         return
 
     key = admin_key if admin_key is not None else _os.environ.get("ADMIN_API_KEY", "")
-    if key in KNOWN_EXAMPLE_ADMIN_KEYS:
-        raise ProductionConfigError(
-            "ADMIN_API_KEY is a publicly known example value. "
-            "Please unset it (admin API disabled) or generate a new key with openssl rand -hex 32."
-        )
-
     raw_env = environment if environment is not None else _os.getenv("ENVIRONMENT", "development")
     env = raw_env.strip().lower() if raw_env else "development"
+    if _is_known_example_admin_key(key):
+        advice = (
+            "Please generate a new key (production requires one)"
+            if env == "production"
+            else "Please unset it (admin API disabled) or generate a new key"
+        )
+        raise ProductionConfigError(
+            "ADMIN_API_KEY is a publicly known example value. "
+            f"{advice} with openssl rand -hex 32."
+        )
+
     if env != "production":
         return
 

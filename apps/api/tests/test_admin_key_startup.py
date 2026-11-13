@@ -49,8 +49,13 @@ def test_validate_rejects_public_example_in_every_environment(environment: str, 
     with pytest.raises(ProductionConfigError) as error:
         validate_admin_api_key(environment=environment, admin_key=key)
     message = str(error.value)
-    for fragment in ("ADMIN_API_KEY", "publicly known example", "unset", "disabled", "openssl rand -hex 32"):
+    for fragment in ("ADMIN_API_KEY", "publicly known example", "openssl rand -hex 32"):
         assert fragment in message
+    if environment == "production":
+        assert "generate a new key (production requires one)" in message
+        assert "unset" not in message
+    else:
+        assert "unset it (admin API disabled)" in message
 
 
 def test_validate_rejects_public_example_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
