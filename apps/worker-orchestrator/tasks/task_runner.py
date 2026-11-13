@@ -57,6 +57,7 @@ from creator_provider.gpu_lock import (
 from creator_provider.versioned_assets import clear_loaded_asset_versions, get_loaded_asset_versions
 from creator_service.actionable_errors import build_run_failure_summary
 from creator_service.job_capacity import ensure_job_capacity
+from creator_service.render_scratch import configured_scratch_root
 from creator_service.run_service import run_service as _run_service
 from creator_service.task_tracking_service import task_tracking_service as _task_tracking_service
 from creator_service.usage_service import resolve_workspace_id_from_run
@@ -281,7 +282,7 @@ async def _run_task_inner(
     # Raised after the claim and stage guard so the refusal is recorded on the task, and before
     # quota re-admission and provider work so nothing is billed and nothing is written.
     if config.requires_free_space:
-        ensure_job_capacity(config.task_name, run_id=run_id)
+        ensure_job_capacity(config.task_name, run_id=run_id, scratch_root=configured_scratch_root())
 
     # 4. Execute task-specific logic
     from creator_service.usage_service import usage_service
