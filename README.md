@@ -489,6 +489,7 @@ See [`docs/LIGHTWEIGHT.md`](docs/LIGHTWEIGHT.md) for setup and tradeoffs.
 - [Deployment Guide](docs/CUTOVER.md) -- Production deployment checklist
 - [Lightweight Mode](docs/LIGHTWEIGHT.md) -- Run without Celery/Redis
 - [Local Docker Compose Setup](docs/LOCAL_DOCKER.md) -- Run the full stack on a local server, private by default with an explicit trusted-LAN opt-in
+- [Local Storage](docs/LOCAL_STORAGE.md) -- Artifact host directory, memory limits and safe migration
 
 ## License
 

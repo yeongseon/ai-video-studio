@@ -60,6 +60,10 @@ jobs:
           -e packages/creator-domain
           -e packages/creator-provider
           -e packages/creator-service
+      - name: Verify storage migration tooling
+        run: |
+          rsync --version
+          sha256sum --version
       - name: Validate documentation contracts
         env:
           PYTHONPATH: apps/api/src:packages/creator-domain:packages/creator-service:packages/creator-provider
@@ -71,6 +75,7 @@ jobs:
           tests/test_local_compose_bindings.py
           tests/test_local_bind.py
           tests/test_local_docs_contract.py
+          tests/test_local_storage_migration.py
           apps/api/tests/test_quickstart_docs.py
           apps/api/tests/test_quickstart_execution.py
           apps/api/tests/test_first_short_walkthrough.py
@@ -201,6 +206,8 @@ jobs:
         run: npm --prefix apps/studio-web ci
       - name: Test architecture dependency checker
         run: python3 -m pytest tests/test_package_dependency_cli.py tests/test_package_dependency_parser.py tests/test_package_dependency_compliance.py tests/test_architecture_diagrams.py -q
+      - name: Inspect local storage Compose configuration without containers
+        run: python3 -m pytest tests/test_local_storage_compose.py -q
       - name: Test PR impact classifier fail-closed policy
         run: python3 -m pytest tests/test_ci_impact.py tests/test_ci_impact_git.py tests/test_ci_required.py tests/test_ci_required_workflow.py tests/test_ci_docs_contract_inventory.py tests/test_ci_docs_contract_inventory_hardening.py tests/test_local_beat_lifecycle.py -q
       - name: Test Packages (with coverage)

@@ -44,11 +44,12 @@ services:
       # See docs/SECURITY.md "Network Exposure Policy" for details.
       - "127.0.0.1:8000:8000"
     volumes:
-      - ./data/artifacts:/app/data/artifacts
+      - ${ARTIFACTS_HOST_DIR:-./data/artifacts}:/app/data/artifacts
     env_file:
       - .env
     environment:
       PYTHONPATH: /app/src:/app
+      MAX_MEMORY_MB: ${API_MAX_MEMORY_MB:-${MAX_MEMORY_MB:-1024}}
     depends_on:
       postgres:
         condition: service_healthy
@@ -58,7 +59,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${MAX_MEMORY_MB:-1024}M
+          memory: ${API_MAX_MEMORY_MB:-${MAX_MEMORY_MB:-1024}}M
 
   worker:
     build:
@@ -67,12 +68,13 @@ services:
       target: runtime
     command: ["celery", "-A", "celery_app.celery_app", "worker", "--loglevel=info", "--pool=solo", "--concurrency=1"]
     volumes:
-      - ./data/artifacts:/app/data/artifacts
+      - ${ARTIFACTS_HOST_DIR:-./data/artifacts}:/app/data/artifacts
       - dlq_data:/var/lib/short-form-studio/dlq
     env_file:
       - .env
     environment:
       DLQ_FALLBACK_PATH: /var/lib/short-form-studio/dlq/failures.jsonl
+      MAX_MEMORY_MB: ${WORKER_MAX_MEMORY_MB:-${MAX_MEMORY_MB:-4096}}
       BROKER_EPOCH_STATE_PATH: /var/lib/short-form-studio/dlq/observed-broker-epoch
     depends_on:
       postgres:
@@ -83,7 +85,7 @@ services:
     deploy:
       resources:
         limits:
-          memory: ${MAX_MEMORY_MB:-4096}M
+          memory: ${WORKER_MAX_MEMORY_MB:-${MAX_MEMORY_MB:-4096}}M
 
   # Celery Beat scheduler — required for any beat_schedule entry to actually fire.
   # Without this, reconcile_stale_dispatches / retry_failed_artifact_deletions never run (#585).
