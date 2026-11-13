@@ -245,7 +245,7 @@ def test_rejected_acceptance_records_exact_key_before_failed_cleanup(
     assert case.provider.paths[0] in case.provider.paths
 
 
-def test_rejected_acceptance_never_records_alias_key(
+def test_rejected_acceptance_records_expected_key_without_deleting_alias_key(
     scene_case: SceneCase,
     upload_backend: LocalStorageBackend,
     monkeypatch: pytest.MonkeyPatch,
