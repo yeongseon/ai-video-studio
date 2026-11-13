@@ -47,6 +47,9 @@ import yaml
 ROOT: Final = Path(__file__).resolve().parents[3]
 SELF: Final = Path(__file__).resolve().relative_to(ROOT).as_posix()
 SERVICES: Final = {"postgres": "postgres", "redis": "redis"}
+# Nothing else forced security bumps: raise these when a security release ships; never lower them.
+MIN_POSTGRES_PATCH: Final = (16, 16)
+MIN_REDIS_PATCH: Final = (7, 4, 12)
 SHAPE: Final = {
     "postgres": re.compile(r"postgres:16\.\d+-alpine@sha256:[0-9a-f]{64}"),
     "redis": re.compile(r"redis:7\.4\.\d+-alpine@sha256:[0-9a-f]{64}"),
@@ -316,6 +319,21 @@ def test_compose_pins_each_service_to_an_exact_patch_and_digest() -> None:
         assert pattern.fullmatch(_pin(name)), (name, _pin(name))
 
 
+@pytest.mark.parametrize(
+    ("name", "floor"),
+    [("postgres", MIN_POSTGRES_PATCH), ("redis", MIN_REDIS_PATCH)],
+)
+def test_compose_pin_meets_security_patch_floor(name: str, floor: tuple[int, ...]) -> None:
+    # Given the offline deployment pin and the minimum reviewed security patch.
+    pin = _pin(name)
+
+    # When parsing the numeric version, independently of its digest.
+    version = tuple(int(part) for part in pin.split(":", 1)[1].split("-", 1)[0].split("."))
+
+    # Then even a consistent repository-wide downgrade is refused.
+    assert version >= floor, f"{name}: {version} is below security patch floor {floor}"
+
+
 def test_every_reference_in_the_repository_matches_the_compose_pin() -> None:
     # Given every tracked place that names either image, as text and as a YAML image value.
     references = _references()
@@ -420,7 +438,7 @@ def test_core_services_never_use_a_moving_image() -> None:
 
 
 DIGEST: Final = "sha256:" + "0123456789abcdef" * 4
-PINNED_POSTGRES: Final = f"postgres:16.15-alpine@{DIGEST}"
+PINNED_POSTGRES: Final = f"postgres:16.16-alpine@{DIGEST}"
 PINNED_REDIS: Final = f"redis:7.4.12-alpine@{DIGEST}"
 
 
@@ -498,8 +516,8 @@ PINNED_REDIS: Final = f"redis:7.4.12-alpine@{DIGEST}"
             id="untagged-qualified-from-with-flag-and-alias",
         ),
         pytest.param(
-            f"image: postgres:16.15-alpine@sha256:{'0' * 63}",
-            [("postgres", "postgres:16.15-alpine")],
+            f"image: postgres:16.16-alpine@sha256:{'0' * 63}",
+            [("postgres", "postgres:16.16-alpine")],
             id="truncated-digest-counts-as-no-digest",
         ),
     ],
