@@ -47,7 +47,8 @@ import yaml
 ROOT: Final = Path(__file__).resolve().parents[3]
 SELF: Final = Path(__file__).resolve().relative_to(ROOT).as_posix()
 SERVICES: Final = {"postgres": "postgres", "redis": "redis"}
-# Nothing else forced security bumps: raise these when a security release ships; never lower them.
+# Nothing else forced security bumps: raise these when a security release ships; lower them only in a
+# reviewed emergency-rollback change.
 MIN_POSTGRES_PATCH: Final = (16, 16)
 MIN_REDIS_PATCH: Final = (7, 4, 12)
 SHAPE: Final = {

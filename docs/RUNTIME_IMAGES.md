@@ -14,7 +14,7 @@ existing data volume survives a pin change is #1021.
 
 | Service | Version | Base image | Multi-arch index digest | Supported until |
 |---|---|---|---|---|
-| PostgreSQL 16 | 16.16 | Alpine (base version not re-verified) | `sha256:0adbf25a9e96...` | 2028-11-09 |
+| PostgreSQL 16 | 16.16 | Alpine 3.24 (`16.16-alpine3.24` resolves to the same index) | `sha256:0adbf25a9e96...` | 2028-11-09 |
 | Redis OSS 7.4 (Extended) | 7.4.12 | Alpine (3.22 reported in #1022; not re-verified here) | `sha256:7f7d30b7fdd0...` | 2029-12-01 |
 
 The `image:` lines of `docker-compose.yml` are authoritative; this table is a dated snapshot and
@@ -31,7 +31,13 @@ against Docker Hub's public tags API:
   `last_updated` is `2026-11-12T22:13:55.084706Z`. The `images` list contains seven
   Linux platforms: `386`, `amd64`, `arm/v6`, `arm/v7`, `arm64/v8`, `ppc64le`, `s390x`.
   Entries with `os=unknown` / `architecture=unknown` are not counted as runnable platforms;
-  this PostgreSQL index does **not** list `riscv64`.
+  this PostgreSQL index does **not** list `riscv64`. The tag `16.16-alpine3.24` returns the same
+  digest. The moving tag `16-alpine` (and `16-alpine3.24`) pointed at a **different** index when
+  this was checked (`sha256:f377d590e547...`, last updated `2026-11-12T22:12:45Z`, which also lists
+  `linux/riscv64`), which is one more reason to pin the exact version tag together with its digest.
+  If the exact tag is ever re-pushed with another platform its index digest changes: re-verify the
+  platform images as described in "Updating a pin" before re-pinning, instead of treating the
+  difference as tampering or ignoring it.
 - [`library/redis/tags/7.4.12-alpine`](https://hub.docker.com/v2/repositories/library/redis/tags/7.4.12-alpine):
   top-level `digest` remains
   `sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe`.
@@ -105,8 +111,10 @@ extensions, partitioned tables, BRIN, GiST, GIN or ltree indexes, logical replic
 notes whenever the schema or the pin changes.
 
 The earlier #1022 review reported an Alpine 3.21 to 3.24 base change for its 16.6 to 16.15
-update. This 16.16 review did **not** inspect the image's Alpine version, libc or ICU versions,
-or test collation ordering; do not infer collation compatibility from the `alpine` tag.
+update. For this 16.15 to 16.16 update the Alpine branch does not change: on 2026-11-13 (UTC)
+`16.15-alpine` and `16.15-alpine3.24` resolve to the same index, and so do `16.16-alpine` and
+`16.16-alpine3.24`. The musl and ICU package versions inside the 3.24 branch were **not** compared
+and collation ordering was not tested; do not infer collation compatibility from the tag.
 #1021 tracks PostgreSQL's `amcheck` over the indexes of a seeded volume after an in-place
 upgrade. That can reveal ordering or integrity problems in those indexes, but
 `amcheck` can show corruption and never its absence, so it does not certify an arbitrary existing
@@ -164,7 +172,10 @@ is guidance, not an existing-volume test; #1021 remains open.
 Run these **read-only** catalog queries in each application database as an operator
 before deciding whether its locally added indexes need work. The first finds unbounded
 bpchar btree **index keys** (also expression results); constrained `CHAR(n)` keys and
-INCLUDE-only columns are excluded. Review definitions for domains/casts/custom operator
+INCLUDE-only columns are excluded. The second lists GIN indexes and the third lists `pg_trgm`
+GiST (`gist_trgm_ops`) indexes. The release notes require rebuilding existing bpchar btree and
+`gist_trgm_ops` indexes after the update, while GIN and TOAST indexes are rebuilt when
+corruption is suspected. Review definitions for domains/casts/custom operator
 classes as well; the queries do not prove an index is healthy.
 
 ```sql
@@ -185,9 +196,18 @@ JOIN pg_class AS c ON c.oid = i.indexrelid
 JOIN pg_am AS am ON am.oid = c.relam
 WHERE am.amname = 'gin'
 ORDER BY 1;
+
+SELECT i.indexrelid::regclass AS index_name, i.indrelid::regclass AS table_name,
+       pg_get_indexdef(i.indexrelid) AS definition
+FROM pg_index AS i
+JOIN pg_class AS c ON c.oid = i.indexrelid
+JOIN pg_am AS am ON am.oid = c.relam
+JOIN pg_opclass AS oc ON oc.oid = ANY (i.indclass::oid[])
+WHERE am.amname = 'gist' AND oc.opcname = 'gist_trgm_ops'
+ORDER BY 1;
 ```
 
-After installing 16.16, an authorized operator can rebuild each affected bpchar or
+After installing 16.16, an authorized operator can rebuild each affected bpchar, trigram GiST or
 suspect GIN index (replace the quoted names with the catalog result):
 
 ```sql
@@ -195,7 +215,9 @@ REINDEX INDEX CONCURRENTLY "public"."affected_index";
 ```
 
 For suspected TOAST-index corruption from the reported bug, identify the affected
-table/index first, then use `REINDEX INDEX CONCURRENTLY "pg_toast"."pg_toast_<oid>_index";`
+table/index first (`SELECT reltoastrelid::regclass FROM pg_class WHERE oid = 'public.affected_table'::regclass;`
+returns its TOAST relation, and that relation's index is `pg_toast.pg_toast_<table oid>_index`, where
+`<table oid>` is the OID of the parent table), then use `REINDEX INDEX CONCURRENTLY "pg_toast"."pg_toast_<table oid>_index";`
 or `REINDEX TABLE CONCURRENTLY "public"."affected_table";` (the latter includes its TOAST
 index). These are **mutating maintenance commands**, not part of the read-only inspection;
 run outside a transaction block with sufficient privileges/disk space and a backup.
@@ -226,8 +248,10 @@ line to another is a deliberate change with its own review, not a tag edit.
 - **16.16 update**: its immediate previous PostgreSQL pin is
   `postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139`.
   The new security floor deliberately refuses that downgrade, even if all consumers agree.
-  An emergency rollback is an explicit reviewed exception/revert, not a reason to lower the
-  floor. Retain the drift guard and Redis pin; reverting this update does not remove #1022.
+  An emergency rollback of the pin lowers `MIN_POSTGRES_PATCH` in the same reviewed change,
+  links the incident issue, and restores the floor with the next forward pin; reverting this update
+  as a whole is equally valid. The floor is never lowered outside such a change. Retain the drift
+  guard and the Redis pin; reverting this update does not remove #1022.
 - **Data**: PostgreSQL states that a data directory is compatible with earlier and later minor
   releases of the same major version, so in principle an older minor can open it. Do not rely on
   that here: some fixes ask for a reindex or data cleanup that a downgrade does not undo, the base
