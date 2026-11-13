@@ -31,8 +31,12 @@ Edit `.env`:
 - **Change the database password** (never ship the placeholder):
   - `POSTGRES_PASSWORD=<a-strong-password>`
   - update the same password inside `DATABASE_URL`.
-- **Set a strong admin key**: `ADMIN_API_KEY=<a-strong-random-string>` (min 16
-  chars; required in production mode).
+- **Leave admin disabled locally**: keep `ADMIN_API_KEY=` empty unless admin
+  endpoints are needed. Generate a unique key with `openssl rand -hex 32` if
+  needed (min 16 chars; required in production mode). Never reuse an example
+  value: the API rejects publicly known examples at startup in every environment.
+  Studio strips client `X-Admin-Key` and never injects an admin key; administer
+  through the loopback API directly or an SSH tunnel, not the Studio proxy.
 - **Set the remote provider keys** for a full CPU pipeline:
   - `OPENAI_API_KEY=<your-openai-api-key>` — powers the script (LLM, `gpt-4o-mini`),
     images (`dall-e-3`), and narration (TTS, `openai-tts-1`).
