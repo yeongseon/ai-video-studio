@@ -9,6 +9,7 @@ from pathlib import Path
 from .render_profile import RenderProfile
 from .media_integrity import MediaExpectation, validate_media
 from .render_frame_budget import allocate_frames
+from .render_scratch import audio_concat_list, create_render_scratch
 
 logger = logging.getLogger(__name__)
 
@@ -313,11 +314,9 @@ class FFmpegService:
             raise ValueError("image_paths must not be empty")
         _validate_durations(input_data.scene_durations)
 
-        output_path.parent.mkdir(parents=True, exist_ok=True)
-
         # Create temp directory for intermediate segments
-        tmp_dir = output_path.parent / f".render_tmp_{os.getpid()}_{os.urandom(4).hex()}"
-        tmp_dir.mkdir(parents=True, exist_ok=True)
+        tmp_dir = create_render_scratch(output_path, ".render_tmp_")
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         tmp_output: Path | None = None
 
         try:
@@ -472,21 +471,14 @@ class FFmpegService:
         Creates a temporary concat list file, runs FFmpeg, and returns the
         output path.  The caller is responsible for ensuring input files exist.
         """
-        import tempfile
-
         out = Path(output_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
-
-        # Build concat list file
-        with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
-            for p in audio_paths:
-                # FFmpeg concat requires absolute paths and single-quoted with inner quotes escaped
-                abs_p = str(Path(p).resolve())
-                escaped = abs_p.replace("'", "'\\''") 
-                f.write(f"file '{escaped}'\n")
-            concat_list = f.name
-
-        try:
+        with audio_concat_list(out) as concat_list:
+            out.parent.mkdir(parents=True, exist_ok=True)
+            with concat_list.open("w") as f:
+                for p in audio_paths:
+                    abs_p = str(Path(p).resolve())
+                    escaped = abs_p.replace("'", "'\\''")
+                    f.write(f"file '{escaped}'\n")
             cmd = [
                 "ffmpeg",
                 "-y",
@@ -495,7 +487,7 @@ class FFmpegService:
                 "-safe",
                 "0",
                 "-i",
-                concat_list,
+                str(concat_list),
                 "-c",
                 "copy",
                 str(out),
@@ -503,9 +495,6 @@ class FFmpegService:
             result = _run_ffmpeg(cmd, timeout=120)
             if result.returncode != 0:
                 raise RuntimeError(f"FFmpeg concat failed: {result.stderr}")
-        finally:
-            Path(concat_list).unlink(missing_ok=True)
-
         return out
 
     def merge_subtitles(
