@@ -180,9 +180,12 @@ class ScriptTimestampAligner(STTProvider):
                 next_word is not None
                 and timed_words[index + 1].end - timed_words[cue_start].start > _MAX_CUE_SECONDS
             )
+            next_text_end = (
+                script_words[index + 2].start if index + 2 < len(script_words) else len(script)
+            )
             length_limit = (
                 next_word is not None
-                and len(script[script_words[cue_start].start : next_word.end].strip())
+                and len(script[script_words[cue_start].start : next_text_end].strip())
                 > _MAX_CUE_CHARS
             )
             if paragraph_ends or duration_limit or length_limit:

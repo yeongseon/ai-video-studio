@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from math import ceil
+from random import Random
 
 import pytest
 
@@ -75,3 +76,75 @@ async def test_trailing_silence_does_not_make_final_cue_unreadable(
     )
     # Then trailing silence is capped, not a fatal readability error.
     assert result.segments == [{"start": 0.0, "end": 4.0, "text": script}]
+
+
+@pytest.mark.asyncio
+async def test_cue_splits_before_trailing_ellipsis_overflows_character_limit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a 40-character cue body whose trailing ellipsis would exceed 42 characters.
+    script = "오늘 우리는 아주 중요한 이야기를 함께 나눠 보려고 합니다 정말 기대돼요... 다음 장면이 시작"
+    words = script.replace("...", "").split()
+    audio = tmp_path / "audio.mp3"
+    audio.write_bytes(b"audio")
+    rows: list[WordTimingRow] = [
+        {"type": "WordBoundary", "offset": index * 3_000_000, "duration": 3_000_000, "text": word}
+        for index, word in enumerate(words)
+    ]
+    write_atomic(Path(f"{audio}.words.jsonl"), envelope(audio, script, rows))
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    # When aligning the punctuation-bearing paragraph.
+    result = await ScriptTimestampAligner().transcribe(
+        str(audio), params={"script_text": script, "audio_duration_seconds": len(words) * 0.3},
+    )
+    # Then the cue closes earlier without dropping or duplicating punctuation.
+    assert " ".join(segment["text"] for segment in result.segments) == script
+    assert all(len(segment["text"]) <= 42 for segment in result.segments)
+    assert all(0 < segment["end"] - segment["start"] <= 4.0 for segment in result.segments)
+    assert all(
+        current["end"] <= following["start"]
+        for current, following in zip(result.segments, result.segments[1:])
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("ticks_per_word", [3_000_000, 4_000_000, 5_000_000])
+async def test_seeded_punctuated_paragraphs_preserve_readable_ordered_cues(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    ticks_per_word: int,
+) -> None:
+    random = Random(979)
+    vocabulary = "오늘 우리는 아주 중요한 이야기를 함께 나눠 보려고 합니다 정말 기대돼요 다음 장면이 시작".split()
+    audio = tmp_path / "audio.mp3"
+    audio.write_bytes(b"audio")
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    for _ in range(100):
+        # Given 30 individually readable words, with punctuation on 15% of words.
+        words = [random.choice(vocabulary) for _ in range(30)]
+        punctuated = [
+            word + (random.choice((".", "...", "?", "!", ",")) if random.random() < 0.15 else "")
+            for word in words
+        ]
+        script = " ".join(punctuated)
+        rows: list[WordTimingRow] = [
+            {"type": "WordBoundary", "offset": index * ticks_per_word,
+             "duration": ticks_per_word, "text": word}
+            for index, word in enumerate(words)
+        ]
+        duration = len(words) * ticks_per_word / 10_000_000
+        write_atomic(Path(f"{audio}.words.jsonl"), envelope(audio, script, rows))
+        # When aligning at 0.3, 0.4 or 0.5 seconds per word, no individual word needs rejection.
+        result = await ScriptTimestampAligner().transcribe(
+            str(audio), params={"script_text": script, "audio_duration_seconds": duration},
+        )
+        # Then all text survives in order with bounded, monotonic, non-overlapping cues.
+        assert " ".join(segment["text"] for segment in result.segments) == script
+        assert all(len(segment["text"]) <= 42 for segment in result.segments)
+        assert all(0 <= segment["start"] < segment["end"] <= duration for segment in result.segments)
+        assert all(segment["end"] - segment["start"] <= 4.0 for segment in result.segments)
+        assert all(
+            current["end"] <= following["start"]
+            for current, following in zip(result.segments, result.segments[1:])
+        )
