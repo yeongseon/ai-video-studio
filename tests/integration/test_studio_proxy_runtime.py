@@ -1,12 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from collections.abc import Iterator
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from contextlib import closing
+from http.client import HTTPConnection
 import json
 from pathlib import Path
-import threading
-import shutil
 import socket
 import struct
 import subprocess
@@ -16,60 +14,7 @@ import httpx
 import pytest
 
 from studio_proxy_runtime_support import StudioProxyRuntime, studio_proxy_runtime
-from studio_proxy_runtime_support import ROOT, _await_health, _free_port, _unavailable
-
-
-@pytest.fixture(scope="module")
-def header_proxy(tmp_path_factory: pytest.TempPathFactory) -> Iterator[tuple[str, str]]:
-    nginx = shutil.which("nginx")
-    if nginx is None:
-        _unavailable("nginx is required for the admin header runtime proof", required_in_ci=True)
-    root = tmp_path_factory.mktemp("studio-header-proxy")
-    token = "synthetic-proxy-creator-key-1036"
-
-    class HeaderEcho(BaseHTTPRequestHandler):
-        def do_GET(self) -> None:
-            payload = json.dumps(dict(self.headers.items())).encode()
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        do_POST = do_GET
-
-        def log_message(self, format: str, *args: str) -> None:
-            return
-
-    with ThreadingHTTPServer(("127.0.0.1", 0), HeaderEcho) as upstream:
-        thread = threading.Thread(target=upstream.serve_forever, daemon=True)
-        thread.start()
-        origin = f"http://127.0.0.1:{_free_port()}"
-        template = (ROOT / "apps/studio-web/nginx.conf.template").read_text()
-        configured = template.replace("${API_KEY}", token).replace(
-            "listen 8080;", f"listen {origin.removeprefix('http://')};",
-        ).replace("http://api:8000", f"http://127.0.0.1:{upstream.server_port}")
-        config = root / "nginx.conf"
-        config.write_text(
-            f"pid {root}/nginx.pid; error_log {root}/error.log;\n"
-            f"events {{}}\nhttp {{ access_log off; client_body_temp_path {root}/body; "
-            f"proxy_temp_path {root}/proxy;\n{configured}\n}}\n",
-        )
-        try:
-            with subprocess.Popen(
-                [nginx, "-p", str(root), "-c", str(config), "-g", "daemon off;"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            ) as process:
-                try:
-                    with httpx.Client(base_url=origin, timeout=5) as client:
-                        _await_health(client, process)
-                    yield origin, token
-                finally:
-                    process.terminate()
-                    process.wait(timeout=15)
-        finally:
-            upstream.shutdown()
-            thread.join(timeout=5)
+from studio_header_proxy_support import header_proxy
 
 
 @pytest.mark.parametrize("method, path", [
@@ -99,6 +44,44 @@ def test_nginx_omits_client_admin_key_at_upstream(
     assert received["x-confirm-action"] == "yes"
     if path != "/healthz":
         assert received["x-api-key"] == token
+
+
+@pytest.mark.parametrize("header_names", [
+    ("x-admin-key",), ("X-ADMIN-KEY",), ("X-Admin-Key", "X-Admin-Key"),
+    ("X_Admin_Key",), ("X-Admin-Key",),
+])
+def test_nginx_omits_admin_header_variants_without_origin(
+    header_proxy: tuple[str, str], header_names: tuple[str, ...],
+) -> None:
+    # Given the real nginx proxy and a plain curl-style admin GET without Origin.
+    origin, token = header_proxy
+    # When header names, including duplicate fields, arrive on the wire unchanged.
+    with closing(HTTPConnection(origin.removeprefix("http://"), timeout=5)) as connection:
+        connection.putrequest("GET", "/api/admin/health")
+        for name in header_names:
+            connection.putheader(name, "synthetic-forged-admin-key-1036")
+        connection.putheader("X-Confirm-Action", "yes")
+        connection.endheaders()
+        with connection.getresponse() as response:
+            received = {name.lower(): value for name, value in json.loads(response.read()).items()}
+            assert response.status == 200
+    # Then neither spelling reaches the upstream, while creator auth still does.
+    assert "x-admin-key" not in received
+    assert "x_admin_key" not in received
+    assert received["x-api-key"] == token
+
+
+@pytest.mark.parametrize("header_proxy", [True], indirect=True)
+@pytest.mark.parametrize("header_names", [
+    ("x-admin-key",), ("X-ADMIN-KEY",), ("X-Admin-Key", "X-Admin-Key"), ("X-Admin-Key",),
+])
+def test_admin_header_wire_assertion_detects_missing_strip(
+    header_proxy: tuple[str, str], header_names: tuple[str, ...],
+) -> None:
+    # Given only a rendered temporary template has the general API strip removed.
+    # When / Then the same wire assertion must detect leaked admin credentials.
+    with pytest.raises(AssertionError, match="x-admin-key"):
+        test_nginx_omits_admin_header_variants_without_origin(header_proxy, header_names)
 
 
 @dataclass(frozen=True, slots=True)
