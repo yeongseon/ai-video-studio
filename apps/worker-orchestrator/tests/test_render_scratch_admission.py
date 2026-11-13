@@ -1,4 +1,5 @@
 from pathlib import Path
+from dataclasses import replace
 
 import pytest
 from creator_service.storage_policy import FilesystemLowSpace
@@ -28,3 +29,44 @@ def test_configured_render_volume_is_measured_before_execution(
     assert list(scratch.iterdir()) == []
     tracked = run_in_worker_loop(runner_case.tracking.list_run_tasks(runner_case.run_id))[0]
     assert tracked.error_code == "SCRATCH_STORAGE_LOW"
+
+
+@pytest.mark.parametrize("low_temp", [True, False])
+def test_configured_volume_does_not_replace_system_temp_floor(
+    runner_case: RunnerCase, volumes: Volumes, watermarks: None,
+    tmp_path_factory: pytest.TempPathFactory, monkeypatch: pytest.MonkeyPatch, low_temp: bool,
+) -> None:
+    # Given healthy render scratch but a separately sized remote-upload spool volume.
+    scratch = tmp_path_factory.mktemp("render-scratch").resolve()
+    volumes.free[scratch] = 9000 * 1024 * 1024
+    if low_temp:
+        volumes.set_free(scratch=1)
+    monkeypatch.setenv("RENDER_SCRATCH_DIR", str(scratch))
+    monkeypatch.setenv("STORAGE_BACKEND", "s3")
+    calls: list[str] = []
+    # When admission runs, then either filesystem can refuse before execution.
+    if low_temp:
+        with pytest.raises(FilesystemLowSpace) as raised:
+            task_runner.run_task(runner_case.delivery(), runner_case.run_id, _guarded(runner_case.config), _executing(calls))
+        assert raised.value.filesystem == "scratch"
+        assert calls == []
+        tracked = run_in_worker_loop(runner_case.tracking.list_run_tasks(runner_case.run_id))[0]
+        assert tracked.error_code == "SCRATCH_STORAGE_LOW"
+    else:
+        task_runner.run_task(runner_case.delivery(), runner_case.run_id, _guarded(runner_case.config), _executing(calls))
+        assert calls == ["validation-task"]
+    assert list(scratch.iterdir()) == []
+
+
+@pytest.mark.parametrize("task_name", ["generate_scene_image", "generate_paragraph_audio"])
+def test_non_scratch_jobs_ignore_invalid_render_setting(
+    runner_case: RunnerCase, volumes: Volumes, watermarks: None,
+    monkeypatch: pytest.MonkeyPatch, task_name: str,
+) -> None:
+    # Given jobs that never call the helper and an invalid render-only setting.
+    monkeypatch.setenv("RENDER_SCRATCH_DIR", "relative")
+    config = replace(_guarded(runner_case.config), task_name=task_name)
+    calls: list[str] = []
+    # When admitted, then healthy image/paragraph jobs can still execute.
+    task_runner.run_task(runner_case.delivery(), runner_case.run_id, config, _executing(calls))
+    assert calls == ["validation-task"]
