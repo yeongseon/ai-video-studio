@@ -153,7 +153,12 @@ def test_default_audio_and_subtitles_survive_unusable_section_metadata(
     assert not Path(f"{audio_path}.words.jsonl").exists()
     assert whisper.calls[0][0] == audio_path
     assert artifacts.calls[0]["model_used"] == "whisper-small"
-    assert any(record.levelname == "WARNING" for record in caplog.records)
+    assert any(
+        record.levelname == "WARNING"
+        and record.name == "tasks.generate_audio"
+        and "Skipping unusable TTS timing metadata" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 @pytest.mark.parametrize("metadata", [None, "not-json"])

@@ -68,7 +68,12 @@ async def test_audio_survives_unusable_sdk_metadata(
     assert result.metadata == {}
     assert not sidecar.exists()
     assert list(tmp_path.glob("*.words.jsonl")) == []
-    assert any(record.levelname == "WARNING" for record in caplog.records)
+    assert any(
+        record.levelname == "WARNING"
+        and record.name == "creator_provider.tts.edge_tts_provider"
+        and "Skipping unusable Edge TTS timing metadata" in record.getMessage()
+        for record in caplog.records
+    )
 
 
 @pytest.mark.asyncio
