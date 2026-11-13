@@ -150,7 +150,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
         env:
           POSTGRES_USER: review
           POSTGRES_PASSWORD: review-local-only
@@ -225,7 +225,7 @@ jobs:
     runs-on: ubuntu-latest
     services:
       postgres:
-        image: postgres:16-alpine
+        image: postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
         env:
           POSTGRES_USER: review
           POSTGRES_PASSWORD: review-local-only
@@ -279,8 +279,8 @@ jobs:
           npm --prefix apps/studio-web ci
       - name: Start disposable loopback databases
         run: |
-          docker run -d --name first-short-postgres -e POSTGRES_USER=review -e POSTGRES_PASSWORD=review-local-only -e POSTGRES_DB=first_short -p 127.0.0.1:55439:5432 postgres:16-alpine
-          docker run -d --name first-short-redis -p 127.0.0.1:56389:6379 redis:7.4-alpine
+          docker run -d --name first-short-postgres -e POSTGRES_USER=review -e POSTGRES_PASSWORD=review-local-only -e POSTGRES_DB=first_short -p 127.0.0.1:55439:5432 postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+          docker run -d --name first-short-redis -p 127.0.0.1:56389:6379 redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
           timeout 60 bash -c 'until docker exec first-short-postgres pg_isready -U review; do sleep 1; done'
       - name: Verify durable assets and real first-video workflow
         env:
@@ -343,8 +343,8 @@ jobs:
           docker network create worker-topology
           docker run -d --name topology-postgres --network worker-topology -p 127.0.0.1:55441:5432 \
             -e POSTGRES_DB=topology -e POSTGRES_USER=review -e POSTGRES_PASSWORD=review-local-only \
-            postgres:16.6-alpine
-          docker run -d --name topology-redis --network worker-topology -p 127.0.0.1:56391:6379 redis:7.4-alpine
+            postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139
+          docker run -d --name topology-redis --network worker-topology -p 127.0.0.1:56391:6379 redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe
           docker build --target runtime -f apps/worker-orchestrator/Dockerfile -t worker-topology-image .
           docker image inspect worker-topology-image --format '{{.Id}}' > /tmp/worker-topology-runtime/image-digest.txt
           docker image inspect worker-topology-image --format '{{json .Config.Entrypoint}} {{json .Config.Cmd}}' \
@@ -362,8 +362,8 @@ jobs:
           manifest = {
               "dockerfile": "apps/worker-orchestrator/Dockerfile",
               "image": "worker-topology-image",
-              "postgres": "postgres:16.6-alpine",
-              "redis": "redis:7.4-alpine",
+              "postgres": "postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139",
+              "redis": "redis:7.4.12-alpine@sha256:7f7d30b7fdd09467bac58198a1f166dd69789d348d4fe859cccb20e0cf287fbe",
               "celery": "5.6.3",
               "scenarios": ["authenticated-stop", "quota-release", "artifact-suppression", "hard-timeout", "active-redelivery", "stale-attempt-fencing", "ffmpeg-cleanup", "fairness"],
           }

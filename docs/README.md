@@ -28,4 +28,5 @@ Widening reduced classes later requires evidence and Oracle review.
 | [LOCAL_DOCKER.md](LOCAL_DOCKER.md) | Local Docker Compose setup with LAN access |
 | [RUN_STORAGE_CONTRACT.md](RUN_STORAGE_CONTRACT.md) | Versioned run storage adapter update contract |
 | [QUEUE_DURABILITY.md](QUEUE_DURABILITY.md) | Redis durability, broker replacement recovery, and DLQ retention contract |
+| [RUNTIME_IMAGES.md](RUNTIME_IMAGES.md) | Pinned PostgreSQL and Redis images: how to update a pin, minor-upgrade notes and rollback |
 | [PYTHON_DEPENDENCIES.md](PYTHON_DEPENDENCIES.md) | Python pins: which file is installed where, how `constraints.txt` is generated and checked |
