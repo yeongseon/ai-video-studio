@@ -4,7 +4,9 @@
 from __future__ import annotations
 
 import logging
+import math
 import os
+from pathlib import Path
 
 from celery.exceptions import SoftTimeLimitExceeded
 from celery_app import celery_app
@@ -12,6 +14,7 @@ from creator_domain.models.stage import RunStage
 from creator_domain.sanitize import UnsafePathComponent, validate_artifact_path
 from creator_provider.exceptions import ProviderError, ProviderTimeoutError, RateLimitError
 from creator_provider.registry import get_default_registry
+from creator_provider.word_timing_envelope import read_bound_script
 from creator_service.audio_service import audio_service as _audio_service
 from creator_service.cost_config import COST_SUBTITLE_GENERATION
 from creator_service.script_service import script_service as _script_service
@@ -25,9 +28,12 @@ from tasks.task_execution import TaskInputError
 logger = logging.getLogger(__name__)
 _ARTIFACT_ROOT = os.getenv("ARTIFACT_ROOT", "data/artifacts")
 
+
 @celery_app.task(
     bind=True,
-    base=production_task(frozenset({RunStage.AUDIO_GENERATING.value, RunStage.SUBTITLE_GENERATING.value})),
+    base=production_task(
+        frozenset({RunStage.AUDIO_GENERATING.value, RunStage.SUBTITLE_GENERATING.value})
+    ),
     autoretry_for=(ProviderTimeoutError, RateLimitError),
     retry_backoff=30,
     retry_jitter=True,
@@ -97,10 +103,25 @@ def generate_subtitles(
             params = dict(entry.default_params or {})
             params["format"] = subtitle_format
             params["output_path"] = subtitle_path
+            if entry.provider_type == "script_timestamp_aligner":
+                try:
+                    from creator_service.ffmpeg_service import FFmpegService
+
+                    measured_duration = FFmpegService().get_audio_duration(audio_path)
+                    if not math.isfinite(measured_duration) or measured_duration <= 0:
+                        raise ValueError
+                    params["audio_duration_seconds"] = measured_duration
+                except (OSError, RuntimeError, TypeError, ValueError):
+                    raise ProviderError(
+                        f"Could not measure audio duration for script alignment for run {run_id}"
+                    ) from None
+                params["script_text"] = read_bound_script(Path(audio_path))
             try:
                 attempt_id = f"{ctx.task_id}:{ctx.delivery_attempt}:stt"
                 if not await authorize_owned_provider_attempt(
-                    ctx.reservation_owner_id, attempt_id, COST_SUBTITLE_GENERATION,
+                    ctx.reservation_owner_id,
+                    attempt_id,
+                    COST_SUBTITLE_GENERATION,
                 ):
                     raise ProviderError("Provider attempt exceeds approved spend")
                 ctx.mark_provider_started()

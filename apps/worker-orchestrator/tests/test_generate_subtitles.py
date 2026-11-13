@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from creator_provider.stt.script_timestamp_aligner import ScriptTimestampAligner
+from creator_provider.word_timing_envelope import envelope, write_atomic
+from tasks import generate_audio as generate_audio_module
 from tasks import generate_subtitles as generate_subtitles_module
 
 
@@ -27,6 +31,16 @@ class FakeProvider:
             raise self.error
 
 
+class RecordingScriptAligner:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, object] | None]] = []
+        self.result = None
+
+    async def transcribe(self, audio_path: str, params: dict[str, object] | None = None) -> None:
+        self.calls.append((audio_path, params))
+        self.result = await ScriptTimestampAligner().transcribe(audio_path, params=params)
+
+
 class FakeStorage:
     def __init__(self, runs: dict[int, dict[str, object]] | None = None) -> None:
         self._runs: dict[int, dict[str, object]] = runs or {}
@@ -41,7 +55,7 @@ class FakeStorage:
         run_id: int,
         updates: dict[str, object],
         expected_stages: frozenset[str],
-    rejected_statuses: frozenset[str] | None = None,
+        rejected_statuses: frozenset[str] | None = None,
     ) -> tuple[bool, dict[str, object] | None]:
         self.cas_calls.append((run_id, updates, expected_stages))
         row = self._runs.get(run_id)
@@ -130,14 +144,14 @@ class FakeSubtitleService:
 
 
 class FakeRegistry:
-    def __init__(self, entry: FakeEntry, provider: FakeProvider) -> None:
+    def __init__(self, entry: FakeEntry, provider: Any) -> None:
         self.entry = entry
         self.provider = provider
 
     def resolve(self, _model_key: str) -> FakeEntry:
         return self.entry
 
-    def get_provider(self, _model_key: str) -> FakeProvider:
+    def get_provider(self, _model_key: str) -> Any:
         return self.provider
 
 
@@ -343,6 +357,148 @@ def test_generate_subtitles_with_audio_path(monkeypatch: pytest.MonkeyPatch) -> 
     assert params["output_path"] == "data/artifacts/105/subtitles/subtitles.vtt"
 
 
+def test_generate_subtitles_passes_known_script_to_timestamp_aligner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given explicit selection of the script timestamp aligner.
+    provider = FakeProvider()
+    entry = FakeEntry(provider_type="script_timestamp_aligner", requires_gpu=False)
+    _patch_registry(monkeypatch, FakeRegistry(entry=entry, provider=provider))
+    monkeypatch.setattr(
+        "creator_service.ffmpeg_service.FFmpegService.get_audio_duration", lambda *_: 3.0
+    )
+    script = "## Heading\n2026년, punctuation—그대로."
+    monkeypatch.setattr(
+        generate_subtitles_module,
+        "read_bound_script",
+        lambda _audio_path: "2026년, punctuation—그대로.",
+    )
+    _patch_services(
+        monkeypatch,
+        FakeScriptService(draft=FakeScriptDraft(markdown_content=script)),
+        FakeAudioService(artifact=FakeAudioArtifact(path="data/artifacts/108/audio/audio.mp3")),
+        FakeSubtitleService(),
+        _make_storage(run_id=108, stage="SUBTITLE_GENERATING"),
+    )
+
+    # When subtitles are generated with the opt-in model.
+    result = _invoke_task(run_id=108, subtitle_model="script-timestamps")
+
+    # Then the approved script is supplied as alignment ground truth.
+    assert result["status"] == "success"
+    params = provider.calls[0][1]
+    assert params is not None
+    assert params["script_text"] == "2026년, punctuation—그대로."
+
+
+@pytest.mark.parametrize(
+    ("markdown_content", "sections", "persisted_script"),
+    [
+        (
+            None,
+            [FakeSection(text=text) for text in ("one", "two", "three", "four")],
+            "one\ntwo\nthree\nfour",
+        ),
+        (
+            "markdown version must not replace generated audio identity",
+            [FakeSection(text="spoken one"), FakeSection(text="spoken two")],
+            "spoken one\nspoken two",
+        ),
+    ],
+)
+def test_generate_subtitles_uses_script_persisted_with_audio(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    markdown_content: str | None,
+    sections: list[FakeSection],
+    persisted_script: str,
+) -> None:
+    # Given script-aligned audio whose immutable envelope records its exact approved script.
+    provider = RecordingScriptAligner()
+    entry = FakeEntry(provider_type="script_timestamp_aligner", requires_gpu=False)
+    _patch_registry(monkeypatch, FakeRegistry(entry=entry, provider=provider))
+    monkeypatch.setattr(generate_subtitles_module, "_ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    monkeypatch.setattr(
+        "creator_service.ffmpeg_service.FFmpegService.get_audio_duration",
+        lambda *_: float(len(sections)),
+    )
+    section_inputs: list[tuple[str, str]] = []
+    for index, section in enumerate(sections):
+        text = section.display_text or section.text
+        section_path = tmp_path / f"section-{index}.mp3"
+        section_path.write_bytes(f"section-{index}".encode())
+        rows = [
+            {
+                "type": "WordBoundary",
+                "offset": word_index * 4_000_000,
+                "duration": 3_000_000,
+                "text": word,
+            }
+            for word_index, word in enumerate(text.split())
+        ]
+        write_atomic(Path(f"{section_path}.words.jsonl"), envelope(section_path, text, rows))
+        section_inputs.append((str(section_path), text))
+
+    class FakeFFmpeg:
+        def get_audio_duration(self, _path: str) -> float:
+            return 1.0
+
+    audio_path = tmp_path / "audio.mp3"
+    audio_path.write_bytes(b"concatenated audio")
+    generate_audio_module._merge_word_timing_sidecars(
+        section_inputs,
+        str(audio_path),
+        FakeFFmpeg(),
+    )
+    _patch_services(
+        monkeypatch,
+        FakeScriptService(
+            draft=FakeScriptDraft(
+                markdown_content=markdown_content,
+                structured_script=sections,
+            )
+        ),
+        FakeAudioService(artifact=FakeAudioArtifact(path=str(audio_path))),
+        FakeSubtitleService(),
+        _make_storage(run_id=110, stage="SUBTITLE_GENERATING"),
+    )
+
+    # When opt-in script timestamps are generated, then the audio-bound identity wins.
+    result = _invoke_task(run_id=110, subtitle_model="script-timestamps")
+    assert result["status"] == "success"
+    params = provider.calls[0][1]
+    assert params is not None
+    assert params["script_text"] == persisted_script
+    assert provider.result is not None
+    assert "\n".join(segment["text"] for segment in provider.result.segments) == persisted_script
+    assert "..." not in persisted_script
+
+
+def test_generate_subtitles_rejects_invalid_measured_duration(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given script alignment selected when the duration probe returns no valid bound.
+    provider = FakeProvider()
+    entry = FakeEntry(provider_type="script_timestamp_aligner", requires_gpu=False)
+    _patch_registry(monkeypatch, FakeRegistry(entry=entry, provider=provider))
+    monkeypatch.setattr(
+        "creator_service.ffmpeg_service.FFmpegService.get_audio_duration", lambda *_: float("nan")
+    )
+    _patch_services(
+        monkeypatch,
+        FakeScriptService(draft=FakeScriptDraft(markdown_content="Known script")),
+        FakeAudioService(artifact=FakeAudioArtifact(path="data/artifacts/109/audio/audio.mp3")),
+        FakeSubtitleService(),
+        _make_storage(run_id=109, stage="SUBTITLE_GENERATING"),
+    )
+
+    # When subtitle generation runs, then the provider is not called without a safe audio bound.
+    with pytest.raises(generate_subtitles_module.ProviderError, match="measure audio duration"):
+        _invoke_task(run_id=109, subtitle_model="script-timestamps")
+    assert provider.calls == []
+
+
 def test_generate_subtitles_without_audio(monkeypatch: pytest.MonkeyPatch) -> None:
     provider = FakeProvider()
     _patch_registry(
@@ -377,7 +533,7 @@ class _CASSkipStorage(FakeStorage):
         run_id: int,
         updates: dict[str, object],
         expected_stages: frozenset[str],
-    rejected_statuses: frozenset[str] | None = None,
+        rejected_statuses: frozenset[str] | None = None,
     ) -> tuple[bool, dict[str, object] | None]:
         self.cas_calls.append((run_id, updates, expected_stages))
         row = self._runs.get(run_id)

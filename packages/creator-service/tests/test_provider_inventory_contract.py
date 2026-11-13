@@ -136,6 +136,7 @@ async def test_registered_provider_facts_use_canonical_capability_identity() -> 
         "placeholder_image", "edge_tts", "pollinations_image", "huggingface_image",
     }
     assert {fact.provider for fact in facts if fact.is_local} == {
-        "ollama", "sd_local", "qwen_tts", "cosyvoice_tts", "whisper", "placeholder_image",
+        "ollama", "sd_local", "qwen_tts", "cosyvoice_tts", "whisper",
+        "script_timestamp_aligner", "placeholder_image",
     }
     assert by_provider["codex_image"].status is ModelStatus.UNKNOWN
