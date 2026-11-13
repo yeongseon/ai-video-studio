@@ -20,6 +20,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - API key revocation silently bypassed — `_AsyncpgSessionAdapter` discarded the `revoked_at IS NULL` filter. Adapter removed; the resolver now runs the asyncpg query directly (#583).
 - Local artifact downloads always returned 404 — the route read `file_path` (absolute) instead of `storage_key` (root-relative). Legacy rows now normalized via `os.path.relpath` (#584).
 - nginx CSRF check rejected default compose port — `$host` doesn't include the port, switched to `$http_host` (#586).
+- Render hard timeouts reclaim attributable scratch and partial MP4s; a bounded Worker-start sweep reclaims recognised dead-owner or over-age scratch while preserving published outputs and younger live-owner scratch (#1030).
 
 ## [0.4.0] - 2026-07-23
 

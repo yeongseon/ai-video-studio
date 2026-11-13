@@ -318,8 +318,93 @@ worker UID/GID (**1000:1000 in the shipped images**); adjust these IDs for a cus
 image. Do not use a shared group/world-writable bind source. Configure/mount the same path in the API process
 when using lightweight synchronous rendering. Do not serve or upload this root.
 The configured root and its ancestors are operator-controlled: do not let other
-users rename/replace them during rendering. This does not add crash sweeping
-(#1030), per-run caps (#1031), concurrency changes or live-host measurements.
+users rename/replace them during rendering. Per-run caps (#1031), concurrency
+changes and live-host measurements remain separate work.
+
+### Render crash cleanup (#1030)
+
+The render task's existing `production_task` hard-timeout hook runs in Celery's
+main process after timeout finalization. It removes recognised scratch belonging
+to the killed pid, and that pid's `output.tmp.<pid>.<hex8>.mp4`, immediately in
+both layouts. It examines only the run's `<ARTIFACT_ROOT>/<run_id>/render/`
+direct children and, when configured and trust-valid, the scratch-root direct
+children. Configured names must also match this machine's hashed
+`socket.gethostname()` and the run/output-directory hash. Celery node aliases
+are not machine identity. It leaves another pid, host or run's scratch alone.
+Published `output.mp4`, retained audio/subtitles and unrelated names are never
+candidates. A missing directory or concurrent removal is harmless, and failures
+are logged without escaping the timeout callback.
+
+Legacy unset-mode `timeline-<random>` has no owner information: the timeout hook
+**never removes it**. It waits for the next Worker start and the maximum-age
+rule. This intentionally leaves the unconditional "no scratch after hard timeout"
+acceptance wording only partially met. Combined-audio timeout cleanup is not
+wired here; its configured scratch can be reclaimed at Worker start, while its
+system-temp concat list and `sfx_` directory remain outside this cleanup scope.
+
+At `worker_ready` (main process, once per Worker start), an injectable sweep
+inspects the same immediate `render/` children across runs and the top level of
+a valid configured scratch root. It never consults DB state or descends into
+published directories. An invalid configured root is skipped with one warning;
+the artifact-tree sweep can still proceed. This is **startup only**, not a
+periodic/Beat sweep and not an API/lightweight startup hook.
+
+Eligibility requires an exact recognised name and the expected real directory
+type (regular file only for a temporary MP4). Symlinks at the entry, run, or
+`render` level are skipped and logged once per sweep. The operator artifact root
+itself may be a symlink/mount; all levels below it are descriptor-relative and
+no-follow. Directory deletion uses fd-based `rmtree`, and MP4 unlink uses the
+confined deletion primitive. Neither operation traverses a symlink target.
+
+Age is `max(0, now - max(lstat.mtime, lstat.ctime))`, using one wall-time snapshot
+per sweep. A future timestamp keeps an entry fresh; mtime alone never proves
+owner death. Either of these conditions permits reclamation:
+
+- **Owner gone:** only a configured name with this host hash, a valid pid
+  (1 through 4194304), a failed liveness probe proving absence in this pid
+  namespace, and age at least `RENDER_SCRATCH_SWEEP_MIN_GRACE_SECONDS` (60).
+  Permission and other probe errors conservatively count as alive.
+- **Maximum age:** every recognised pattern qualifies at
+  `RENDER_SCRATCH_MAX_AGE_SECONDS` (3600). `0` disables this rule entirely.
+  A positive value below twice the real render task hard limit is clamped up
+  with one warning (currently 1320 seconds = 2 × 660). The worker computes this
+  floor; creator-service has no worker import.
+
+Other-host entries and legacy pid-only names (including partial MP4s) use **only
+the age rule**: a shared artifact volume may belong to another container with
+the same pid. Ownerless legacy Timeline scratch uses age only too. Thus a crash
+right before a restart is immediately reclaimable only for configured same-host
+scratch whose owner is gone **after the grace**. Fresh legacy or sibling-host
+leftovers wait for age and a subsequent restart. Pid reuse is conservatively
+alive for owner-gone checks, but maximum age is a bound on legitimate lifetime,
+not a liveness inference: an over-age entry can be removed even when its pid is
+alive. A live Worker's scratch is protected **while younger than the effective
+maximum age**. Setting age to zero preserves unknown/remote owners indefinitely.
+
+| Setting | Default | Scope |
+| --- | --- | --- |
+| `RENDER_SCRATCH_SWEEP_ENABLED` | `true` | `false` disables startup cleanup, not the timeout hook |
+| `RENDER_SCRATCH_MAX_AGE_SECONDS` | `3600` | Last-change lifetime; `0` disables age reclamation |
+| `RENDER_SCRATCH_SWEEP_MIN_GRACE_SECONDS` | `60` | Minimum age for a proven same-host dead owner |
+| `RENDER_SCRATCH_SWEEP_MAX_RUN_DIRECTORIES` | `1000` | Run directories opened per sweep |
+| `RENDER_SCRATCH_SWEEP_MAX_ENTRIES` | `10000` | Direct-child entries examined across roots |
+| `RENDER_SCRATCH_SWEEP_MAX_REMOVALS` | `500` | Successful entry removals |
+| `RENDER_SCRATCH_SWEEP_BUDGET_SECONDS` | `20` | Cooperative monotonic wall-time budget |
+
+Run directories are visited numeric id descending (non-numeric names last),
+and child names sorted. Discovery is additionally capped at 10000 names per
+directory; an overflowing directory is retained rather than guessing ownership
+from an unordered prefix. Each reached bound is logged. Timeout cleanup has a
+shared 10000-entry budget and a two-second cooperative deadline across its two
+locations. These budgets stop **between** filesystem operations: a blocked
+filesystem syscall or a recursive delete already in progress cannot be
+preempted. They are not hard realtime guarantees on a broken filesystem.
+An INFO summary reports examined/removed/skipped counts and elapsed time, with
+one INFO per removal containing only the scratch entry name and run id, never
+media payload names. No recursive size scan is performed to count freed bytes.
+Concurrent disappearance counts as vanished, not failed deletion. A second
+sweep is idempotent absent newly eligible entries. Bounds can leave eligible
+files for another Worker start; no storage-wide deletion guarantee is claimed.
 
 ### Worker-output scope
 
