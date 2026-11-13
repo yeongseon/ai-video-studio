@@ -33,6 +33,18 @@ _LOG_SECRETS: Final = frozenset({
 _LOG_KEY_PREFIXES: Final = frozenset({"api", "private", "access", "secret", "signing", "session"})
 _MAX_LOG_LINES: Final = 400
 _MAX_LOG_BYTES: Final = 65536
+_MAX_LOG_LINE: Final = 2048
+# One attempt per scheme-character run, including punctuation before a valid scheme.
+# The API/DLQ patterns above deliberately retain their existing behavior.
+_LOG_CREDENTIAL_URI = re.compile(
+    r"(?<![A-Za-z0-9+.-])[A-Za-z0-9+.-]+://[^\s/'\"<>]*@[^\s;'\"<>]+"
+)
+_LOG_TOKEN_PREFIX = re.compile(
+    r"(?<![^\W_])(?:(?:sk|gsk|ghp|xoxb)[-_]|AKIA|AIza)[A-Za-z0-9_\-]{6,}"
+)
+_LOG_CREDENTIAL_PATTERNS: Final = (
+    _LOG_CREDENTIAL_URI, _URL, _BEARER, _LOG_TOKEN_PREFIX, _LONG_HEX,
+)
 
 
 def redact_error_message(text: str) -> str:
@@ -67,11 +79,19 @@ def redact_log_text(text: str, trusted_lines: frozenset[str] = frozenset()) -> s
     for _ in range(_MAX_LOG_LINES):
         match = _LINE_BREAK.search(text, start)
         end = match.start() if match else len(text)
-        if end - start > _MAX_INPUT:
+        if end - start > _MAX_LOG_LINE:
             safe = _REDACTED
         else:
             line = text[start:end]
-            safe = line if line in trusted_lines else redact_error_message(line)
+            if line in trusted_lines:
+                safe = line
+            else:
+                safe = line
+                for pattern in _LOG_CREDENTIAL_PATTERNS:
+                    safe = pattern.sub(_REDACTED, safe)
+                for pattern in (_WINDOWS_PATH, _WORKSPACE_PATH, _ABS_POSIX_PATH):
+                    safe = pattern.sub(_REDACTED, safe)
+                safe = safe[:_MAX_STRING]
         line_size = len(safe.encode("utf-8", errors="replace")) + 1
         if size + line_size > _MAX_LOG_BYTES - 64:
             truncated = True
@@ -89,13 +109,13 @@ def redact_log_text(text: str, trusted_lines: frozenset[str] = frozenset()) -> s
 
 
 def carries_credential(text: str) -> bool:
-    """True when ``text`` holds a shape redact_error_message treats as a credential.
+    """True when frame metadata holds a credential shape recognized at the log boundary.
 
-    Text too long to scan counts as carrying one, matching redact_error_message's refusal.
+    Text too long to scan counts as carrying one, matching the log-line refusal.
     """
-    return len(text) > _MAX_INPUT or any(
+    return len(text) > _MAX_LOG_LINE or any(
         pattern.search(text)
-        for pattern in (_CREDENTIAL_URI, _URL, _BEARER, _TOKEN_PREFIX, _LONG_HEX)
+        for pattern in _LOG_CREDENTIAL_PATTERNS
     )
 
 
