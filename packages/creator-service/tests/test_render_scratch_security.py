@@ -89,6 +89,32 @@ def test_accepts_private_root_and_root_owned_mount(root: Path, monkeypatch: pyte
     assert scratch.configured_scratch_root() == root
 
 
+@pytest.mark.parametrize("owner,mode", [(4242, 0o755), (0, 0o755), (0, 0o1777), (1234, 0o755), (1234, 0o1777)])
+def test_ancestor_ownership_is_required_even_without_write_bits(
+    root: Path, monkeypatch: pytest.MonkeyPatch, owner: int, mode: int,
+) -> None:
+    # Given a simulated worker uid and a mount with independently controlled ownership.
+    root.mkdir(mode=0o700)
+    original = os.lstat
+
+    def mount_stat(path: str | os.PathLike[str]) -> os.stat_result:
+        value = original(path)
+        fields = list(value)
+        fields[4] = 1234
+        if Path(path) == root.parent:
+            fields[0], fields[4] = 0o40000 | mode, owner
+        return os.stat_result(fields)
+
+    monkeypatch.setattr(scratch.os, "lstat", mount_stat)
+    monkeypatch.setattr(scratch.os, "geteuid", lambda: 1234)
+    # When inspected, then only root/worker-controlled ancestors are trusted.
+    if owner == 4242:
+        with pytest.raises(scratch.RenderScratchConfigurationError, match="RENDER_SCRATCH_DIR.*ancestor.*own"):
+            scratch.configured_scratch_root()
+    else:
+        assert scratch.configured_scratch_root() == root
+
+
 @pytest.mark.parametrize("layout", ["double_slash", "artifact_inside", "symlink_alias", "output_inside", "output_parent"])
 def test_rejects_overlap_in_both_directions(root: Path, monkeypatch: pytest.MonkeyPatch, layout: str) -> None:
     # Given alternate spellings or nesting of scratch and retained output.

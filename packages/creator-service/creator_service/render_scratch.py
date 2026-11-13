@@ -83,6 +83,8 @@ def _inspect_root(root: Path, *, create: bool = False) -> Path:
                 raise RenderScratchConfigurationError("root must be owned by the worker uid")
             if info.st_mode & 0o022:
                 raise RenderScratchConfigurationError("root must not be group/world writable")
+        elif info.st_uid not in (0, os.geteuid()):
+            raise RenderScratchConfigurationError("every existing ancestor must be owned by root or the worker uid")
         elif info.st_mode & 0o022 and not (
             info.st_mode & stat.S_ISVTX and info.st_uid in (0, os.geteuid())
         ):

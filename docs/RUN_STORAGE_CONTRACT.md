@@ -257,8 +257,8 @@ It must be an absolute writable/searchable directory with no symlink components,
 `..`, newlines or NUL. Neither it nor `ARTIFACT_ROOT`/the published output directory
 may contain the other; existing inode identities are compared to reject aliases.
 The root must be a real directory owned by the worker uid, with **no group/world
-write permission**. Existing ancestors must not be group/world writable unless
-sticky and owned by root or the worker uid (so `/tmp` and root-owned 0755 mount
+write permission**. Every existing ancestor must be owned by root or the worker
+uid, and must not be group/world writable unless sticky (so `/tmp` and root-owned 0755 mount
 points remain valid). Missing components are created deliberately with mode 0700;
 existing unsafe roots are rejected, never silently chmodded or adopted. Each run
 directory is checked as a real worker-owned 0700 directory after allocation.
