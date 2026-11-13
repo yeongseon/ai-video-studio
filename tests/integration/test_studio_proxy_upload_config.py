@@ -1,6 +1,7 @@
 from pathlib import Path
 import re
 
+import pytest
 
 ROOT = Path(__file__).resolve().parents[2]
 TEMPLATE = ROOT / "apps/studio-web/nginx.conf.template"
@@ -30,15 +31,30 @@ def test_general_api_location_keeps_small_json_limit() -> None:
 
 
 def test_every_api_proxy_location_strips_client_admin_key() -> None:
-    # Given all location bodies, including nested CSRF if blocks.
     configured = TEMPLATE.read_text()
+    assert configured.count("proxy_pass") > 0
+    assert _proxy_locations_missing_admin_strip(configured) == []
+
+
+def _proxy_locations_missing_admin_strip(configured: str) -> list[str]:
+    # Given all location bodies, including nested CSRF if blocks.
     locations = re.findall(r"location ([^\n]+) \{(.*?)\n    \}", configured, re.DOTALL)
     # When selecting every location forwarding to the API.
-    proxied = [(name, body) for name, body in locations if "proxy_pass http://api:8000;" in body]
+    proxied = [(name, body) for name, body in locations if re.search(r"\bproxy_pass\s", body)]
+    assert len(proxied) == len(re.findall(r"\bproxy_pass\s", configured))
     # Then no upstream location can accidentally inherit client admin credentials.
-    assert len(proxied) == configured.count("proxy_pass http://api:8000;") > 0
-    for name, body in proxied:
-        assert re.search(r'proxy_set_header\s+X-Admin-Key\s+""\s*;', body), name
+    return [name for name, body in proxied if not re.search(
+        r'^        proxy_set_header\s+X-Admin-Key\s+""\s*;\s*$', body, re.MULTILINE,
+    )]
+
+
+@pytest.mark.parametrize("upstream", ["http://api:8000", "http://api:8000/x", "$api_upstream"])
+@pytest.mark.parametrize("strip", ["", '        if ($http_origin) {\n            proxy_set_header X-Admin-Key "";\n        }'])
+def test_proxy_parser_reports_missing_location_level_strip(upstream: str, strip: str) -> None:
+    # Given an alternate upstream with no strip or only a conditional strip.
+    configured = f"    location /alternate/ {{\n{strip}\n        proxy_pass {upstream};\n    }}"
+    # When / Then every proxied location needs an unconditional strip.
+    assert _proxy_locations_missing_admin_strip(configured) == ["/alternate/"]
 
 
 def test_upload_locations_preserve_general_api_proxy_and_csrf_policy() -> None:
