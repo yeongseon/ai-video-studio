@@ -22,7 +22,12 @@ This starts:
 - Redis
 - API
 - Worker
+- Beat (one dedicated scheduler for periodic reconciliation and maintenance)
 - Studio Web
+
+`make docker-local-build` rebuilds and starts the same services, including Beat.
+Repeated `make docker-local-up` updates the same Compose services and leaves one
+Beat; never scale `beat` or enable Beat inside the worker (`-B` / `--beat`).
 
 ## 3. Run database migrations
 
@@ -68,17 +73,62 @@ http://<server-ip>:5174
 make docker-local-status
 ```
 
+This runs `docker compose -f docker-compose.yml -f docker-compose.local-server.yml ps`
+for the whole merged configuration, including Beat. Expect exactly one `beat`
+row showing `healthy` after startup. Beat publishes a heartbeat message every 60
+seconds and records a receipt each time the broker accepts one; the healthcheck
+requires a receipt from within the last 180 seconds. It checks the timestamp inside
+the receipt, not a PID or file modification time, and Celery's own schedule
+timestamps are deliberately not used because they advance before the publish and
+even when the broker rejects it. Missing, unreadable, invalid, future-dated, or
+stale receipts fail closed.
+
+Allow the 90-second startup grace period. A missing Beat row means there is no
+running scheduler; use the same Compose command with `ps -a` to see stopped
+services. An `unhealthy` Beat means it has stopped publishing to the broker:
+Beat is stuck or stopped, or Redis is rejecting its publishes. A busy worker does
+**not** make Beat unhealthy (the local worker is a solo pool, so a long image or
+render task would otherwise do exactly that); worker progress is a separate signal,
+so check the worker's own logs and `ps` row. Health proves recent dispatch, not that
+a worker consumed the heartbeat or that any maintenance task succeeded. After Beat
+stops publishing, the receipt expires in 180 seconds and Docker marks it unhealthy
+after three failed 30-second checks. Docker does not automatically restart a
+merely unhealthy container. The reverse also holds: a receipt written before a
+restart stays valid for up to 180 seconds, so a Beat that was just restarted can
+report `healthy` before the new process has published; wait that long, or read the
+`beat` logs, before trusting it. While the worker is stopped, accepted heartbeats
+keep accumulating in Redis (one per minute, each expiring after 60 seconds); the
+worker skips the expired ones when it returns.
+
+To restart the existing scheduler without creating another one:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.local-server.yml restart beat
+make docker-local-status
+```
+
+For code/image updates, use `make docker-local-build` instead. Do not start a
+second standalone scheduler as a workaround for an unhealthy Beat.
+
 ## 7. View logs
 
 ```bash
 make docker-local-logs
 ```
 
+This follows API, worker, Beat, and Studio Web logs. Look for Beat's
+`Scheduler: Sending due task` entries for `reconcile-stale-dispatches` and
+`beat-heartbeat`, and the worker's receipt/execution of the reconciliation task. A
+healthy heartbeat alone does not establish that reconciliation completed successfully.
+
 ## 8. Stop services
 
 ```bash
 make docker-local-down
 ```
+
+This stops the whole merged configuration, including Beat; no service list is
+needed for either `docker-local-down` or `docker-local-status`.
 
 ## Notes
 

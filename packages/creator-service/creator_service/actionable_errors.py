@@ -28,7 +28,7 @@ from creator_domain.exceptions import (
     ValidationError,
     VersionConflictError,
 )
-from .storage_policy import StorageBudgetExceeded
+from .storage_policy import ARTIFACT_FILESYSTEM, FilesystemLowSpace, StorageBudgetExceeded
 from creator_domain.provider_errors import (
     ProviderAuthError,
     ProviderError,
@@ -49,6 +49,8 @@ class ErrorCategory(enum.Enum):
     DATA_INTEGRITY = "DATA_INTEGRITY"
     INTERNAL = "INTERNAL"
     STORAGE_BUDGET = "STORAGE_BUDGET"
+    ARTIFACT_STORAGE_LOW = "ARTIFACT_STORAGE_LOW"
+    SCRATCH_STORAGE_LOW = "SCRATCH_STORAGE_LOW"
 
 
 @dataclass(frozen=True)
@@ -102,10 +104,23 @@ _RECOVERY: dict[ErrorCategory, tuple[str, ...]] = {
         "Remove unused media or increase the workspace storage limit",
         "Retry after in-flight uploads finish",
     ),
+    ErrorCategory.ARTIFACT_STORAGE_LOW: (
+        "Free up disk space on the server's artifact storage, then retry",
+        "If it keeps happening, ask the server operator to review the artifact free-space limit",
+    ),
+    ErrorCategory.SCRATCH_STORAGE_LOW: (
+        "Free up temporary disk space on the server, then retry",
+        "If it keeps happening, ask the server operator to review the temporary-storage free-space limit",
+    ),
 }
 
 _RETRYABLE: frozenset[ErrorCategory] = frozenset(
-    {ErrorCategory.QUOTA, ErrorCategory.UNAVAILABLE}
+    {
+        ErrorCategory.QUOTA,
+        ErrorCategory.UNAVAILABLE,
+        ErrorCategory.ARTIFACT_STORAGE_LOW,
+        ErrorCategory.SCRATCH_STORAGE_LOW,
+    }
 )
 
 
@@ -116,6 +131,13 @@ def _category_for(exc: ServiceError) -> ErrorCategory:
         return ErrorCategory.VERSION_CONFLICT
     if isinstance(exc, StorageBudgetExceeded):
         return ErrorCategory.STORAGE_BUDGET
+    # Before the generic ServiceUnavailableError branch: a refused job is a StorageLowWatermark.
+    if isinstance(exc, FilesystemLowSpace):
+        return (
+            ErrorCategory.ARTIFACT_STORAGE_LOW
+            if exc.filesystem == ARTIFACT_FILESYSTEM
+            else ErrorCategory.SCRATCH_STORAGE_LOW
+        )
     if isinstance(exc, NotFoundError):
         return ErrorCategory.NOT_FOUND
     if isinstance(exc, ProviderConfigError):
@@ -176,6 +198,8 @@ _PROVIDER_MESSAGE: dict[ErrorCategory, str] = {
     ErrorCategory.PROVIDER_AUTH: "The provider is not configured or its credential is invalid",
     ErrorCategory.VALIDATION: "The request could not be processed as given",
     ErrorCategory.INTERNAL: "The operation failed unexpectedly",
+    ErrorCategory.ARTIFACT_STORAGE_LOW: "Artifact storage is below its free-space limit",
+    ErrorCategory.SCRATCH_STORAGE_LOW: "Temporary storage is below its free-space limit",
 }
 
 
