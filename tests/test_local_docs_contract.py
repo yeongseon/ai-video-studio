@@ -1,0 +1,84 @@
+"""The local private-by-default claims must state the Docker Engine they depend on.
+
+Loopback-published ports are only private on Docker Engine >= 28.0.0: Docker documents that older
+releases let hosts in the same L2 segment reach ports published to localhost. These are content
+checks (AGENTS.md: documentation changes use content/link checks) and run in the CI docs job.
+"""
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Final
+
+import pytest
+
+ROOT: Final = Path(__file__).resolve().parents[1]
+ENGINE_MINIMUM: Final = "Docker Engine >= 28.0.0"
+ENGINE_ISSUE: Final = "https://github.com/moby/moby/issues/45610"
+# Every guide that tells the operator published ports stay on the host, with the command that
+# first starts services. The prerequisite must come before that command.
+LOOPBACK_CLAIMS: Final = (
+    ("docs/LOCAL_DOCKER.md", "\nmake docker-local-up\n"),
+    ("docs/QUICKSTART.md", "docker compose up -d postgres redis"),
+    ("README.md", "\ndocker compose up -d\n"),
+    ("docs/SECURITY.md", None),
+)
+
+
+def _text(path: str) -> str:
+    return (ROOT / path).read_text(encoding="utf-8")
+
+
+@pytest.mark.parametrize(("path", "first_start"), LOOPBACK_CLAIMS)
+def test_loopback_claims_state_the_docker_engine_minimum(path: str, first_start: str | None) -> None:
+    # Given a guide that tells the operator published ports stay on the host.
+    text = _text(path)
+
+    # Then it names the Engine minimum and links the upstream reason for it.
+    assert ENGINE_MINIMUM in text, f"{path} claims loopback-only ports without the Engine minimum"
+    assert ENGINE_ISSUE in text, f"{path} does not link the upstream issue behind the minimum"
+    if first_start is not None:
+        # And the operator reads it before being told to start anything.
+        assert first_start in text, f"{path} lost its startup command"
+        assert text.index(ENGINE_MINIMUM) < text.index(first_start), path
+
+
+def test_engine_and_compose_versions_are_not_conflated() -> None:
+    # Given the local server guide, whose overlay needs a recent Compose.
+    text = _text("docs/LOCAL_DOCKER.md")
+
+    # Then it says the Engine and Compose are versioned independently, so a new Compose
+    # is not read as proof that the Engine is safe.
+    assert "versioned independently" in text
+    assert "Docker Compose >= 2.24.4" in text
+
+
+def test_security_policy_keeps_lan_opt_in_studio_only() -> None:
+    # Given the security policy describing the local-server override.
+    text = _text("docs/SECURITY.md")
+
+    # Then wildcard Studio exposure is not presented as the default and the API gets no LAN path.
+    assert "`studio-web` is exposed on `0.0.0.0`" not in text
+    assert "If you need LAN access for the API" not in text
+    assert "STUDIO_WEB_BIND" in text, "SECURITY.md does not name the explicit Studio opt-in"
+
+
+def test_legacy_wildcard_warning_precedes_the_first_startup_command() -> None:
+    # Given an existing .env copied from the old example, which direct Compose reads itself.
+    text = _text("docs/LOCAL_DOCKER.md")
+
+    # When locating the warning about the old wildcard line and the first startup command.
+    warning = text.find("STUDIO_WEB_BIND=0.0.0.0")
+    first_start = text.find("\nmake docker-local-up\n")
+
+    # Then the operator is told to delete that line before starting anything.
+    assert warning != -1, "LOCAL_DOCKER.md does not warn about the old STUDIO_WEB_BIND=0.0.0.0 line"
+    assert first_start != -1, "LOCAL_DOCKER.md lost its startup command"
+    assert warning < first_start
+
+
+def test_local_example_does_not_invite_direct_lan_api_access() -> None:
+    # Given the example operators copy to .env.
+    text = _text(".env.local.example")
+
+    # Then it does not suggest reaching the loopback-only API from another LAN device.
+    assert "another device on the LAN" not in text

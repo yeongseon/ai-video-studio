@@ -138,13 +138,14 @@ def test_runtime_ci_builds_and_runs_the_shipped_worker_image() -> None:
 
 
 def test_runtime_ci_uses_postgres_redis_ffmpeg_and_uploads_complete_evidence() -> None:
-    # Given the worker topology CI job definition.
+    # Given the worker topology CI job definition and the images the shipped stack pins.
     workflow = CI_WORKFLOW.read_text(encoding="utf-8")
+    services = yaml.safe_load((ROOT / "docker-compose.yml").read_text(encoding="utf-8"))["services"]
 
     # When service and artifact wiring are inspected.
     required = (
-        "postgres:16.6-alpine",
-        "redis:7.4-alpine",
+        services["postgres"]["image"],
+        services["redis"]["image"],
         "ffmpeg -version",
         "manifest.json",
         "worker.log",

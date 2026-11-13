@@ -180,14 +180,85 @@ with error code `STORAGE_BUDGET`. `MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES` defaults
 to `0`; when positive it blocks new upload staging without blocking reads,
 downloads, or cleanup.
 
+### Job free-space admission
+
+Render, scene-image and audio jobs write media under `ARTIFACT_ROOT` and, while
+they run, into the temp (scratch) directory. Before such a job's first write the
+Worker compares the free space of each of those two filesystems with its
+watermark and refuses the job if either is below it. Each check is off when its
+setting is `0` or negative, which is the default.
+
+| Filesystem | Setting | Floor it enforces |
+| --- | --- | --- |
+| Artifact: the filesystem that holds `ARTIFACT_ROOT` | `MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES` | Free bytes it must keep before a job may start |
+| Scratch: the temp directory | `MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES` | The same floor for jobs; upload staging also uses it, per upload |
+
+`.env.local.example` enables both for the local server. A floor above a
+filesystem's free space refuses every job, so lower it on a small disk or a small
+`tmpfs` temp directory. Only these two settings are read for this check. A
+malformed value (for example `2GiB`) fails the job with an internal error that
+names the setting; it is never read as zero.
+
+The check itself never writes. A disabled check resolves nothing, the artifact
+filesystem is checked before the temp directory is looked up, the temp directory
+is resolved without `tempfile`'s probe file, and a directory that does not exist
+yet is measured through its nearest existing parent without creating it. The
+artifact floor is measured at `ARTIFACT_ROOT` itself; a different filesystem
+mounted below it is not measured separately. Once the process has used
+`tempfile`, its cached directory is measured exactly. On the process's first
+admission the directory is chosen in `tempfile`'s order by existence and
+permissions rather than by `tempfile`'s write probe, so a full or
+inode-exhausted first candidate (`TMPDIR`) can make the check measure a
+different filesystem than `tempfile` then settles on.
+
+What a refusal does:
+
+- **The job.** No directory, file or provider call is made, existing artifacts
+  are never purged, truncated or rewritten to make room, and Celery does not
+  retry the task.
+- **Quota.** The reservation owned by the task is released when this was the
+  task's first delivery. A retried delivery that is refused keeps whatever an
+  earlier provider attempt already authorized, so that exposure stays charged.
+- **Task and run.** The task is recorded as failed with the code
+  `ARTIFACT_STORAGE_LOW` or `SCRATCH_STORAGE_LOW`, both retryable. The run moves
+  to `FAILED` when it is in a stage this task may fail; a scene image
+  regenerated while the run is in review leaves the run where it is, with only
+  that task failed. Studio shows "Output storage is low" or "Temporary storage is
+  low" with the recovery steps, not the shortfall.
+- **Recovery.** Free space, then recover as after any other failed media step:
+  the API can restart a `FAILED` run from a generating stage
+  (`POST /api/creator/runs/{id}/restart`), and the step is started again. That
+  creates a new task with a new quota reservation; a refused task is never
+  resumed.
+- **Log.** The admission check logs one warning per refusal with `filesystem`,
+  `free_bytes`, `required_bytes`, `shortfall_bytes`, `task_name`, `run_id` and the
+  measured `path`; failure handling and the dead-letter bookkeeping log
+  separately. The exception text names the storage and the shortfall in MiB and
+  no path.
+- **Metric.** The counter `worker.job.low_space_refusals`, labelled with
+  `filesystem` (`artifact` or `scratch`) and `celery.task_name`.
+- **Unreadable disk.** If free space cannot be measured, the job is admitted and
+  a warning with `measured=false` is logged; the write itself reports a real
+  error.
+
+Limits. The floor is an admission check, not a reservation: a job admitted just
+above it can still run out of space, and jobs admitted together each see the
+same free space (keep Worker concurrency low and the floor generous). It does not
+coordinate with the upload byte lease that shares the temp setting. Text-only
+tasks (script, visual plan and subtitle generation) and upload staging's artifact
+side are not checked. The API does not check at enqueue time, so a refusal
+appears in the run's task list rather than as an immediate HTTP error. Where
+scratch lives and how much one run may write are not changed here.
+
 ### Worker-output scope
 
 This change does not make `creator_scene_assets` or `creator_artifacts`
 canonical `MediaAsset` records. Worker-generated scene images, paragraph and
 run audio, subtitles, and rendered videos therefore remain outside the
-workspace byte/asset budgets, temporary-disk admission control, and
-`MediaAsset` retention sweeps described here. Their existing artifact lifecycle
-continues to apply.
+workspace byte/asset budgets, upload-staging admission control, and
+`MediaAsset` retention sweeps described here; their media-writing jobs are
+admitted by the free-space check above instead. Their existing artifact
+lifecycle continues to apply.
 
 Canonical worker publication requires one durable operation that couples an
 idempotent task-delivery/output-role identity, the canonical object and
@@ -196,6 +267,54 @@ run/project deletion, and a crash between object and metadata deletion must all
 converge without double charging or deleting an object still owned by canonical
 metadata. That lifecycle is intentionally deferred to a follow-up issue rather
 than partially implemented in this change.
+
+### Scene upload cleanup intents
+
+Before each worker scene-image upload, a durable cleanup intent is written to
+`creator_artifacts` (`artifact_type='visual_asset'`,
+`metadata_json='scene_upload_cleanup_intent'`, the exact `<run_id>/scenes/<name>.png`
+key, the recorded provider and the local source path). No migration is involved.
+Intent rows are bookkeeping, not artifacts: download-by-id answers 404 for them and the
+admin stage inventory ignores them. The persisted `scene_id` is the tail of the generated
+filename stem, bounded to the `VARCHAR(100)` column.
+
+- **Registration** takes `FOR SHARE` on the project and run and is refused once the project
+  is `deleting` or the run `cancelled`; the batch then cancels quietly before any storage
+  I/O, so no upload can start behind project deletion's artifact enumeration.
+- **Acceptance** (the scene-asset INSERT) uses one lock order for the intent-id and the
+  key-only paths: project, run, intent `FOR UPDATE NOWAIT`, then the scene advisory lock.
+  The idempotency lookup runs under the scene lock, so a replay returns the winner untouched
+  and a losing delivery keeps its own intent (its object stays reclaimable). The intent is
+  consumed in the same transaction as the INSERT. A fenced or busy intent rejects acceptance
+  rather than queueing behind storage I/O while parent share locks are held; a missing intent
+  rejects an acceptance that names one.
+- **Reclamation** (the artifact retry task) makes an intent eligible five minutes after
+  creation. A first transaction commits a fence (`delete_failed_at` set,
+  `delete_error='scene_upload_reclaim_started'`); a second deletes the object through its
+  recorded provider and the local source, so a crash after remote deletion can never leave a
+  claimable row whose object is gone. Ordinary rows, including ones with `NULL` metadata,
+  are eligible immediately.
+- **Late-write watch.** A reclaimed, unresolved intent is kept fenced for
+  `LATE_UPLOAD_WATCH_RETENTION` (the media pipeline's policy) and swept once more before it
+  is erased. Acceptance of that key is rejected meanwhile, whether or not it names the
+  intent. An intent whose object was accepted, or that a finishing worker compensates itself,
+  is simply removed.
+
+Local-file deletion is root-anchored. Recorded source paths must lie strictly beneath
+`ARTIFACT_ROOT` and are unlinked descriptor-relative with `O_NOFOLLOW`, so a directory
+swapped for a symlink after validation cannot redirect the delete; `LocalStorageBackend.delete`
+uses the same primitive and rejects keys containing `..` or starting with `/` instead of
+re-rooting them (callers translate legacy absolute keys to root-relative ones first).
+`ARTIFACT_ROOT` must therefore be identical for the API and the worker: a mismatch fails
+closed, leaving the row to be retried until `max_retries`.
+Symlinked intermediate directories under `ARTIFACT_ROOT` are unsupported for deletion: local deletion fails closed with `StorageDeletionError` and is retried, then abandoned; only `ARTIFACT_ROOT` itself may be a symlink.
+
+Residual risk, tracked in #1004: the watch bounds a late write, it does not rule one out. A
+remote-object-store upload that outlives the watch **and** whose worker dies before
+compensating can leave an object with no record, and project deletion erases unresolved
+intents immediately. The local filesystem backend cannot write late. Closing this fully
+needs an uploader acknowledgement and a fail-closed deletion path; until then it gates any
+remote object-store deployment.
 
 ## Media retention safety
 

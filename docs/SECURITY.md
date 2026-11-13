@@ -136,9 +136,17 @@ redis:
     - "127.0.0.1:6379:6379"   # Cache — loopback only
 ```
 
-The `docker-compose.local-server.yml` override maintains this policy:
-- `studio-web` is exposed on `0.0.0.0` for LAN access (UI only)
-- API, Postgres, and Redis remain on `127.0.0.1`
+The `docker-compose.local-server.yml` override keeps this policy by default:
+- `studio-web` is published on `127.0.0.1` (private). A trusted-LAN address is an
+  explicit, validated opt-in for Studio only (`STUDIO_WEB_BIND`; see
+  [LOCAL_DOCKER.md](LOCAL_DOCKER.md)).
+- API, Postgres, and Redis keep their `127.0.0.1` bindings; the override cannot
+  publish them on the LAN.
+
+Loopback publishing is only private on **Docker Engine >= 28.0.0**. Docker documents
+that in older releases hosts on the same L2 segment can reach ports published to
+localhost ([moby/moby#45610](https://github.com/moby/moby/issues/45610)), so the
+loopback-only policy above is not supported on older Engines.
 
 ### Why Direct Exposure is Dangerous
 
@@ -166,9 +174,10 @@ Before exposing the system to any network:
 ### CI Validation
 
 The CI workflow validates that `docker-compose.yml` does not expose the API
-on `0.0.0.0`. If you need LAN access for the API during development, use the
-`docker-compose.local-server.yml` override with explicit acknowledgment of
-the security implications.
+on `0.0.0.0`. LAN access to the API is not supported: the
+`docker-compose.local-server.yml` override can publish only Studio, and only after
+explicit opt-in. Reach the API through the Studio proxy, an SSH tunnel, or a
+reverse proxy with TLS.
 
 ---
 

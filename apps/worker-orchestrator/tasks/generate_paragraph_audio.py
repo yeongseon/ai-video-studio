@@ -65,6 +65,7 @@ def generate_paragraph_audio(
             {RunStage.AUDIO_GENERATING.value, RunStage.SUBTITLE_GENERATING.value}
         ),
         success_stage=None,
+        requires_free_space=True,
     )
 
     async def execute(ctx: TaskContext) -> TaskResult:
