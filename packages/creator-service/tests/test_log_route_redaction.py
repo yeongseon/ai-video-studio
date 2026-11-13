@@ -108,3 +108,40 @@ def test_filesystem_tail_is_hidden_when_path_contains_credentials(template: str,
     # Then redacting a credential must not expose the remaining filename or path suffix.
     assert tail not in raw
     assert "<redacted>" in raw
+
+
+@pytest.mark.parametrize("path,private_tail", [
+    ("/api/creator/../../app/data/secret.txt", "secret.txt"),
+    ("/api/admin/../../../etc/shadow", "shadow"),
+    ("/release/../../root/.aws/credentials", "credentials"),
+    ("/api/creator/..%2F..%2Fetc%2Fpasswd", "passwd"),
+    ("/api/creator/x/app/data/artifacts/1/2/x.png", "x.png"),
+    ("/home/user/my dir/api/admin/keys.json", "keys.json"),
+    ("/home/u/~/release/creds.txt", "creds.txt"),
+    ("/api/creator/runs/1/eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.abc", "eyJhbGci"),
+    ("/api/creator/hf_abcdefghijklmnopqrstuvwxyz/x", "hf_abcdefghijklmnopqrstuvwxyz"),
+    ("/api/creator/r8_abcdefghijklmnopqrstuvwxyz/x", "r8_abcdefghijklmnopqrstuvwxyz"),
+    ("/api/creator/sk-short/x", "sk-short"),
+    ("/api/creator/0123456789abcdef0123456789abcdef/x", "/x"),
+    ("/api/creator//private_upload", "private_upload"),
+    ("/release/private_upload", "private_upload"),
+])
+def test_route_like_path_is_hidden_when_shape_is_unsafe(path: str, private_tail: str) -> None:
+    # Given an untrusted path resembling an allowed route in message and nested extras.
+    record = logging.makeLogRecord({"msg": path, "detail": {"file": path}})
+    # When
+    raw = JsonFormatter("api").format(record)
+    # Then neither the route-like path nor its private tail survives.
+    assert private_tail not in raw
+    assert "<redacted>" in raw
+
+
+@pytest.mark.parametrize("route", [
+    "/api/creator", "/api/admin", "/api/creator/projects/slug_42-a/",
+    "/release/identity", "/health", "/docs", "/redoc", "/openapi.json",
+])
+def test_safe_route_survives_when_shape_matches_exactly(route: str) -> None:
+    # Given / When
+    raw = JsonFormatter("api").format(logging.makeLogRecord({"msg": route}))
+    # Then
+    assert json.loads(raw)["message"] == route

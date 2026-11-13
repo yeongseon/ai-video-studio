@@ -47,15 +47,22 @@ _LOG_CREDENTIAL_PATTERNS: Final = (
 )
 # Consume the entire path once, including preserved routes: never restart inside a
 # route at /workspaces or another suffix. Legacy artifact routes remain filesystem paths.
-_LOG_PATH = re.compile(r"(?:/[\w.\-]+){2,}/?|\bworkspaces/[\w./\-]+")
-_LOG_ROUTE_PREFIXES: Final = ("/api/creator/", "/api/admin/", "/release/")
-_LOG_ROUTE_PATHS: Final = frozenset({"/api/creator", "/api/admin", "/docs/oauth2-redirect"})
+_LOG_PATH = re.compile(r"/[\w.\-]+/[^\s'\"<>]*|\bworkspaces/[^\s'\"<>]+")
+_LOG_ROUTE = re.compile(
+    r"/api/(?:creator|admin)(?:/[A-Za-z0-9_-]+)*/?"
+    r"|/release/(?:identity|worker-identity)|/docs/oauth2-redirect"
+)
+_LOG_ROUTE_CREDENTIAL = re.compile(r"(?:^|/)(?:eyJ|hf_|r8_|sk-)|[0-9a-fA-F]{20,}")
 
 
 def _redact_log_path(match: re.Match[str]) -> str:
     path = match.group()
-    if path.startswith(_LOG_ROUTE_PREFIXES) or path in _LOG_ROUTE_PATHS:
-        return _LONG_HEX.sub(_REDACTED, _LOG_TOKEN_PREFIX.sub(_REDACTED, path))
+    if (
+        _LOG_ROUTE.fullmatch(path)
+        and not _LOG_ROUTE_CREDENTIAL.search(path)
+        and not carries_credential(path)
+    ):
+        return path
     return _REDACTED
 
 
