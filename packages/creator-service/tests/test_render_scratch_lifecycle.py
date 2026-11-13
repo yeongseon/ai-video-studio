@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import shutil
+import errno
+import logging
+import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -11,6 +14,54 @@ from creator_service import ffmpeg_service, render_segments
 from creator_service.bgm_service import BgmService
 from creator_service.ffmpeg_service import FFmpegService, RenderInput
 from creator_service.render_scratch import render_scratch
+
+
+@pytest.mark.parametrize("renderer", ["context", "plan"])
+def test_cleanup_warns_once_without_exposing_child_paths(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, renderer: str,
+) -> None:
+    # Given a child whose deletion fails, followed by a nonempty-directory failure.
+    monkeypatch.setenv("RENDER_SCRATCH_DIR", str(tmp_path / "scratch"))
+    monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path / "artifacts"))
+    original = os.unlink
+    observed: list[Path] = []
+
+    def blocked(path: str | os.PathLike[str], *, dir_fd: int | None = None) -> None:
+        if Path(path).name == "private-source.wav":
+            raise PermissionError(errno.EACCES, "secret path", str(path))
+        original(path, dir_fd=dir_fd)
+
+    def fail_segment(segment: RenderInput, output: Path, **kwargs: int) -> Path:
+        observed.append(output.parent)
+        (output.parent / "private-source.wav").write_bytes(b"media")
+        raise RuntimeError("encoder failure")
+
+    monkeypatch.setattr(os, "unlink", blocked)
+    monkeypatch.setattr(render_segments, "render_image_segment", fail_segment)
+    # When cleanup handles the failed deletion, then it never replaces the render outcome.
+    with caplog.at_level(logging.WARNING):
+        if renderer == "context":
+            with render_scratch(tmp_path / "artifacts" / "output.mp4", "timeline-") as directory:
+                observed.append(directory)
+                (directory / "private-source.wav").write_bytes(b"media")
+        else:
+            plan = RenderPlan.model_validate({
+                "segments": [{"kind": "image", "source": "image.png", "duration_seconds": 1,
+                              "timeline_start_seconds": 0}],
+                "output_spec": {"width": 64, "height": 64, "fps": 30},
+                "encoding_profile": {"name": "test", "preset": "ultrafast", "crf": 23},
+            })
+            with pytest.raises(RuntimeError, match="encoder failure"):
+                render_segments.render_plan(plan, tmp_path / "artifacts" / "output.mp4")
+    records = [record for record in caplog.records if record.levelno == logging.WARNING]
+    assert len(records) == 1
+    record = records[0]
+    assert record.name == ("creator_service.render_scratch" if renderer == "context" else "creator_service.render_segments")
+    assert record.__dict__["scratch_directory"] == observed[0].name
+    assert record.__dict__["errno"] == errno.EACCES
+    assert record.exc_info is None
+    assert "private-source.wav" not in caplog.text
+    assert str(tmp_path) not in caplog.text
 
 
 @pytest.mark.parametrize("renderer", ["legacy", "plan", "sfx", "unset_sfx"])

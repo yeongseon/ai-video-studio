@@ -8,8 +8,8 @@ can move toward segments without changing ``FFmpegService.render`` internals.
 from __future__ import annotations
 
 import json
+import logging
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
@@ -19,7 +19,9 @@ from creator_service.ffmpeg_service import RenderInput, _run_ffmpeg
 from creator_service.render_profile import AudioCodec, Codec, RenderProfile
 from creator_service.media_integrity import MediaExpectation, validate_media
 from creator_service.render_frame_budget import allocate_frames
-from creator_service.render_scratch import create_render_scratch
+from creator_service.render_scratch import cleanup_render_scratch, create_render_scratch
+
+logger = logging.getLogger(__name__)
 
 _PROBE_TIMEOUT_SECONDS = 30
 _RENDER_TIMEOUT_SECONDS = 180
@@ -365,4 +367,4 @@ def render_plan(plan: RenderPlan, output_path: Path) -> Path:
         try:
             tmp_output.unlink(missing_ok=True)
         finally:
-            shutil.rmtree(tmp_dir, ignore_errors=True)
+            cleanup_render_scratch(tmp_dir, logger)

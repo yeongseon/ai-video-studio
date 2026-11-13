@@ -4,12 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import errno
+import logging
 import os
 import shutil
 import socket
 import stat
 import tempfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Final, Protocol
@@ -17,6 +18,7 @@ from typing import Final, Protocol
 _CONFIGURATION_ERRNOS: Final = frozenset({
     errno.ENAMETOOLONG, errno.EACCES, errno.EPERM, errno.ENOTDIR, errno.ELOOP, errno.EINVAL,
 })
+logger = logging.getLogger(__name__)
 
 
 class ConcatWriter(Protocol):
@@ -133,7 +135,7 @@ def create_render_scratch(output: Path, prefix: str) -> Path:
                 if stat.S_ISLNK(info.st_mode):
                     directory.unlink(missing_ok=True)
                 else:
-                    shutil.rmtree(directory, ignore_errors=True)
+                    cleanup_render_scratch(directory, logger)
                 raise RenderScratchConfigurationError("allocated directory must be a real worker-owned 0700 directory")
             return directory
         parent.mkdir(parents=True, exist_ok=True)
@@ -148,13 +150,30 @@ def create_render_scratch(output: Path, prefix: str) -> Path:
         raise
 
 
+def cleanup_render_scratch(directory: Path, log: logging.Logger) -> None:
+    """Keep publication successful while reporting one path-redacted cleanup failure."""
+    warned = False
+
+    def report(_function: Callable[..., None], _path: str, error: BaseException) -> None:
+        nonlocal warned
+        if isinstance(error, FileNotFoundError) or warned:
+            return
+        warned = True
+        log.warning("Render scratch cleanup failed", extra={
+            "scratch_directory": directory.name,
+            "errno": error.errno if isinstance(error, OSError) else None,
+        })
+
+    shutil.rmtree(directory, onexc=report)
+
+
 @contextmanager
 def render_scratch(output: Path, prefix: str) -> Iterator[Path]:
     directory = create_render_scratch(output, prefix)
     try:
         yield directory
     finally:
-        shutil.rmtree(directory, ignore_errors=True)
+        cleanup_render_scratch(directory, logger)
 
 
 @contextmanager
