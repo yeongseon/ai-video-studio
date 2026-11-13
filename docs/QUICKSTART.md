@@ -35,7 +35,8 @@ Edit `.env`:
   endpoints are needed. Generate a unique key with `openssl rand -hex 32` if
   needed (min 16 chars; required in production mode). Never reuse an example
   value: the API rejects publicly known examples at startup in every environment.
-  Studio strips client `X-Admin-Key` and never injects an admin key; administer
+  The Studio nginx proxy (the Docker image) strips client `X-Admin-Key` and never
+  injects an admin key; administer
   through the loopback API directly or an SSH tunnel, not the Studio proxy.
 - **Set the remote provider keys** for a full CPU pipeline:
   - `OPENAI_API_KEY=<your-openai-api-key>` — powers the script (LLM, `gpt-4o-mini`),
