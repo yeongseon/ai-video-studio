@@ -208,6 +208,7 @@ def test_checks_allocated_run_directory(root: Path, monkeypatch: pytest.MonkeyPa
     # When allocation returns, then unsafe results are never handed to a renderer.
     with pytest.raises(scratch.RenderScratchConfigurationError, match="RENDER_SCRATCH_DIR"):
         scratch.create_render_scratch(root.parent / "published" / "output.mp4", "timeline-")
+    assert list(root.iterdir()) == []
 
 
 @pytest.mark.parametrize("prefix", [".render_tmp_", ".render_plan_", "timeline-"])

@@ -130,6 +130,10 @@ def create_render_scratch(output: Path, prefix: str) -> Path:
             directory = Path(tempfile.mkdtemp(prefix=f"{prefix}{host}_{run}_{os.getpid()}_", dir=parent))
             info = os.lstat(directory)
             if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                if stat.S_ISLNK(info.st_mode):
+                    directory.unlink(missing_ok=True)
+                else:
+                    shutil.rmtree(directory, ignore_errors=True)
                 raise RenderScratchConfigurationError("allocated directory must be a real worker-owned 0700 directory")
             return directory
         parent.mkdir(parents=True, exist_ok=True)
