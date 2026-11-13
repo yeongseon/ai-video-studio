@@ -81,7 +81,8 @@ def test_cleanup_propagates_process_control(
     tmp_path: Path, signal_type: type[BaseException],
 ) -> None:
     # Given known cancellation followed by a process-control signal in delete.
-    path = tmp_path / "owned.png"
+    path = tmp_path / "1" / "scenes" / "owned.png"
+    path.parent.mkdir(parents=True)
     path.write_bytes(b"generated")
     batch = SceneBatch(
         TaskContext(1, "task", {}, 1, 1, datetime.now(timezone.utc)),

@@ -9,7 +9,10 @@ from celery.exceptions import Ignore, SoftTimeLimitExceeded
 from creator_domain.models.stage import RunStage
 from creator_service import artifact_storage_integration
 from creator_service.artifact_download_service import ArtifactDownloadService
-from creator_service.rejected_scene_cleanup import rejected_scene_cleanup_service
+from creator_service.rejected_scene_cleanup import (
+    SceneUploadIntentRejected,
+    rejected_scene_cleanup_service,
+)
 from creator_service.object_storage import StorageResult, get_storage_backend
 from creator_service.run_service import RunService
 from tasks import task_runner
@@ -38,6 +41,7 @@ class SceneBatch:
     failures: list[dict[str, object]] = field(default_factory=list)
     cancelled: bool = False
     local_outputs: set[Path] = field(default_factory=set)
+    upload_cleanup_intents: dict[str, int] = field(default_factory=dict)
 
     def cleanup_local_outputs(self) -> None:
         for path in self.local_outputs:
@@ -70,6 +74,20 @@ class SceneBatch:
         await self.checkpoint()
         backend = get_storage_backend()
         path = Path(target_path)
+        expected_key = f"{self.ctx.run_id}/scenes/{path.name}"
+        try:
+            record_id = await rejected_scene_cleanup_service.record_intent(
+                run_id=self.ctx.run_id,
+                workspace_id=self.ctx.workspace_id,
+                project_id=self.ctx.project_id,
+                storage_key=expected_key,
+                local_path=str(path),
+                storage_provider=backend.provider,
+                content_type="image/png",
+            )
+        except SceneUploadIntentRejected:
+            raise Ignore() from None
+        self.upload_cleanup_intents[expected_key] = record_id
         uploaded = artifact_storage_integration.store_artifact_file(
             self.ctx.run_id, path, "image/png",
         )
@@ -77,10 +95,14 @@ class SceneBatch:
             await self.checkpoint()
         except Ignore:
             # Only the fresh batch-owned UUID key is eligible, never an adapter alias.
-            expected = path.resolve().relative_to(artifact_storage_integration._ARTIFACT_ROOT)
-            if path in self.local_outputs and uploaded.key == str(expected):
+            if path in self.local_outputs and uploaded.key == expected_key:
                 try:
-                    backend.delete(uploaded.key)
+                    await rejected_scene_cleanup_service.cleanup(
+                        record_id,
+                        expected_key,
+                        str(path),
+                    )
+                    self.upload_cleanup_intents.pop(expected_key, None)
                 except SoftTimeLimitExceeded:
                     raise
                 except Exception:
@@ -91,21 +113,31 @@ class SceneBatch:
         self.local_outputs.discard(path)
         return uploaded
 
-    async def discard_rejected_upload(self, target_path: str, uploaded: StorageResult) -> None:
+    async def record_rejected_upload(self, target_path: str, uploaded: StorageResult) -> int | None:
         path = Path(target_path)
         expected_key = f"{self.ctx.run_id}/scenes/{path.name}"
         if uploaded.key == expected_key:
-            record_id = await rejected_scene_cleanup_service.record(
-                run_id=self.ctx.run_id,
-                workspace_id=self.ctx.workspace_id,
-                project_id=self.ctx.project_id,
-                storage_key=uploaded.key,
-                local_path=str(path),
-                storage_provider=uploaded.storage_provider,
-                content_type=uploaded.content_type,
-                size_bytes=uploaded.size_bytes,
-                checksum=uploaded.checksum,
-            )
+            record_id = self.upload_cleanup_intents.get(expected_key)
+            if record_id is None:
+                record_id = await rejected_scene_cleanup_service.record(
+                    run_id=self.ctx.run_id,
+                    workspace_id=self.ctx.workspace_id,
+                    project_id=self.ctx.project_id,
+                    storage_key=uploaded.key,
+                    local_path=str(path),
+                    storage_provider=uploaded.storage_provider,
+                    content_type=uploaded.content_type,
+                    size_bytes=uploaded.size_bytes,
+                    checksum=uploaded.checksum,
+                )
+                self.upload_cleanup_intents[expected_key] = record_id
+            return record_id
+        return None
+
+    async def discard_rejected_upload(self, target_path: str, uploaded: StorageResult) -> None:
+        path = Path(target_path)
+        record_id = await self.record_rejected_upload(target_path, uploaded)
+        if record_id is not None:
             try:
                 await rejected_scene_cleanup_service.cleanup(record_id, uploaded.key, str(path))
             except SoftTimeLimitExceeded:
@@ -115,6 +147,7 @@ class SceneBatch:
                     record_id, uploaded.key,
                 )
             else:
+                self.upload_cleanup_intents.pop(uploaded.key, None)
                 self.local_outputs.discard(path)
 
     async def finish(self, total: int, metadata: dict[str, object]) -> TaskResult:

@@ -1,8 +1,11 @@
 """Pytest fixtures for Celery app tests."""
 
+from unittest.mock import AsyncMock
+
 import pytest
 from celery_app import celery_app
 from creator_service.object_storage import StorageResult
+from creator_service.rejected_scene_cleanup import rejected_scene_cleanup_service
 
 
 @pytest.fixture
@@ -36,3 +39,4 @@ def stub_artifact_upload(monkeypatch: pytest.MonkeyPatch):
         "creator_service.artifact_storage_integration.store_artifact_file",
         _store_artifact_file,
     )
+    monkeypatch.setattr(rejected_scene_cleanup_service, "record_intent", AsyncMock(return_value=1))
