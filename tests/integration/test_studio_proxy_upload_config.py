@@ -29,6 +29,18 @@ def test_general_api_location_keeps_small_json_limit() -> None:
     assert "client_max_body_size 1m;" in _location(r"/api/")
 
 
+def test_every_api_proxy_location_strips_client_admin_key() -> None:
+    # Given all location bodies, including nested CSRF if blocks.
+    configured = TEMPLATE.read_text()
+    locations = re.findall(r"location ([^\n]+) \{(.*?)\n    \}", configured, re.DOTALL)
+    # When selecting every location forwarding to the API.
+    proxied = [(name, body) for name, body in locations if "proxy_pass http://api:8000;" in body]
+    # Then no upstream location can accidentally inherit client admin credentials.
+    assert len(proxied) == configured.count("proxy_pass http://api:8000;") > 0
+    for name, body in proxied:
+        assert re.search(r'proxy_set_header\s+X-Admin-Key\s+""\s*;', body), name
+
+
 def test_upload_locations_preserve_general_api_proxy_and_csrf_policy() -> None:
     general = _location(r"/api/")
     policy_lines = {
