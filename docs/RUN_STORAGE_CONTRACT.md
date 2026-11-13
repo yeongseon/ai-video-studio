@@ -191,7 +191,7 @@ setting is `0` or negative, which is the default.
 | Filesystem | Setting | Floor it enforces |
 | --- | --- | --- |
 | Artifact: the filesystem that holds `ARTIFACT_ROOT` | `MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES` | Free bytes it must keep before a job may start |
-| Scratch: the temp directory | `MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES` | The same floor for jobs; upload staging also uses it, per upload |
+| Scratch: `RENDER_SCRATCH_DIR` when set, otherwise the temp directory | `MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES` | The same floor for jobs; upload staging still uses system temp, per upload |
 
 `.env.local.example` enables both for the local server. A floor above a
 filesystem's free space refuses every job, so lower it on a small disk or a small
@@ -247,8 +247,63 @@ same free space (keep Worker concurrency low and the floor generous). It does no
 coordinate with the upload byte lease that shares the temp setting. Text-only
 tasks (script, visual plan and subtitle generation) and upload staging's artifact
 side are not checked. The API does not check at enqueue time, so a refusal
-appears in the run's task list rather than as an immediate HTTP error. Where
-scratch lives and how much one run may write are not changed here.
+appears in the run's task list rather than as an immediate HTTP error. How much
+one run may write is not bounded by this check.
+
+### Render scratch placement (#1029)
+
+`RENDER_SCRATCH_DIR` optionally separates render scratch from published artifacts.
+It must be an absolute writable/searchable directory outside `ARTIFACT_ROOT` and
+the published output directory, with no symlink components or `..`. It may be
+created on demand; invalid configuration fails closed before render work, with
+an error naming the setting. The admission check validates without writing and
+measures its nearest existing ancestor if it has not been created yet. A mount
+must already exist before admission to measure the intended filesystem. The
+scratch floor follows this setting for media jobs; API upload/probe staging
+continues to use system temp and its existing upload floor.
+
+Legacy segments (`.render_tmp_*`), segment-plan renders (`.render_plan_*`),
+Timeline materialized sources/narration (`timeline-*`), audio concat lists and
+SFX clips all allocate through `creator_service.render_scratch`. New directories
+are private (0700); configured names include hashed host and run/output-directory
+identity, PID and randomness. With the setting unset the three directory names
+and locations remain unchanged beside the output; the auxiliary audio concat
+file and SFX directory keep their existing system-temp placement. Successful
+and ordinary failed renders retain their existing cleanup behavior. Retained
+legacy `bgm.mp3`, mixed/normalized audio and styled subtitles are artifacts of
+the existing workflow, not transient scratch, and do not move.
+
+The temporary `output.tmp.<pid>.<random>.mp4` **always stays beside the output**
+for atomic rename on the same filesystem. Published names, storage keys, codecs
+and FFmpeg arguments do not change. API `media-upload-` staging and byte-probe
+temporary files are explicitly allow-listed by the AST guard; render source and
+output probes operate on paths without that staging.
+
+An SSD reduces segment/materialization I/O latency while artifacts can stay on
+an HDD; scratch on the HDD saves SSD capacity but shares its seek/I/O load. A
+`tmpfs` avoids disk I/O but consumes RAM and must be sized with room above the
+scratch floor (a full or undersized tmpfs can still fail mid-render). For example,
+an **optional operator-owned Compose override**, not a change to the shipped stack:
+
+```yaml
+services:
+  worker:
+    environment:
+      RENDER_SCRATCH_DIR: /render-scratch
+      MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES: "1073741824"
+    volumes:
+      - /srv/ssd/ai-video-render:/render-scratch
+    # Alternative to the bind above (do not use both at the same target):
+    # tmpfs:
+    #   - /render-scratch:size=4g,mode=0700,uid=1000,gid=1000
+```
+
+Provision the host directory for the container's actual worker UID/GID; adjust
+the example IDs to the image. Configure/mount the same path in the API process
+when using lightweight synchronous rendering. Do not serve or upload this root.
+The configured root and its ancestors are operator-controlled: do not let other
+users rename/replace them during rendering. This does not add crash sweeping
+(#1030), per-run caps (#1031), concurrency changes or live-host measurements.
 
 ### Worker-output scope
 
