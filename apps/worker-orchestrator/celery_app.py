@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from celery import Celery
-from celery.signals import after_setup_logger, task_failure, worker_process_init
+from celery.signals import after_setup_logger, after_task_publish, beat_init, task_failure, worker_process_init
 from importlib import import_module
 # Only import worker_loop (signal handlers) when running as a worker process,
 # not when imported by the API for task dispatch.
@@ -33,6 +33,7 @@ from creator_service.actionable_errors import build_run_failure_summary
 from creator_service.error_redaction import JsonValue, sanitize_error_json as _sanitize_for_dlq
 from creator_service.logging_config import setup_json_logging
 from kombu import Exchange, Queue
+from beat_health import HEARTBEAT_INTERVAL_SECONDS, heartbeat_path, record_heartbeat
 
 redis: Any
 try:
@@ -109,7 +110,11 @@ def _apply_resource_limits() -> None:
 redis_url = os.getenv("REDIS_URL", "redis://redis:6379/0")
 dlq_max_size = max(1, int(os.getenv("DLQ_MAX_SIZE", "10000")))
 dlq_fallback_path = os.getenv("DLQ_FALLBACK_PATH", "/tmp/dlq_fallback.jsonl")
-BEAT_SCHEDULE: dict[str, dict[str, str | float]] = {
+BEAT_SCHEDULE: dict[str, dict[str, str | float | dict[str, float]]] = {
+    "beat-heartbeat": {
+        "task": "beat_heartbeat", "schedule": HEARTBEAT_INTERVAL_SECONDS,
+        "options": {"expires": HEARTBEAT_INTERVAL_SECONDS},
+    },
     "reconcile-stale-dispatches": {"task": "reconcile_stale_dispatches", "schedule": 60.0},
     "retry-failed-artifact-deletions": {
         "task": "retry_failed_artifact_deletions", "schedule": 300.0,
@@ -124,6 +129,7 @@ broker_epoch_read_attempts = _parse_int_env("BROKER_EPOCH_READ_ATTEMPTS", 3)
 
 def _worker_task_modules() -> list[str]:
     modules = [
+        "tasks.beat_heartbeat",
         "tasks.generate_script",
         "tasks.generate_visual_plan",
         "tasks.generate_scene_image",
@@ -217,6 +223,19 @@ def _register_signal_handlers() -> None:
         signal.signal(signal.SIGINT, _handle_sigint)
     except ValueError:
         logging.getLogger(__name__).debug("Skipping signal handler registration: not in main thread")
+
+
+def _record_heartbeat_dispatch(sender: str | None = None, **_kwargs: object) -> None:
+    """Runs only in the Beat process, after the broker accepted a published message."""
+    if sender == "beat_heartbeat":
+        record_heartbeat(heartbeat_path(), datetime.now(timezone.utc))
+
+
+@beat_init.connect(weak=False)
+def start_recording_heartbeat_dispatches(**_kwargs: object) -> None:
+    """Only the Beat process vouches for its own liveness; API and worker processes import this
+    module too but never start Beat, so they must not write the receipt."""
+    after_task_publish.connect(_record_heartbeat_dispatch, weak=False, dispatch_uid="beat-heartbeat-receipt")
 
 
 @after_setup_logger.connect

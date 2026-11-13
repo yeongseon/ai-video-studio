@@ -1,347 +1,291 @@
 aiohappyeyeballs==2.6.1
+    # via aiohttp
 aiohttp==3.13.3
+    # via edge-tts
 aiosignal==1.4.0
-aiosqlite==0.22.1
-alabaster==1.0.0
+    # via aiohttp
 alembic==1.18.4
+    # via -r apps/api/requirements.txt
 amqp==5.3.1
+    # via kombu
 annotated-doc==0.0.4
+    # via fastapi
 annotated-types==0.7.0
+    # via pydantic
 anyio==4.12.1
-argcomplete==3.6.3
-asgiref==3.11.1
-async-timeout==5.0.1
+    # via
+    #   creator-service
+    #   httpx
+    #   starlette
+    #   watchfiles
 asyncpg==0.31.0
+    # via creator-service
 attrs==21.2.0
-Automat==20.2.0
+    # via aiohttp
 azure-core==1.39.0
-azure-eventhub==5.15.1
-azure-functions==1.24.0
-azure-functions-durable==1.5.0
-azure-functions-logging==0.5.0
-azure-functions-openapi==0.17.0
-azure-functions-validation==0.7.0
-azure-identity==1.25.3
+    # via azure-storage-blob
 azure-storage-blob==12.28.0
-azure-storage-queue==12.15.0
-babel==2.18.0
-backports.asyncio.runner==1.2.0
-backports.zstd==1.3.0
-backrefs==6.1
-bandit==1.9.4
-basedpyright==1.38.2
-bcrypt==3.2.0
+    # via -r apps/api/requirements-dev.txt
 billiard==4.2.4
-black==25.12.0
-blinker==1.9.0
+    # via
+    #   celery
+    #   creator-provider
 boto3==1.42.73
+    # via -r apps/api/requirements-dev.txt
 botocore==1.42.73
-brotli==1.2.0
-build==1.4.0
-cachetools==7.0.1
+    # via
+    #   boto3
+    #   s3transfer
 cairocffi==1.7.1
-CairoSVG==2.9.0
-celery==5.6.3
-certifi==2026.2.25
-cffi==2.0.0
-cfgv==3.5.0
-chardet==5.2.0
-charset-normalizer==3.4.4
-click==8.3.1
-click-didyoumean==0.3.1
-click-plugins==1.1.1.2
-click-repl==0.3.0
-cloud-init==25.2
-cloudflared==1.0.0.2
-colorama==0.4.6
-command-not-found==0.3
-configobj==5.0.6
-constantly==15.1.0
-contourpy==1.3.2
-coverage==7.13.4
-cryptography==46.0.5
-csscompressor==0.9.5
-cssselect2==0.9.0
-cubrid-python==11.3.0.51
-cycler==0.12.1
-datamodel-code-generator==0.55.0
-datasets==4.5.0
-dbus-python==1.2.18
-defusedxml==0.7.1
-dill==0.4.0
-distlib==0.4.0
-distro==1.7.0
-distro-info==1.1+ubuntu0.2
-Django==5.2.12
-docprep==0.1.1
-docutils==0.21.2
-edge-tts==7.2.8
-elevenlabs==2.40.0
-et_xmlfile==2.0.0
-exceptiongroup==1.3.1
-fastapi==0.129.0
-filelock==3.20.3
-Flask==3.1.3
-Flask-SQLAlchemy==3.1.1
-fonttools==4.61.1
-frozenlist==1.8.0
-fsspec==2025.10.0
-furl==2.1.4
-genson==1.3.0
-ghp-import==2.1.0
-git-cliff==2.12.0
-google-api-core==2.30.0
-google-api-python-client==2.193.0
-google-auth==2.49.1
-google-auth-httplib2==0.3.0
-google-auth-oauthlib==1.3.0
-googleapis-common-protos==1.73.1
-greenlet==3.3.2
-griffe==2.0.0
-griffecli==2.0.0
-griffelib==2.0.0
-gyp==0.1
-h11==0.16.0
-hatch==1.16.3
-hatchling==1.28.0
-hf-xet==1.2.0
-hiredis==3.3.1
-htmlmin2==0.1.13
-httpcore==1.0.9
-httplib2==0.20.2
-httptools==0.7.1
-httpx==0.28.1
-huggingface_hub==1.4.1
-hyperlink==21.0.0
-hypothesis==6.151.9
-id==1.6.1
-identify==2.6.16
-idna==3.3
-imagesize==2.0.0
-importlib_metadata==8.7.1
-incremental==21.3.0
-inflect==7.5.0
-iniconfig==2.3.0
-isodate==0.7.2
-isort==6.1.0
-itsdangerous==2.2.0
-jeepney==0.7.1
-Jinja2==3.1.6
-jiter==0.13.0
-jmespath==1.1.0
-joblib==1.5.3
-jsmin==3.0.1
-jsonpatch==1.33
-jsonpointer==2.0
-jsonschema==3.2.0
-keyring==23.5.0
-kiwipiepy==0.23.0
-kiwipiepy_model==0.23.0
-kiwisolver==1.5.0
-kombu==5.6.2
-langchain-core==1.2.24
-langgraph==1.1.4
-langgraph-checkpoint==4.0.1
-langgraph-prebuilt==1.0.8
-langgraph-sdk==0.3.12
-langsmith==0.7.24
-lark==1.3.1
-launchpadlib==1.10.16
-lazr.restfulclient==0.14.4
-lazr.uri==1.0.6
-librt==0.8.0
-localstack-client==2.11
-Mako==1.3.10
-Markdown==3.10.2
-markdown-it-py==3.0.0
-MarkupSafe==3.0.3
-matplotlib==3.10.8
-mdit-py-plugins==0.5.0
-mdurl==0.1.2
-mergedeep==1.3.4
-mkdocs==1.6.1
-mkdocs-autorefs==1.4.4
-mkdocs-charts-plugin==0.0.13
-mkdocs-get-deps==0.2.0
-mkdocs-material==9.7.1
-mkdocs-material-extensions==1.3.1
-mkdocs-minify-plugin==0.8.0
-mkdocstrings==0.30.1
-mkdocstrings-python==2.0.2
-more-itertools==8.10.0
-msal==1.35.1
-msal-extensions==1.3.1
-multidict==6.7.1
-multiprocess==0.70.18
-mypy==1.20.0
-mypy_extensions==1.1.0
-narwhals==2.18.0
-netifaces==0.11.0
-nh3==0.3.3
-nodeenv==1.10.0
-nodejs-wheel-binaries==24.14.0
-numpy==2.2.6
-oauthlib==3.2.0
-openai==2.26.0
-openpyxl==3.1.5
-opentelemetry-api==1.40.0
-opentelemetry-sdk==1.40.0
-opentelemetry-semantic-conventions==0.61b0
-orderedmultidict==1.0.2
-orjson==3.11.8
-ormsgpack==1.12.2
-packaging==26.0
-paginate==0.5.7
-pandas==2.3.3
-pandoc==2.4
-pathspec==1.0.4
-pexpect==4.8.0
-pillow==11.3.0
-platformdirs==4.5.1
-playwright==1.58.0
-plotly==6.6.0
-pluggy==1.6.0
-plumbum==1.10.0
-ply==3.11
-pre_commit==4.5.1
-prompt_toolkit==3.0.52
-propcache==0.4.1
-proto-plus==1.27.2
-protobuf==6.33.6
-psycopg==3.3.3
-psycopg-binary==3.3.3
-psycopg2-binary==2.9.11
-ptyprocess==0.7.0
-py-cpuinfo==9.0.0
-pyarrow==23.0.0
-pyasn1==0.4.8
-pyasn1-modules==0.2.1
-pycparser==3.0
-pydantic==2.12.5
-pydantic-settings==2.13.1
-pydantic_core==2.41.5
-pyee==13.0.1
-Pygments==2.19.2
-PyGObject==3.42.1
-PyHamcrest==2.0.2
-PyJWT==2.11.0
-pymdown-extensions==10.20.1
-PyMySQL==1.1.2
-pyngrok==7.5.1
-pyodbc==5.3.0
-pyOpenSSL==21.0.0
-pypandoc==1.17
-pyparsing==3.3.2
-pyperclip==1.11.0
-pyproject-api==1.10.0
-pyproject_hooks==1.2.0
-pyright==1.1.408
-pyrsistent==0.18.1
-pyserial==3.5
-pytest==8.4.2
-pytest-anyio==0.0.0
-pytest-asyncio==0.26.0
-pytest-benchmark==5.2.3
-pytest-cov==6.2.1
-pytest-html==4.2.0
-pytest-metadata==3.1.1
-pytest-mock==3.15.1
-python-apt==2.4.0+ubuntu4.1
-python-dateutil==2.9.0.post0
-python-debian==0.1.43+ubuntu1.1
-python-dotenv==1.2.2
-python-frontmatter==1.1.0
-python-hcl2==7.3.1
-python-magic==0.4.24
-python-multipart==0.0.22
-pytokens==0.4.1
-pytz==2022.1
-PyYAML==6.0.3
-pyyaml_env_tag==1.1
-readme_renderer==44.0
-redis==6.4.0
-regex==2026.2.28
-requests==2.32.5
-requests-oauthlib==2.0.0
-requests-toolbelt==1.0.0
-rfc3986==2.0.0
-rich==14.3.2
-ruff==0.11.13
-s3transfer==0.16.0
-scikit-learn==1.7.2
-scipy==1.15.3
-screen-resolution-extra==0.0.0
-SecretStorage==3.3.1
-service-identity==18.1.0
-setuptools-scm==9.2.2
-shellingham==1.5.4
-six==1.16.0
-sniffio==1.3.1
-snowballstemmer==3.0.1
-sortedcontainers==2.4.0
-sos==4.9.2
-Sphinx==8.1.3
-sphinx_rtd_theme==3.1.0
-sphinxcontrib-applehelp==2.0.0
-sphinxcontrib-devhelp==2.0.0
-sphinxcontrib-htmlhelp==2.1.0
-sphinxcontrib-jquery==4.1
-sphinxcontrib-jsmath==1.0.1
-sphinxcontrib-qthelp==2.0.0
-sphinxcontrib-serializinghtml==2.0.0
-SQLAlchemy==2.0.48
-sqlparse==0.5.5
-ssh-import-id==5.11
-starlette==0.52.1
-stevedore==5.6.0
-systemd-python==234
-tabulate==0.10.0
-tenacity==9.1.4
-terraform-local==0.25.0
-threadpoolctl==3.6.0
-tinycss2==1.5.1
-tomli==2.4.0
-tomli_w==1.2.0
-tomlkit==0.14.0
-tox==4.35.0
-tqdm==4.67.3
-trove-classifiers==2026.1.14.14
-twine==6.2.0
-Twisted==22.1.0
-typeguard==4.5.1
-typer==0.22.0
-typer-slim==0.22.0
-types-PyYAML==6.0.12.20250915
-types-requests==2.32.4.20260107
-typing-inspection==0.4.2
-typing_extensions==4.15.0
-tzdata==2025.3
-tzlocal==5.3.1
-ubuntu-drivers-common==0.0.0
-ubuntu-pro-client==8001
-ufw==0.36.1
-unattended-upgrades==0.1
-uritemplate==4.2.0
-urllib3==2.6.3
-userpath==1.9.2
-uuid_utils==0.14.1
-uv==0.10.2
-uvicorn==0.40.0
-uvloop==0.22.1
-vine==5.1.0
-virtualenv==20.36.1
-vulture==2.15
-wadllib==1.3.6
-watchdog==6.0.0
-watchfiles==1.1.1
-wcwidth==0.6.0
-webencodings==0.5.1
-websockets==16.0
-Werkzeug==3.1.6
-xkit==0.0.0
-xxhash==3.6.0
-yarl==1.22.0
-zipp==3.23.0
-zope.interface==5.4.0
-zstandard==0.25.0
+    # via cairosvg
 cairosvg==2.9.0
+    # via creator-provider
+celery==5.6.3
+    # via
+    #   -r apps/api/requirements.txt
+    #   -r apps/worker-orchestrator/requirements.txt
+certifi==2026.2.25
+    # via
+    #   edge-tts
+    #   httpcore
+    #   httpx
+    #   requests
+cffi==2.0.0
+    # via
+    #   cairocffi
+    #   cryptography
+charset-normalizer==3.4.4
+    # via requests
+click==8.3.1
+    # via
+    #   celery
+    #   click-didyoumean
+    #   click-plugins
+    #   click-repl
+    #   uvicorn
+click-didyoumean==0.3.1
+    # via celery
+click-plugins==1.1.1.2
+    # via celery
+click-repl==0.3.0
+    # via celery
+coverage==7.13.4
+    # via pytest-cov
+cryptography==46.0.5
+    # via azure-storage-blob
+cssselect2==0.9.0
+    # via cairosvg
+defusedxml==0.7.1
+    # via cairosvg
+edge-tts==7.2.8
+    # via creator-provider
+fastapi==0.129.0
+    # via -r apps/api/requirements.txt
+frozenlist==1.8.0
+    # via
+    #   aiohttp
+    #   aiosignal
+googleapis-common-protos==1.73.1
+    # via opentelemetry-exporter-otlp-proto-grpc
+greenlet==3.3.2
+    # via
+    #   playwright
+    #   sqlalchemy
+grpcio==1.85.1
+    # via opentelemetry-exporter-otlp-proto-grpc
+h11==0.16.0
+    # via
+    #   httpcore
+    #   uvicorn
+httpcore==1.0.9
+    # via httpx
+httpx==0.28.1
+    # via
+    #   -r apps/api/requirements-dev.txt
+    #   creator-provider
+    #   creator-service
+idna==3.3
+    # via
+    #   anyio
+    #   httpx
+    #   requests
+    #   yarl
+importlib-metadata==8.7.1
+    # via opentelemetry-api
+iniconfig==2.3.0
+    # via pytest
+isodate==0.7.2
+    # via azure-storage-blob
+jmespath==1.1.0
+    # via
+    #   boto3
+    #   botocore
+kombu==5.6.2
+    # via celery
+mako==1.3.10
+    # via alembic
+markupsafe==3.0.3
+    # via mako
+multidict==6.7.1
+    # via
+    #   aiohttp
+    #   yarl
+opentelemetry-api==1.40.0
+    # via
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+opentelemetry-exporter-otlp-proto-common==1.40.0
+    # via opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-exporter-otlp-proto-grpc==1.40.0
+    # via creator-service
+opentelemetry-proto==1.40.0
+    # via
+    #   opentelemetry-exporter-otlp-proto-common
+    #   opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-sdk==1.40.0
+    # via opentelemetry-exporter-otlp-proto-grpc
+opentelemetry-semantic-conventions==0.61b0
+    # via opentelemetry-sdk
+packaging==26.0
+    # via
+    #   kombu
+    #   pytest
+pillow==11.3.0
+    # via cairosvg
+playwright==1.58.0
+    # via -r constraints.in
+pluggy==1.6.0
+    # via
+    #   pytest
+    #   pytest-cov
+prompt-toolkit==3.0.52
+    # via click-repl
+propcache==0.4.1
+    # via
+    #   aiohttp
+    #   yarl
+protobuf==6.33.6
+    # via
+    #   googleapis-common-protos
+    #   opentelemetry-proto
+psycopg2-binary==2.9.11
+    # via -r apps/api/requirements.txt
+pycparser==3.0
+    # via cffi
+pydantic==2.12.5
+    # via
+    #   creator-domain
+    #   creator-service
+    #   fastapi
+pydantic-core==2.41.5
+    # via pydantic
+pyee==13.0.1
+    # via playwright
+pygments==2.19.2
+    # via pytest
+pytest==8.4.2
+    # via
+    #   -r apps/api/requirements-dev.txt
+    #   -r apps/worker-orchestrator/requirements-dev.txt
+    #   pytest-asyncio
+    #   pytest-cov
+pytest-asyncio==0.26.0
+    # via -r apps/api/requirements-dev.txt
+pytest-cov==6.2.1
+    # via
+    #   -r apps/api/requirements-dev.txt
+    #   -r apps/worker-orchestrator/requirements-dev.txt
+python-dateutil==2.9.0.post0
+    # via
+    #   botocore
+    #   celery
+python-multipart==0.0.22
+    # via -r apps/api/requirements.txt
+pyyaml==6.0.3
+    # via
+    #   -r apps/api/requirements-dev.txt
+    #   creator-service
+redis==6.4.0
+    # via
+    #   -r apps/api/requirements.txt
+    #   -r apps/worker-orchestrator/requirements.txt
+    #   creator-provider
+requests==2.32.5
+    # via azure-core
+ruff==0.11.13
+    # via
+    #   -r apps/api/requirements-dev.txt
+    #   -r apps/worker-orchestrator/requirements-dev.txt
+s3transfer==0.16.0
+    # via boto3
+six==1.16.0
+    # via python-dateutil
+sqlalchemy==2.0.48
+    # via
+    #   -r apps/api/requirements.txt
+    #   alembic
+starlette==0.52.1
+    # via fastapi
+tabulate==0.10.0
+    # via edge-tts
+tinycss2==1.5.1
+    # via
+    #   cairosvg
+    #   cssselect2
+typing-extensions==4.15.0
+    # via
+    #   aiosignal
+    #   alembic
+    #   anyio
+    #   azure-core
+    #   azure-storage-blob
+    #   edge-tts
+    #   fastapi
+    #   grpcio
+    #   opentelemetry-api
+    #   opentelemetry-exporter-otlp-proto-grpc
+    #   opentelemetry-sdk
+    #   opentelemetry-semantic-conventions
+    #   pydantic
+    #   pydantic-core
+    #   pyee
+    #   sqlalchemy
+    #   starlette
+    #   typing-inspection
+typing-inspection==0.4.2
+    # via
+    #   fastapi
+    #   pydantic
+tzdata==2025.3
+    # via kombu
+tzlocal==5.3.1
+    # via celery
+urllib3==2.6.3
+    # via
+    #   botocore
+    #   requests
+uvicorn==0.40.0
+    # via -r apps/api/requirements.txt
+vine==5.1.0
+    # via
+    #   amqp
+    #   celery
+    #   kombu
+watchfiles==1.1.1
+    # via -r apps/worker-orchestrator/requirements-dev.txt
+wcwidth==0.6.0
+    # via prompt-toolkit
+webencodings==0.5.1
+    # via
+    #   cssselect2
+    #   tinycss2
+yarl==1.22.0
+    # via aiohttp
+zipp==3.23.0
+    # via importlib-metadata
+
+# The following packages were excluded from the output:
+# creator-domain
+# creator-provider
+# creator-service
