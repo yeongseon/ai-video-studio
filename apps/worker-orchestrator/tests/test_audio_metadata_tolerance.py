@@ -1,8 +1,10 @@
+import subprocess
 from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
+from celery.exceptions import SoftTimeLimitExceeded
 from creator_domain.models.script_draft import ScriptSection
 from creator_provider.exceptions import ProviderError
 from creator_provider.stt.script_timestamp_aligner import ScriptTimestampAligner
@@ -30,7 +32,9 @@ from .test_generate_subtitles import (
 )
 
 
-@pytest.mark.parametrize("metadata", ["missing", "malformed", "overlap", "digest", "empty"])
+@pytest.mark.parametrize(
+    "metadata", ["missing", "malformed", "overlap", "digest", "empty", "probe-timeout", "soft-timeout"]
+)
 def test_default_audio_and_subtitles_survive_unusable_section_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -101,10 +105,26 @@ def test_default_audio_and_subtitles_survive_unusable_section_metadata(
         "creator_service.ffmpeg_service.FFmpegService.concatenate_audio",
         lambda _self, paths, output: concatenate(paths, output),
     )
+    timeout = SoftTimeLimitExceeded()
+
+    def probe_duration(_self: object, _path: str) -> float:
+        match metadata:
+            case "probe-timeout":
+                raise subprocess.TimeoutExpired("ffprobe", 30)
+            case "soft-timeout":
+                raise timeout
+        return 1.0
+
     monkeypatch.setattr(
-        "creator_service.ffmpeg_service.FFmpegService.get_audio_duration", lambda *_: 1.0
+        "creator_service.ffmpeg_service.FFmpegService.get_audio_duration", probe_duration
     )
     # When the audio task completes and default subtitle generation consumes its artifact.
+    if metadata == "soft-timeout":
+        with pytest.raises(SoftTimeLimitExceeded) as raised:
+            audio.generate_audio.run(run_id=101, tts_model="edge-tts")
+        assert raised.value is timeout
+        assert [call[0] for call in provider.calls] == ["Opening.", "Ending."]
+        return
     result = audio.generate_audio.run(run_id=101, tts_model="edge-tts")
     audio_path = str(result["audio_path"])
     whisper = SubtitleProvider()
@@ -128,6 +148,7 @@ def test_default_audio_and_subtitles_survive_unusable_section_metadata(
     # Then audio is kept without retry/fallback, invalid alignment is removed, and Whisper succeeds.
     assert result["status"] == subtitle_result["status"] == "success"
     assert len(provider.calls) == 2
+    assert [call[0] for call in provider.calls] == ["Opening.", "Ending."]
     assert Path(audio_path).read_bytes() == b"audio" * 200
     assert not Path(f"{audio_path}.words.jsonl").exists()
     assert whisper.calls[0][0] == audio_path

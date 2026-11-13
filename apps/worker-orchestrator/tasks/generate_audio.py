@@ -6,6 +6,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import subprocess
 import wave
 from decimal import Decimal
 
@@ -312,7 +313,10 @@ def generate_audio(
                                 audio_path,
                                 _ffmpeg,
                             )
-                        except (ProviderError, OSError, RuntimeError, TypeError, ValueError):
+                        except (
+                            ProviderError, OSError, RuntimeError, subprocess.SubprocessError,
+                            TypeError, ValueError,
+                        ):
                             _invalidate_word_timing_sidecar(audio_path)
                             logger.warning(
                                 "Skipping unusable TTS timing metadata for run %d", run_id,
