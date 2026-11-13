@@ -106,7 +106,8 @@ with tracer.start_as_current_span("provider.generate_image") as span:
 
 ## Structured Logging
 
-All services use JSON-formatted logging with trace correlation:
+Application stream handlers use JSON-formatted logging in every environment.
+Trace correlation fields, when available, look like:
 
 ```json
 {
@@ -125,9 +126,22 @@ All services use JSON-formatted logging with trace correlation:
 ### Log Configuration
 
 Structured logging is configured in `creator_service/logging_config.py`:
-- JSON format for production (`ENVIRONMENT=production`)
-- Human-readable format for development
-- Trace context automatically injected via `TraceContextFilter`
+- The API server process under default Uvicorn startup (import-string CLI form)
+  uses the shared redacting JSON stream formatter, including chained exceptions.
+  `uvicorn.access` retains the request path but omits the entire query string;
+  `--no-access-log` remains respected.
+- JSON logging is configured unconditionally at application import, in development
+  as well as production.
+- Supervisor lines from `--reload` / `--workers` are not covered: those processes
+  never import the application and may retain plain-text logging.
+- Custom `--log-config` handlers are not preserved or covered. Passing an already
+  imported app object to `uvicorn.run(app)` / `Config(app=obj)` reapplies Uvicorn's
+  logging configuration after application setup and is outside this guarantee.
+- OpenTelemetry exporters are not covered by stream-handler redaction: the OTel
+  log handler and span exception events skip this boundary (see
+  [#1058](https://github.com/yeongseon/ai-video-studio/issues/1058)).
+- Trace context uses `TraceContextFilter`; its placement and correlation coverage
+  are tracked in [#1059](https://github.com/yeongseon/ai-video-studio/issues/1059).
 
 ### Correlation Fields
 
