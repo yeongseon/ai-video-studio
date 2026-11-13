@@ -10,7 +10,7 @@ fixtures) must be byte-identical to it, and
 Python, Nginx, FFmpeg and Node pins are separate work: #1002, #1003 and #996. Proving that an
 existing data volume survives a pin change is #1021.
 
-## Pins at the time of this change (2026-11-14)
+## Pins at the time of this change (2026-11-13)
 
 | Service | Version | Base image | Multi-arch index digest | Supported until |
 |---|---|---|---|---|
@@ -22,7 +22,7 @@ no test reads it. The digest is the multi-arch **index** digest, not a platform 
 Docker selects the image by that digest and treats the tag as a label, so the tag and the digest must always be
 changed together.
 
-Verified for this update on **2026-11-14** using Python `urllib.request.urlopen` (HTTPS GET)
+Verified for this update on **2026-11-13 (UTC)** using Python `urllib.request.urlopen` (HTTPS GET)
 against Docker Hub's public tags API:
 
 - [`library/postgres/tags/16.16-alpine`](https://hub.docker.com/v2/repositories/library/postgres/tags/16.16-alpine):
@@ -39,10 +39,6 @@ against Docker Hub's public tags API:
   `https://hub.docker.com/v2/repositories/library/redis/tags?page_size=100&name=7.4.`
   (following every `next` URL) and numeric sorting of exact `7.4.<patch>-alpine` names
   confirmed **7.4.12 is still the newest**. Redis is unchanged.
-
-The execution shell reported `2026-11-13T22:39:32Z` UTC during these requests; the
-review/task date is 2026-11-14. This records the clock discrepancy rather than implying
-a second registry check on a different day.
 
 Support dates were read on 2026-11-12 from the
 [PostgreSQL versioning policy](https://www.postgresql.org/support/versioning/) (final release of
@@ -95,7 +91,7 @@ and the release notes of 16.7 to 16.16 each say that no dump and restore is requ
 change the major** (16 to 17) by editing the tag on an existing volume; that needs `pg_upgrade`
 or a dump and restore.
 
-On 2026-11-14, the migration sections of **every 16.7–16.15 release** were re-read,
+On 2026-11-13 (UTC), the migration sections of **every 16.7–16.15 release** were re-read,
 plus the changelog entries naming these actions (not a fresh full-changelog/security audit of
 all nine releases). They name these follow-up actions: reindexing BRIN bloom (16.9) and
 `numeric_minmax_multi_ops` indexes (16.10), recreating self-referential foreign keys on partitioned
@@ -116,7 +112,7 @@ upgrade. That can reveal ordering or integrity problems in those indexes, but
 `amcheck` can show corruption and never its absence, so it does not certify an arbitrary existing
 volume. The backup taken before the first start remains the safeguard.
 
-### 16.15 -> 16.16 (reviewed 2026-11-14)
+### 16.15 -> 16.16 (reviewed 2026-11-13)
 
 Read [16.16 E.1.1 and the changelog](https://www.postgresql.org/docs/release/16.16/)
 directly through Python urllib GET and an HTML-to-text pass. Released **2026-11-12**,
