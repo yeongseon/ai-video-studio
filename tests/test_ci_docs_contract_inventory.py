@@ -36,6 +36,15 @@ CI_POLICY_ALLOWLIST: Final = {
 API_ROUTE_ALLOWLIST: Final = {
     "apps/api/tests/test_auth.py": "tests the FastAPI /docs route; never reads repository docs",
     "apps/studio-web/src/pages/OpsPage.tsx": "links to the FastAPI /docs route; never reads repository docs",
+    "apps/api/tests/test_log_route_contract.py": (
+        "asserts that the FastAPI interactive-documentation route stays a preserved log path; never reads repository docs"
+    ),
+    "packages/creator-service/creator_service/error_redaction.py": (
+        "names the FastAPI interactive-documentation route as a preserved log path; never reads repository docs"
+    ),
+    "packages/creator-service/tests/test_log_route_redaction.py": (
+        "asserts that the FastAPI interactive-documentation route survives log redaction; never reads repository docs"
+    ),
 }
 HISTORICAL_REFERENCE_ALLOWLIST: Final = {
     "apps/api/migrations/versions/005_expand_artifact_typing_and_indexes.py": (
@@ -79,6 +88,15 @@ REVIEWED_ALLOWLIST_MATCH_DIGESTS: Final = {
     "tests/test_ci_required_workflow.py": "b6c3ec7e30f9cf8dd7ccacccd09d831d5919b2f6c93cde792380b75927eb2ac1",
     "apps/api/tests/test_auth.py": "ba7d93317b9d1feef4301eb6c07d607c8394fc095b1f67398a96c363d64002b6",
     "apps/studio-web/src/pages/OpsPage.tsx": "da2a9442fafa0e32885e0fb4f4fa6dcc698e957eb2e6842d87d924a534068d36",
+    "apps/api/tests/test_log_route_contract.py": (
+        "46f3363d135594a5c8e32246ca5c46028bf1dd1a18cf4eef91f30498d7031aa6"
+    ),
+    "packages/creator-service/creator_service/error_redaction.py": (
+        "b18db262874ce055dca954e08cc4811193b7386b8f5460f707837d29e34d630d"
+    ),
+    "packages/creator-service/tests/test_log_route_redaction.py": (
+        "f70e33109eec162c48ab5d1a85b9c9d3253056679a609dca314f33c6a5b9655e"
+    ),
     "apps/api/migrations/versions/005_expand_artifact_typing_and_indexes.py": (
         "ed958eb3fd883a2443b55a52def834d1828aee54e93eaefab2ca5aa5bc7432b9"
     ),
