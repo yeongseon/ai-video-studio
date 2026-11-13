@@ -176,7 +176,10 @@ class ScriptTimestampAligner(STTProvider):
             next_word = script_words[index + 1] if index + 1 < len(script_words) else None
             cue_text = script[script_words[cue_start].start : script_word.end].strip()
             paragraph_ends = next_word is None or next_word.paragraph != script_word.paragraph
-            duration_limit = timed_word.end - timed_words[cue_start].start >= _MAX_CUE_SECONDS
+            duration_limit = (
+                next_word is not None
+                and timed_words[index + 1].end - timed_words[cue_start].start > _MAX_CUE_SECONDS
+            )
             length_limit = (
                 next_word is not None
                 and len(script[script_words[cue_start].start : next_word.end].strip())
@@ -187,7 +190,7 @@ class ScriptTimestampAligner(STTProvider):
                 text = script[script_words[cue_start].start : text_end].strip()
                 end = min(timed_word.end, audio_duration)
                 if next_word is None:
-                    end = audio_duration
+                    end = min(audio_duration, timed_words[cue_start].start + _MAX_CUE_SECONDS)
                 segments.append(
                     {"start": timed_words[cue_start].start, "end": end, "text": text or cue_text}
                 )
