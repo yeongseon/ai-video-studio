@@ -1,0 +1,16 @@
+# Inputs for constraints.txt: the Python packages that the deployable runtime and CI install.
+#
+# Scope: CPython 3.12 on Linux. It covers every `pip install -c constraints.txt` consumer: the
+# API and Worker images, the CI jobs and `make install`, plus Playwright for the browser runtime
+# job. Provider SDK extras (openai, anthropic, ...) are not included because no consumer installs
+# them, and uv.lock is a different scope (the whole workspace with every extra).
+#
+# Regenerate with `make lock-constraints` and check with `make lock-constraints-check`.
+-r apps/api/requirements.txt
+-r apps/api/requirements-dev.txt
+-r apps/worker-orchestrator/requirements.txt
+-r apps/worker-orchestrator/requirements-dev.txt
+./packages/creator-domain
+./packages/creator-provider
+./packages/creator-service
+playwright

@@ -120,7 +120,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
       - name: Install Python dependencies
         run: python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt
       - name: Install packages in editable mode
@@ -142,6 +142,8 @@ jobs:
         run: |
           python3 -m pip install --disable-pip-version-check uv==0.11.7
           uv lock --check
+      - name: Verify constraints.txt is reproducible from constraints.in
+        run: make lock-constraints-check
       - name: Lint TypeScript
         run: npm --prefix apps/studio-web run lint
 
@@ -174,7 +176,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
       - name: Install Python dependencies
         run: python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt
       - name: Install packages in editable mode
@@ -200,7 +202,7 @@ jobs:
       - name: Test architecture dependency checker
         run: python3 -m pytest tests/test_package_dependency_cli.py tests/test_package_dependency_parser.py tests/test_package_dependency_compliance.py tests/test_architecture_diagrams.py -q
       - name: Test PR impact classifier fail-closed policy
-        run: python3 -m pytest tests/test_ci_impact.py tests/test_ci_impact_git.py tests/test_ci_required.py tests/test_ci_required_workflow.py tests/test_ci_docs_contract_inventory.py tests/test_ci_docs_contract_inventory_hardening.py -q
+        run: python3 -m pytest tests/test_ci_impact.py tests/test_ci_impact_git.py tests/test_ci_required.py tests/test_ci_required_workflow.py tests/test_ci_docs_contract_inventory.py tests/test_ci_docs_contract_inventory_hardening.py tests/test_local_beat_lifecycle.py -q
       - name: Test Packages (with coverage)
         run: |
           git fetch origin main:refs/remotes/origin/main --depth=1
@@ -209,8 +211,6 @@ jobs:
           python3 -m pytest packages/creator-service/tests/ -v --cov=creator_service --cov-report=term-missing --cov-fail-under=60
       - name: Test API (with coverage)
         run: cd apps/api && python3 -m pytest tests/ -v --cov=shorts_api --cov-report=term-missing --cov-fail-under=75
-      - name: Test Worker (with coverage)
-        run: cd apps/worker-orchestrator && python3 -m pytest tests/ -v --cov=tasks --cov-report=term-missing --cov-fail-under=60
       - name: Test Frontend (with coverage)
         run: npm --prefix apps/studio-web run test -- --coverage --coverage.thresholds.lines=75
       - name: Build Frontend
@@ -221,6 +221,43 @@ jobs:
         run: |
           pip install basedpyright==1.29.2
           basedpyright apps packages
+
+  test-worker:
+    needs: impact
+    if: ${{ github.event_name != 'pull_request' || needs.impact.outputs.worker == 'true' }}
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: review
+          POSTGRES_PASSWORD: review-local-only
+          POSTGRES_DB: settings_test
+        ports:
+          - 5432:5432
+        options: --health-cmd="pg_isready -U review" --health-interval=5s --health-timeout=5s --health-retries=12
+    env:
+      FIRST_SHORT_TEST_DATABASE_URL: postgresql://review:review-local-only@127.0.0.1:5432/settings_test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install FFmpeg for media tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ffmpeg
+          ffmpeg -version
+          ffprobe -version
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Worker coverage dependencies
+        run: python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt
+      - name: Install packages in editable mode
+        run: |
+          pip install -c constraints.txt -e packages/creator-domain
+          pip install -c constraints.txt -e packages/creator-provider
+          pip install -c constraints.txt -e packages/creator-service
+      - name: Test Worker (with coverage)
+        run: cd apps/worker-orchestrator && python3 -m pytest tests/ -v --cov=tasks --cov-report=term-missing --cov-fail-under=60
 
   first-short-runtime:
     needs: impact
@@ -234,7 +271,7 @@ jobs:
           python-version: "3.12"
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version-file: .node-version
       - name: Install runtime and test dependencies
         run: |
           sudo apt-get update && sudo apt-get install -y ffmpeg nginx
@@ -496,6 +533,7 @@ jobs:
       - restore-drill
       - lint
       - test
+      - test-worker
       - first-short-runtime
       - worker-topology-runtime
       - docker
@@ -512,6 +550,7 @@ jobs:
           "restore-drill=${{ needs.impact.outputs.restore }}=${{ needs.restore-drill.result }}"
           "lint=${{ needs.impact.outputs.code }}=${{ needs.lint.result }}"
           "test=${{ needs.impact.outputs.code }}=${{ needs.test.result }}"
+          "test-worker=${{ needs.impact.outputs.worker }}=${{ needs.test-worker.result }}"
           "first-short-runtime=${{ needs.impact.outputs.first_short }}=${{ needs.first-short-runtime.result }}"
           "worker-topology-runtime=${{ needs.impact.outputs.worker }}=${{ needs.worker-topology-runtime.result }}"
           "docker=${{ needs.impact.outputs.docker }}=${{ needs.docker.result }}"

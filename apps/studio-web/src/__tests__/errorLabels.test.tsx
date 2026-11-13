@@ -11,6 +11,8 @@ const ALL_CATEGORIES = [
   "UNAVAILABLE",
   "DATA_INTEGRITY",
   "INTERNAL",
+  "ARTIFACT_STORAGE_LOW",
+  "SCRATCH_STORAGE_LOW",
 ];
 
 describe("SF-78 error category labels", () => {

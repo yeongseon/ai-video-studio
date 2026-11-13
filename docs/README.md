@@ -28,3 +28,4 @@ Widening reduced classes later requires evidence and Oracle review.
 | [LOCAL_DOCKER.md](LOCAL_DOCKER.md) | Local Docker Compose setup, private by default with an explicit trusted-LAN opt-in |
 | [RUN_STORAGE_CONTRACT.md](RUN_STORAGE_CONTRACT.md) | Versioned run storage adapter update contract |
 | [QUEUE_DURABILITY.md](QUEUE_DURABILITY.md) | Redis durability, broker replacement recovery, and DLQ retention contract |
+| [PYTHON_DEPENDENCIES.md](PYTHON_DEPENDENCIES.md) | Python pins: which file is installed where, how `constraints.txt` is generated and checked |

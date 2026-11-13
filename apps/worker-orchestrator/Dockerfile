@@ -23,6 +23,7 @@ COPY --from=builder /install /usr/local
 RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg libcairo2 libpango-1.0-0 libpangocairo-1.0-0 libgdk-pixbuf-2.0-0 fonts-nanum && rm -rf /var/lib/apt/lists/* && fc-cache -f
 COPY --chown=appuser:appuser apps/worker-orchestrator/tasks ./tasks
 COPY --chown=appuser:appuser apps/worker-orchestrator/celery_app.py ./celery_app.py
+COPY --chown=appuser:appuser apps/worker-orchestrator/beat_health.py ./beat_health.py
 COPY --chown=appuser:appuser apps/worker-orchestrator/worker_loop.py ./worker_loop.py
 COPY --chown=appuser:appuser apps/worker-orchestrator/worker_release_identity.py ./worker_release_identity.py
 USER appuser
