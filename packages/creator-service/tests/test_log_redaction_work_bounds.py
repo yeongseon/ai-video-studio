@@ -54,3 +54,24 @@ def test_log_line_fails_closed_when_scan_cap_is_exceeded(length: int) -> None:
 
     # Then it replaces the entire line rather than truncating before scanning.
     assert safe == "z" * 1024 + "\n<redacted>\nretry later"
+
+
+@pytest.mark.parametrize("line", [
+    "/a" * 1023 + "/",
+    "/api/" + "a." * 1021,
+    "a://" + "b.." * 680 + "b@h",
+], ids=["path-segments", "route-like-dots", "credential-uri-dots"])
+def test_formatter_finishes_promptly_when_400_lines_are_just_under_scan_cap(line: str) -> None:
+    # Given 400 hostile lines that must be scanned rather than refused by the length cap.
+    assert len(line) == 2047
+    record = logging.makeLogRecord({"msg": "\n".join([line] * 400)})
+    formatter = JsonFormatter("api")
+
+    # When the real formatter handles the full provider body synchronously.
+    start = perf_counter()
+    raw = formatter.format(record)
+    elapsed = perf_counter() - start
+
+    # Then all 400 lines fit the output budget, with over 20x observed timing headroom.
+    assert elapsed < 3.0, f"400 under-cap lines took {elapsed:.3f}s"
+    assert json.loads(raw)["message"].splitlines()[:400] == ["<redacted>"] * 400
