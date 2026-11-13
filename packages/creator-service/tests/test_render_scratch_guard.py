@@ -1,10 +1,19 @@
 import ast
+import runpy
 from collections import Counter
 from pathlib import Path
 
 import pytest
 
 ROOT = Path(__file__).resolve().parents[3]
+
+
+def inventory_matches(pattern: str) -> tuple[Path, ...]:
+    matches = tuple(ROOT.glob(pattern))
+    assert matches and (any(token in pattern for token in "*?[") or len(matches) == 1), f"inventory: {pattern}"
+    return matches
+
+
 MODULES = tuple(sorted({
     str(path.relative_to(ROOT))
     for pattern in (
@@ -18,7 +27,7 @@ MODULES = tuple(sorted({
         "apps/worker-orchestrator/tasks/render_*.py",
         "apps/worker-orchestrator/tasks/legacy_render_*.py",
         "apps/worker-orchestrator/tasks/timeline_*.py",
-    ) for path in ROOT.glob(pattern)
+    ) for path in inventory_matches(pattern)
 }))
 # Upload byte staging and byte probing are API ingestion, not render scratch.
 SYSTEM_TEMP_ALLOWLIST = {
@@ -140,3 +149,20 @@ def test_guard_counts_allowlisted_occurrences() -> None:
 def test_inventory_includes_render_siblings(module: str) -> None:
     # Given a render sibling, when building the inventory, then new scratch there is guarded.
     assert module in {Path(name).name for name in MODULES}
+
+
+@pytest.mark.parametrize("missing_pattern", [
+    "packages/creator-service/creator_service/ffmpeg_service.py",
+    "apps/worker-orchestrator/tasks/render_*.py",
+])
+def test_inventory_rejects_renamed_or_missing_modules(monkeypatch: pytest.MonkeyPatch, missing_pattern: str) -> None:
+    # Given the glob result after a named module is renamed or a wildcard family disappears.
+    original = Path.glob
+
+    def renamed(path: Path, pattern: str):
+        return iter(()) if pattern == missing_pattern else original(path, pattern)
+
+    monkeypatch.setattr(Path, "glob", renamed)
+    # When the guard loads its inventory, then missing coverage fails closed.
+    with pytest.raises(AssertionError, match="inventory"):
+        runpy.run_path(__file__)
