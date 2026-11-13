@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any
 
 from celery import Celery
-from celery.signals import after_setup_logger, after_task_publish, beat_init, task_failure, worker_process_init
+from celery.signals import after_setup_logger, after_task_publish, beat_init, task_failure, worker_process_init, worker_ready
 from importlib import import_module
 # Only import worker_loop (signal handlers) when running as a worker process,
 # not when imported by the API for task dispatch.
@@ -242,6 +242,16 @@ def start_recording_heartbeat_dispatches(**_kwargs: object) -> None:
 def setup_celery_logger(logger: logging.Logger, **_kwargs: object) -> None:
     """Configure Celery logger with JSON formatting."""
     setup_json_logging(service_name="worker", level="INFO")
+
+
+@worker_ready.connect(weak=False)
+def cleanup_render_scratch_at_start(**_kwargs: object) -> None:
+    try:
+        from render_scratch_startup import sweep_at_start
+
+        sweep_at_start()
+    except Exception:
+        logging.getLogger(__name__).warning("Render scratch startup sweep failed", exc_info=True)
 
 
 @worker_process_init.connect
