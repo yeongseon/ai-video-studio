@@ -15,6 +15,7 @@ from creator_service.ffmpeg_service import FFmpegService
 from creator_service.media_integrity import MediaIntegrityError
 from creator_service.render_segments import render_input_from_plan
 from creator_service.render_scratch import configured_scratch_root
+from creator_service.render_scratch_cleanup import cleanup_delivery_scratch
 from creator_service.render_service import render_service as _render_service
 from creator_service.script_service import script_service as _script_service
 from creator_service.subtitle_service import subtitle_service as _subtitle_service
@@ -116,8 +117,25 @@ async def execute_render(ctx: TaskContext, render_profile: str = "shorts_default
     })
 
 
+def _cleanup_hard_timeout_outputs(
+    run_id: int, _task_id: str, _hostname: str, worker_pid: int,
+) -> None:
+    try:
+        scratch = configured_scratch_root()
+    except (OSError, ValueError):
+        logger.warning("Render timeout scratch configuration invalid")
+        scratch = None
+    except Exception:
+        logger.warning("Render timeout cleanup failed", exc_info=True)
+        return
+    try:
+        cleanup_delivery_scratch(Path(_ARTIFACT_ROOT), (run_id, worker_pid), scratch)
+    except Exception:
+        logger.warning("Render timeout cleanup failed", exc_info=True)
+
+
 @celery_app.task(
-    bind=True, base=production_task(frozenset({RunStage.RENDER_GENERATING.value})),
+    bind=True, base=production_task(frozenset({RunStage.RENDER_GENERATING.value}), _cleanup_hard_timeout_outputs),
     autoretry_for=(ProviderTimeoutError, RateLimitError),
     retry_backoff=True, retry_jitter=True, max_retries=3,
     soft_time_limit=600, time_limit=660, name="render_video",
