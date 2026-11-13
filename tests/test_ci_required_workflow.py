@@ -107,6 +107,9 @@ def test_docs_job_runs_documentation_contract_checks() -> None:
     assert "apps/api/tests/test_first_short_walkthrough.py" in commands
     assert "apps/api/tests/test_cutover_doc_contract.py" in commands
     assert "tests/test_ci_docs_contract_inventory.py" in commands
+    assert "tests/test_local_compose_bindings.py" in commands
+    assert "tests/test_local_bind.py" in commands
+    assert "tests/test_local_docs_contract.py" in commands
     assert "-e packages/creator-domain" in commands
     assert "-e packages/creator-provider" in commands
     assert "-e packages/creator-service" in commands
