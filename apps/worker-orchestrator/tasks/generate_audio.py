@@ -184,6 +184,7 @@ def generate_audio(
             {RunStage.VISUAL_ASSET_REVIEW.value, RunStage.AUDIO_GENERATING.value}
         ),
         success_stage=RunStage.SUBTITLE_GENERATING.value,
+        requires_free_space=True,
     )
 
     async def execute(ctx: TaskContext) -> TaskResult:

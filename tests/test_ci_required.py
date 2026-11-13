@@ -18,6 +18,7 @@ SELECTED = (
     JobState("restore-drill", True, "success"),
     JobState("lint", True, "success"),
     JobState("test", True, "success"),
+    JobState("test-worker", True, "success"),
     JobState("first-short-runtime", True, "success"),
     JobState("worker-topology-runtime", True, "success"),
     JobState("docker", True, "success"),
@@ -114,3 +115,43 @@ def test_cli_rejects_duplicate_job_name() -> None:
 
 def test_cli_rejects_missing_expected_job() -> None:
     assert _run_cli(*_complete_jobs()[:-1]).returncode != 0
+
+
+def test_worker_coverage_is_an_expected_job() -> None:
+    # Given successful results for the complete validation matrix including Worker.
+    jobs = [f"{job.name}=true=success" for job in SELECTED]
+    # When the CLI parses the required job set.
+    result = _run_cli(*jobs)
+    # Then Worker is accepted as part of the exact contract.
+    assert result.returncode == 0, result.stderr
+
+
+@pytest.mark.parametrize("result", ["failure", "cancelled", "skipped", "neutral", ""])
+def test_cli_rejects_selected_worker_without_success(result: str) -> None:
+    # Given otherwise successful jobs and an unsuccessful or unknown Worker result.
+    jobs = [job for job in _complete_jobs() if not job.startswith("test-worker=")]
+    jobs.append(f"test-worker=true={result}")
+    # When the aggregate is evaluated.
+    aggregate = _run_cli(*jobs)
+    # Then the selected Worker suite cannot disappear behind a green aggregate.
+    assert aggregate.returncode != 0
+
+
+def test_cli_rejects_missing_worker_coverage() -> None:
+    # Given successful results with Worker omitted entirely.
+    jobs = [job for job in _complete_jobs() if not job.startswith("test-worker=")]
+    # When the CLI checks the exact expected set.
+    result = _run_cli(*jobs)
+    # Then the missing suite fails closed.
+    assert result.returncode != 0
+
+
+@pytest.mark.parametrize("event", ["pull_request", "push"])
+def test_worker_skip_requires_explicit_pr_deselection(event: str) -> None:
+    # Given successful jobs with Worker explicitly deselected and skipped.
+    jobs = [job for job in _complete_jobs() if not job.startswith("test-worker=")]
+    jobs.append("test-worker=false=skipped")
+    # When the event-specific selection policy is applied.
+    result = _run_cli(*jobs, event=event)
+    # Then only a PR may skip Worker; main push still requires success.
+    assert (result.returncode == 0) == (event == "pull_request")

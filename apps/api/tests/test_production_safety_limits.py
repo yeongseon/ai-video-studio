@@ -6,6 +6,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from tests.worker_image_support import load_image_sibling
+
 
 def _load_api_module(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setenv("ENVIRONMENT", "development")
@@ -21,6 +23,7 @@ def _load_worker_module(monkeypatch: pytest.MonkeyPatch, module_name: str):
     monkeypatch.setenv("ENVIRONMENT", "development")
     sys.modules.pop(module_name, None)
     sys.modules[module_name] = module
+    load_image_sibling(monkeypatch, "beat_health")
     spec.loader.exec_module(module)
     return module
 

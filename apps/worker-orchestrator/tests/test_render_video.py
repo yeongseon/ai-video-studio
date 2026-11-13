@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import tempfile
+from collections import namedtuple
 from dataclasses import dataclass, replace
 from pathlib import Path
 from types import SimpleNamespace
@@ -10,9 +12,11 @@ import pytest
 import shutil
 import subprocess
 from unittest.mock import Mock
+from creator_service import job_capacity
 from creator_service.ffmpeg_service import FFmpegService
 from creator_service.media_integrity import MediaIntegrityError
 from creator_service.render_profile import RenderProfile
+from creator_service.storage_policy import FilesystemLowSpace
 from creator_service.quality_profile import get_quality_profile
 from tasks import render_video as render_video_module
 
@@ -992,3 +996,80 @@ def test_render_video_rejects_unknown_manifest_render_profile_keys(
 
     with pytest.raises(RuntimeError, match="Invalid render_profile"):
         _invoke_task(run_id=run_id)
+
+
+_MIB = 1024 * 1024
+
+
+def _volumes(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, *, artifact_free_mib: int,
+) -> Path:
+    """Point the artifact root and scratch directory at tmp dirs with a controllable amount of free space."""
+    artifacts = tmp_path.resolve() / "artifacts"
+    scratch = tmp_path.resolve() / "scratch"
+    artifacts.mkdir()
+    scratch.mkdir()
+    free = {artifacts: artifact_free_mib * _MIB, scratch: 9000 * _MIB}
+    usage = namedtuple("usage", "total used free")
+    monkeypatch.setenv("ARTIFACT_ROOT", str(artifacts))
+    monkeypatch.setattr(tempfile, "tempdir", str(scratch))
+    monkeypatch.setenv("MEDIA_ARTIFACT_DISK_LOW_WATERMARK_BYTES", str(500 * _MIB))
+    monkeypatch.setenv("MEDIA_TEMP_DISK_LOW_WATERMARK_BYTES", str(500 * _MIB))
+
+    def disk_usage(path: str) -> object:
+        return usage(total=1 << 40, used=0, free=free[Path(path)])
+
+    monkeypatch.setattr(job_capacity.shutil, "disk_usage", disk_usage)
+    return artifacts
+
+
+def test_render_video_is_refused_before_any_render_work_when_the_artifact_filesystem_is_low(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pacing_split: None,
+) -> None:
+    # Given a render whose artifact filesystem is under its configured floor.
+    run_id = 214
+    storage = _make_storage(run_id=run_id, stage="RENDER_GENERATING")
+    fake_render_service = FakeRenderService(manifest=_manifest(run_id=run_id))
+    fake_ffmpeg = FakeFFmpegService()
+    _patch_services(
+        monkeypatch, storage=storage, fake_render_service=fake_render_service,
+        fake_vas=FakeVisualAssetService(), fake_audio=FakeAudioService(),
+        fake_subtitle=FakeSubtitleService(), fake_ffmpeg=fake_ffmpeg,
+    )
+    artifacts = _volumes(monkeypatch, tmp_path, artifact_free_mib=100)
+
+    # When the real render task is delivered.
+    with pytest.raises(FilesystemLowSpace) as raised:
+        _invoke_task(run_id=run_id)
+
+    # Then it is refused for the artifact filesystem before a manifest, FFmpeg run, artifact row or file exists.
+    assert raised.value.filesystem == "artifact"
+    assert fake_ffmpeg.calls == []
+    assert fake_render_service.manifest_calls == []
+    assert fake_render_service.create_calls == []
+    assert list(artifacts.rglob("*")) == []
+    assert storage.calls == [(run_id, {"current_stage": "FAILED", "status": "failed"})]
+
+
+def test_render_video_runs_normally_when_the_artifact_filesystem_has_room(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, no_pacing_split: None,
+) -> None:
+    # Given the same render with the artifact filesystem above its floor.
+    run_id = 215
+    storage = _make_storage(run_id=run_id, stage="RENDER_GENERATING")
+    fake_render_service = FakeRenderService(manifest=_manifest(run_id=run_id))
+    fake_ffmpeg = FakeFFmpegService()
+    _patch_services(
+        monkeypatch, storage=storage, fake_render_service=fake_render_service,
+        fake_vas=FakeVisualAssetService(), fake_audio=FakeAudioService(),
+        fake_subtitle=FakeSubtitleService(), fake_ffmpeg=fake_ffmpeg,
+    )
+    _volumes(monkeypatch, tmp_path, artifact_free_mib=9000)
+
+    # When the real render task is delivered.
+    result = _invoke_task(run_id=run_id)
+
+    # Then the admission check is invisible: the render ran and the run advanced.
+    assert result["status"] == "success"
+    assert len(fake_ffmpeg.calls) == 1
+    assert storage.calls == [(run_id, {"current_stage": "FINAL_REVIEW", "status": "paused"})]

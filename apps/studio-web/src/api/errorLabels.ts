@@ -16,6 +16,8 @@ export const ERROR_CATEGORY_LABELS: Record<string, string> = {
   UNAVAILABLE: "Temporarily unavailable",
   DATA_INTEGRITY: "Data error",
   INTERNAL: "Something went wrong",
+  ARTIFACT_STORAGE_LOW: "Output storage is low",
+  SCRATCH_STORAGE_LOW: "Temporary storage is low",
 };
 
 export function categoryLabel(category: string | undefined): string {

@@ -15,7 +15,7 @@ Thank you for your interest in contributing! This guide will help you get starte
 ### Prerequisites
 
 - Python 3.12+
-- Node.js 20+
+- Node.js 24 LTS (the exact release is pinned in `.node-version`; Node 20 is end of life)
 - Docker and Docker Compose v2+
 
 ### Backend

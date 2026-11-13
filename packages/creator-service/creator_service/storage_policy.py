@@ -7,12 +7,19 @@ from dataclasses import dataclass
 
 from creator_domain.exceptions import ServiceError, ServiceUnavailableError
 
+ARTIFACT_FILESYSTEM = "artifact"
+SCRATCH_FILESYSTEM = "scratch"
+
+_MIB = 1024 * 1024
+
 
 @dataclass(frozen=True, slots=True)
 class StoragePolicy:
     max_stored_bytes: int = 0
     max_asset_count: int = 0
     max_reserved_bytes: int = 0
+    # Free bytes the temp filesystem must keep: upload staging checks it per upload. The same
+    # setting is the scratch floor of render/image/audio jobs (see job_capacity.JobCapacityPolicy).
     temp_disk_low_watermark_bytes: int = 0
 
     @classmethod
@@ -76,6 +83,38 @@ class StorageLowWatermark(ServiceUnavailableError):
     @property
     def detail(self) -> str:
         return str(self)
+
+
+@dataclass(frozen=True, slots=True)
+class FilesystemLowSpace(StorageLowWatermark):
+    """A job was refused because a filesystem it writes to is below its free-space watermark.
+
+    ``filesystem`` is ``ARTIFACT_FILESYSTEM`` (the filesystem that holds ARTIFACT_ROOT) or
+    ``SCRATCH_FILESYSTEM`` (the temp filesystem). ``incoming_bytes`` is always 0: admission
+    reserves nothing, it only refuses to start new work below the floor. The text names the
+    storage and the shortfall and deliberately carries no path.
+    """
+
+    filesystem: str
+    required_bytes: int
+
+    def __str__(self) -> str:
+        label = "Artifact storage" if self.filesystem == ARTIFACT_FILESYSTEM else "Scratch storage"
+        shortfall = max(self.required_bytes - self.free_bytes, 0)
+        return (
+            f"{label} has {self.free_bytes // _MIB} MiB free but at least "
+            f"{-(-self.required_bytes // _MIB)} MiB is required before a new job can start "
+            f"({-(-shortfall // _MIB)} MiB short)"
+        )
+
+    def __reduce__(self) -> tuple[type[FilesystemLowSpace], tuple[int, int, str, int]]:
+        # The generated __init__ takes keyword-friendly fields while BaseException.args stays
+        # empty, so the default pickle path (cls(*args)) cannot rebuild it; Celery pickles
+        # task exceptions between pool processes.
+        return (
+            type(self),
+            (self.incoming_bytes, self.free_bytes, self.filesystem, self.required_bytes),
+        )
 
 
 def ensure_budget(
