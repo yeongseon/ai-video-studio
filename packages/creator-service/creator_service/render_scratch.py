@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 import hashlib
+import errno
 import os
 import shutil
 import socket
+import stat
 import tempfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
+from typing import Final
+
+_CONFIGURATION_ERRNOS: Final = frozenset({
+    errno.ENAMETOOLONG, errno.EACCES, errno.EPERM, errno.ENOTDIR, errno.ELOOP, errno.EINVAL,
+})
 
 
 class RenderScratchConfigurationError(ValueError):
@@ -22,38 +29,103 @@ def configured_scratch_root() -> Path | None:
     raw = os.environ.get("RENDER_SCRATCH_DIR")
     if not raw:
         return None
-    root = Path(raw)
-    if not root.is_absolute() or ".." in root.parts:
+    if any(character in raw for character in ("\n", "\r", "\x00")):
+        raise RenderScratchConfigurationError("must not contain newline or NUL characters")
+    if not Path(raw).is_absolute() or ".." in Path(raw).parts:
         raise RenderScratchConfigurationError("must be absolute and contain no '..' components")
-    artifact = Path(os.getenv("ARTIFACT_ROOT", "data/artifacts")).resolve()
-    if root.is_relative_to(artifact):
-        raise RenderScratchConfigurationError("must not be inside the artifact tree")
-    for candidate in (*reversed(root.parents), root):
-        if candidate.is_symlink():
-            raise RenderScratchConfigurationError("must not traverse a symlink")
-        if candidate.exists() and not candidate.is_dir():
-            raise RenderScratchConfigurationError("must name a directory, not a file")
-    existing = root
-    while not existing.exists():
-        existing = existing.parent
-    if not os.access(existing, os.W_OK | os.X_OK):
-        raise RenderScratchConfigurationError("is not writable/searchable by the worker")
+    # POSIX normpath preserves exactly two leading slashes; Linux aliases them to '/'.
+    root = Path(os.path.normpath("/" + raw.lstrip("/")))
+    try:
+        existing = _inspect_root(root)
+        name_limit = os.pathconf(existing, "PC_NAME_MAX")
+        if name_limit > 0 and any(len(os.fsencode(part)) > name_limit for part in root.parts):
+            raise RenderScratchConfigurationError("contains a component exceeding the filesystem name limit")
+        _reject_overlap(root, Path(os.getenv("ARTIFACT_ROOT", "data/artifacts")))
+        if not os.access(existing, os.W_OK | os.X_OK):
+            raise RenderScratchConfigurationError("is not writable/searchable by the worker")
+    except OSError as exc:
+        _classify_configuration_error(exc)
+        raise
     return root
+
+
+def _classify_configuration_error(error: OSError) -> None:
+    if error.errno in _CONFIGURATION_ERRNOS:
+        raise RenderScratchConfigurationError(f"cannot inspect/create private scratch ({error.strerror})") from error
+
+
+def _inspect_root(root: Path, *, create: bool = False) -> Path:
+    existing = Path(root.anchor)
+    for candidate in (*reversed(root.parents), root):
+        try:
+            info = os.lstat(candidate)
+        except FileNotFoundError:
+            if not create:
+                continue
+            try:
+                candidate.mkdir(mode=0o700)
+            except FileExistsError:
+                # Another worker may create it; adoption still requires all trust checks.
+                info = os.lstat(candidate)
+            else:
+                info = os.lstat(candidate)
+        if stat.S_ISLNK(info.st_mode):
+            raise RenderScratchConfigurationError("must not traverse a symlink")
+        if not stat.S_ISDIR(info.st_mode):
+            raise RenderScratchConfigurationError("must name a directory, not a file")
+        if candidate == root:
+            if info.st_uid != os.geteuid():
+                raise RenderScratchConfigurationError("root must be owned by the worker uid")
+            if info.st_mode & 0o022:
+                raise RenderScratchConfigurationError("root must not be group/world writable")
+        elif info.st_mode & 0o022 and not (
+            info.st_mode & stat.S_ISVTX and info.st_uid in (0, os.geteuid())
+        ):
+            raise RenderScratchConfigurationError("ancestor write access requires a sticky root/worker-owned directory")
+        existing = candidate
+    return existing
+
+
+def _directory_lineage(path: Path) -> list[tuple[tuple[int, int], tuple[str, ...]]]:
+    lineage: list[tuple[tuple[int, int], tuple[str, ...]]] = []
+    for candidate in (path, *path.parents):
+        try:
+            info = candidate.stat()
+        except FileNotFoundError:
+            continue
+        lineage.append(((info.st_dev, info.st_ino), path.relative_to(candidate).parts))
+    return lineage
+
+
+def _reject_overlap(root: Path, retained: Path) -> None:
+    # Shared inode identities also expose bind aliases; suffixes cover missing descendants.
+    for root_id, root_tail in _directory_lineage(root):
+        for retained_id, retained_tail in _directory_lineage(retained.resolve()):
+            if root_id == retained_id and (
+                root_tail[:len(retained_tail)] == retained_tail
+                or retained_tail[:len(root_tail)] == root_tail
+            ):
+                raise RenderScratchConfigurationError("must not overlap the artifact tree or published output directory")
 
 
 def create_render_scratch(output: Path, prefix: str) -> Path:
     """Allocate one run/output-scoped directory (0700), preserving unset legacy names."""
     root = configured_scratch_root()
-    if root is not None and root.is_relative_to(output.parent.resolve()):
-        raise RenderScratchConfigurationError("must not be inside the published output directory")
     parent = root if root is not None else output.parent
     try:
-        parent.mkdir(parents=True, exist_ok=True)
         if root is not None:
+            _reject_overlap(root, output.parent)
+            _inspect_root(root, create=True)
+            _reject_overlap(root, Path(os.getenv("ARTIFACT_ROOT", "data/artifacts")))
             # Hashes keep host/run identity safe as a filename; pid/random fence each owner.
             host = hashlib.sha256(socket.gethostname().encode()).hexdigest()[:12]
             run = hashlib.sha256(str(output.parent.resolve()).encode()).hexdigest()[:12]
-            return Path(tempfile.mkdtemp(prefix=f"{prefix}{host}_{run}_{os.getpid()}_", dir=parent))
+            directory = Path(tempfile.mkdtemp(prefix=f"{prefix}{host}_{run}_{os.getpid()}_", dir=parent))
+            info = os.lstat(directory)
+            if not stat.S_ISDIR(info.st_mode) or info.st_uid != os.geteuid() or stat.S_IMODE(info.st_mode) != 0o700:
+                raise RenderScratchConfigurationError("allocated directory must be a real worker-owned 0700 directory")
+            return directory
+        parent.mkdir(parents=True, exist_ok=True)
         if prefix == "timeline-":
             return Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
         directory = parent / f"{prefix}{os.getpid()}_{os.urandom(4).hex()}"
@@ -61,7 +133,7 @@ def create_render_scratch(output: Path, prefix: str) -> Path:
         return directory
     except OSError as exc:
         if root is not None:
-            raise RenderScratchConfigurationError(f"cannot create private scratch ({exc.strerror})") from exc
+            _classify_configuration_error(exc)
         raise
 
 

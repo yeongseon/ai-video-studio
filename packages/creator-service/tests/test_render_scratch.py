@@ -169,7 +169,7 @@ def test_scratch_floor_measures_configured_filesystem_without_creating_root(
 ) -> None:
     # Given a not-yet-created configured root below an existing low-space volume.
     scratch = tmp_path / "volume" / "new" / "scratch"
-    scratch.parents[1].mkdir()
+    scratch.parents[1].mkdir(mode=0o700)
     monkeypatch.setenv("RENDER_SCRATCH_DIR", str(scratch))
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path / "artifacts"))
     disk = FakeDisk({scratch.parents[1]: 1})
