@@ -14,6 +14,7 @@ from creator_service.cost_config import COST_RENDER_VIDEO
 from creator_service.ffmpeg_service import FFmpegService
 from creator_service.media_integrity import MediaIntegrityError
 from creator_service.render_segments import render_input_from_plan
+from creator_service.render_scratch import configured_scratch_root
 from creator_service.render_service import render_service as _render_service
 from creator_service.script_service import script_service as _script_service
 from creator_service.subtitle_service import subtitle_service as _subtitle_service
@@ -39,6 +40,7 @@ _ARTIFACT_ROOT = os.getenv("ARTIFACT_ROOT", "data/artifacts")
 
 async def execute_render(ctx: TaskContext, render_profile: str = "shorts_default") -> TaskResult:
     """Shared task body for integrated tests; stage transitions belong to run_task."""
+    configured_scratch_root()
     request = LegacyRequest(ctx.run_id, render_profile, _ARTIFACT_ROOT)
     output = request.output("output.mp4")
     audio: Path | None = None
@@ -126,6 +128,7 @@ def render_video(self: Task, run_id: int, render_profile: str = "shorts_default"
         task_name="render_video", allowed_stages=frozenset({RunStage.RENDER_GENERATING}),
         safe_stages=frozenset({RunStage.RENDER_GENERATING.value}), success_stage=RunStage.FINAL_REVIEW.value,
         requires_free_space=True,
+        uses_render_scratch=True,
     )
 
     async def execute(ctx: TaskContext) -> TaskResult:

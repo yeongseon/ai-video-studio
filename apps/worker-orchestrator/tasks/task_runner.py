@@ -57,6 +57,7 @@ from creator_provider.gpu_lock import (
 from creator_provider.versioned_assets import clear_loaded_asset_versions, get_loaded_asset_versions
 from creator_service.actionable_errors import build_run_failure_summary
 from creator_service.job_capacity import ensure_job_capacity
+from creator_service.render_scratch import RenderScratchConfigurationError, configured_scratch_root
 from creator_service.run_service import run_service as _run_service
 from creator_service.task_tracking_service import task_tracking_service as _task_tracking_service
 from creator_service.usage_service import resolve_workspace_id_from_run
@@ -97,6 +98,7 @@ class TaskRunnerConfig:
     # Media-writing tasks (video, image, audio) are refused before their first write when the
     # artifact or scratch filesystem is below its free-space watermark.
     requires_free_space: bool = False
+    uses_render_scratch: bool = False
 
 
 @dataclass
@@ -282,6 +284,14 @@ async def _run_task_inner(
     # quota re-admission and provider work so nothing is billed and nothing is written.
     if config.requires_free_space:
         ensure_job_capacity(config.task_name, run_id=run_id)
+        try:
+            scratch_root = configured_scratch_root()
+        except RenderScratchConfigurationError:
+            if config.uses_render_scratch:
+                raise
+            scratch_root = None
+        if scratch_root is not None:
+            ensure_job_capacity(config.task_name, run_id=run_id, scratch_root=scratch_root)
 
     # 4. Execute task-specific logic
     from creator_service.usage_service import usage_service

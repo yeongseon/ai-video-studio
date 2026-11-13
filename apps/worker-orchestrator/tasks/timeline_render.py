@@ -3,13 +3,13 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
-from tempfile import TemporaryDirectory
 from typing import Literal, assert_never
 
 from creator_domain.models import EncodingProfile, MediaAsset, OutputSpec, RenderPlan, RenderSegmentKind
 from creator_service.ffmpeg_service import FFmpegService, RenderInput, _run_ffmpeg
 from creator_service.render_profile import RenderProfile
 from creator_service.render_segments import render_video_segment
+from creator_service.render_scratch import render_scratch
 from creator_service.timeline_compiler import AssetResolver, compile_timeline_to_render_plan
 from pydantic import BaseModel, ConfigDict, Field, Json, ValidationError
 from tasks.render_materializer import RenderSourceError, materialize_plan
@@ -133,8 +133,8 @@ async def render_saved_timeline(
             source_duration = segment.trim_end_seconds - (segment.trim_start_seconds or 0)
             if abs(source_duration - segment.duration_seconds) > 1e-6:
                 raise RenderSourceError("Timeline trim duration must match placement duration")
-    output.parent.mkdir(parents=True, exist_ok=True)
-    with TemporaryDirectory(prefix="timeline-", dir=output.parent) as directory:
+    with render_scratch(output, "timeline-") as directory:
+        output.parent.mkdir(parents=True, exist_ok=True)
         local_plan = materialize_plan(
             plan, resolver.assets, Path(directory), backend=get_storage_backend(),
             storage_provider=os.getenv("STORAGE_BACKEND", "local"),

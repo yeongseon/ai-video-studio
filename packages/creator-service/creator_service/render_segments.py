@@ -8,8 +8,10 @@ can move toward segments without changing ``FFmpegService.render`` internals.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
+from contextlib import suppress
 from pathlib import Path
 
 from creator_domain.models import RenderPlan, RenderSegment, RenderSegmentKind
@@ -18,6 +20,9 @@ from creator_service.ffmpeg_service import RenderInput, _run_ffmpeg
 from creator_service.render_profile import AudioCodec, Codec, RenderProfile
 from creator_service.media_integrity import MediaExpectation, validate_media
 from creator_service.render_frame_budget import allocate_frames
+from creator_service.render_scratch import cleanup_render_scratch, create_render_scratch
+
+logger = logging.getLogger(__name__)
 
 _PROBE_TIMEOUT_SECONDS = 30
 _RENDER_TIMEOUT_SECONDS = 180
@@ -310,12 +315,10 @@ def render_plan(plan: RenderPlan, output_path: Path) -> Path:
         raise ValueError("plan has no segments to render")
 
     profile = render_profile_from_plan(plan)
-    output_path.parent.mkdir(parents=True, exist_ok=True)
-
-    tmp_dir = output_path.parent / f".render_plan_{os.getpid()}_{os.urandom(4).hex()}"
-    tmp_dir.mkdir(parents=True, exist_ok=True)
+    tmp_dir = create_render_scratch(output_path, ".render_plan_")
     tmp_output = output_path.with_suffix(f".tmp.{os.getpid()}.{os.urandom(4).hex()}.mp4")
     try:
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         segment_paths: list[Path] = []
         budgets = allocate_frames([segment.duration_seconds for segment in plan.segments], profile.fps)
         for index, segment in enumerate(plan.segments):
@@ -362,7 +365,8 @@ def render_plan(plan: RenderPlan, output_path: Path) -> Path:
         tmp_output.rename(output_path)
         return output_path
     finally:
-        tmp_output.unlink(missing_ok=True)
-        for leftover in tmp_dir.glob("*"):
-            leftover.unlink(missing_ok=True)
-        tmp_dir.rmdir()
+        try:
+            with suppress(FileNotFoundError, NotADirectoryError):
+                tmp_output.unlink()
+        finally:
+            cleanup_render_scratch(tmp_dir, logger)

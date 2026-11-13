@@ -10,6 +10,8 @@ import logging
 import subprocess
 from pathlib import Path
 
+from .render_scratch import create_sfx_scratch
+
 logger = logging.getLogger(__name__)
 
 # FFmpeg lavfi SFX presets (short audio stingers for transitions)
@@ -231,15 +233,14 @@ class BgmService:
             return base_audio_path
 
         out = Path(output_path)
-        out.parent.mkdir(parents=True, exist_ok=True)
         sfx_volume = max(0.0, min(1.0, float(sfx_volume)))
 
         # Generate SFX clips to temp files
-        import tempfile
-        tmp_dir = Path(tempfile.mkdtemp(prefix="sfx_"))
+        tmp_dir = create_sfx_scratch(out)
         sfx_paths: list[tuple[float, str]] = []
 
         try:
+            out.parent.mkdir(parents=True, exist_ok=True)
             for i, (ts, sfx_type) in enumerate(sfx_timestamps):
                 sfx_path = str(tmp_dir / f"sfx_{i}.mp3")
                 try:

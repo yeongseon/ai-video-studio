@@ -377,6 +377,7 @@ def test_every_task_decides_whether_it_needs_free_space() -> None:
     # Given every module under tasks/ that starts a task through run_task.
     tasks_dir = Path(__file__).resolve().parents[1] / "tasks"
     declared: list[tuple[str, bool]] = []
+    scratch_users: set[str] = set()
     for module in sorted(tasks_dir.rglob("*.py")):
         tree = ast.parse(module.read_text(encoding="utf-8"))
         invocations = _calls_named(tree, "run_task")
@@ -392,6 +393,9 @@ def test_every_task_decides_whether_it_needs_free_space() -> None:
             assert isinstance(name, ast.Constant) and isinstance(name.value, str), module.name
             flag = keywords.get("requires_free_space")
             declared.append((name.value, isinstance(flag, ast.Constant) and flag.value is True))
+            scratch_flag = keywords.get("uses_render_scratch")
+            if isinstance(scratch_flag, ast.Constant) and scratch_flag.value is True:
+                scratch_users.add(name.value)
     # When the two reviewed lists are compared with what the code declares.
     names = [name for name, _ in declared]
     expected = {**{task: True for task in GUARDED_TASKS}, **{task: False for task in EXEMPT_TASKS}}
@@ -399,3 +403,4 @@ def test_every_task_decides_whether_it_needs_free_space() -> None:
     # whether it writes media.
     assert len(names) == len(set(names))
     assert dict(declared) == expected
+    assert scratch_users == {"render_video", "generate_audio"}
