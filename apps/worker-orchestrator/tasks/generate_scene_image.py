@@ -256,6 +256,9 @@ def generate_scene_image(
                     await batch.discard_rejected_upload(target_path, uploaded)
                     raise Ignore() from None
 
+                if asset.storage_key == uploaded.key:
+                    batch.upload_cleanup_intents.pop(uploaded.key, None)
+
                 scene_result.update(
                     {
                         "status": "success",
@@ -287,6 +290,7 @@ def generate_scene_image(
                 except Ignore:
                     # An idempotent replay returns the winning delivery's asset, not ours.
                     if asset.asset_path == target_path:
+                        await batch.record_rejected_upload(target_path, uploaded)
                         await _visual_asset_service.storage.delete_asset(asset.id)
                     await batch.discard_rejected_upload(target_path, uploaded)
                     batch.results.remove(scene_result)

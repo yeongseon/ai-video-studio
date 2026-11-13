@@ -151,6 +151,7 @@ class FakeVisualAsset:
     scene_id: str = "scene-sec-0"
     version: int = 1
     asset_path: str = "/tmp/test.png"
+    storage_key: str | None = None
     prompt_snapshot: str | None = None
     model_used: str | None = None
     provider_type: str | None = None
@@ -203,6 +204,7 @@ class FakeVisualAssetService:
             scene_id=scene_id,
             version=version,
             asset_path=asset_path,
+            storage_key=storage_key,
             prompt_snapshot=prompt_snapshot,
             model_used=model_used,
             provider_type=provider_type,

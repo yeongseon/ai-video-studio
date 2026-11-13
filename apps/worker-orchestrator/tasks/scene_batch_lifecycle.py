@@ -113,13 +113,13 @@ class SceneBatch:
         self.local_outputs.discard(path)
         return uploaded
 
-    async def discard_rejected_upload(self, target_path: str, uploaded: StorageResult) -> None:
+    async def record_rejected_upload(self, target_path: str, uploaded: StorageResult) -> int | None:
         path = Path(target_path)
         expected_key = f"{self.ctx.run_id}/scenes/{path.name}"
         if uploaded.key == expected_key:
             record_id = self.upload_cleanup_intents.get(expected_key)
             if record_id is None:
-                record_id = await rejected_scene_cleanup_service.record_intent(
+                record_id = await rejected_scene_cleanup_service.record(
                     run_id=self.ctx.run_id,
                     workspace_id=self.ctx.workspace_id,
                     project_id=self.ctx.project_id,
@@ -127,7 +127,17 @@ class SceneBatch:
                     local_path=str(path),
                     storage_provider=uploaded.storage_provider,
                     content_type=uploaded.content_type,
+                    size_bytes=uploaded.size_bytes,
+                    checksum=uploaded.checksum,
                 )
+                self.upload_cleanup_intents[expected_key] = record_id
+            return record_id
+        return None
+
+    async def discard_rejected_upload(self, target_path: str, uploaded: StorageResult) -> None:
+        path = Path(target_path)
+        record_id = await self.record_rejected_upload(target_path, uploaded)
+        if record_id is not None:
             try:
                 await rejected_scene_cleanup_service.cleanup(record_id, uploaded.key, str(path))
             except SoftTimeLimitExceeded:
@@ -137,7 +147,7 @@ class SceneBatch:
                     record_id, uploaded.key,
                 )
             else:
-                self.upload_cleanup_intents.pop(expected_key, None)
+                self.upload_cleanup_intents.pop(uploaded.key, None)
                 self.local_outputs.discard(path)
 
     async def finish(self, total: int, metadata: dict[str, object]) -> TaskResult:
