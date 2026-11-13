@@ -394,9 +394,12 @@ python3 -m ruff check apps packages
 cd apps/api && uvicorn shorts_api.main:app --reload
 ```
 
-> **Reproducibility:** The repository includes a `constraints.txt` file that pins all
-> transitive Python dependencies. CI and Docker builds install against it. To regenerate
-> after updating dependencies, use `make lock` (runs `uv export --no-hashes -o constraints.txt`).
+> **Reproducibility:** `constraints.txt` pins the dependency closure of every
+> `pip install -c constraints.txt` in CI, the Dockerfiles and the Makefile, and nothing else. It is generated from
+> `constraints.in`: regenerate it with `make lock-constraints` after changing a requirements file
+> or a workspace package, and check it with `make lock-constraints-check` (CI does). `uv.lock`
+> is a different scope, the whole uv workspace with every provider extra, regenerated with
+> `make lock`. See the Python dependencies guide.
 
 ### Frontend
 
