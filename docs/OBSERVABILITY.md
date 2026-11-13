@@ -125,6 +125,8 @@ All services use JSON-formatted logging with trace correlation:
 ### Log Configuration
 
 Structured logging is configured in `creator_service/logging_config.py`:
+- Uvicorn's API server logs use the same redacting JSON formatter; its access
+  log retains the request path but omits the entire query string.
 - JSON format for production (`ENVIRONMENT=production`)
 - Human-readable format for development
 - Trace context automatically injected via `TraceContextFilter`

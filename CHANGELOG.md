@@ -16,6 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- Uvicorn's API server logs now use the shared redacting JSON formatter, including chained exceptions; access logs omit query strings (#1035).
 - PostgreSQL project deletion returned 503 because its CHECK rejected the existing `deleting` barrier. Migration 051 admits it; schema downgrade preserves pending rows as `archived` (quiesce writers first). Real-PostgreSQL deletion/retry/cascade and enum-drift guards run in required CI (#947).
 - API key revocation silently bypassed — `_AsyncpgSessionAdapter` discarded the `revoked_at IS NULL` filter. Adapter removed; the resolver now runs the asyncpg query directly (#583).
 - Local artifact downloads always returned 404 — the route read `file_path` (absolute) instead of `storage_key` (root-relative). Legacy rows now normalized via `os.path.relpath` (#584).
