@@ -45,6 +45,16 @@ _LOG_TOKEN_PREFIX = re.compile(
 _LOG_CREDENTIAL_PATTERNS: Final = (
     _LOG_CREDENTIAL_URI, _URL, _BEARER, _LOG_TOKEN_PREFIX, _LONG_HEX,
 )
+# Consume the entire path once, including preserved routes: never restart inside a
+# route at /workspaces or another suffix. Legacy artifact routes remain filesystem paths.
+_LOG_PATH = re.compile(r"(?:/[\w.\-]+){2,}/?|\bworkspaces/[\w./\-]+")
+_LOG_ROUTE_PREFIXES: Final = ("/api/creator/", "/api/admin/", "/release/")
+_LOG_ROUTE_PATHS: Final = frozenset({"/api/creator", "/api/admin", "/docs/oauth2-redirect"})
+
+
+def _redact_log_path(match: re.Match[str]) -> str:
+    path = match.group()
+    return path if path.startswith(_LOG_ROUTE_PREFIXES) or path in _LOG_ROUTE_PATHS else _REDACTED
 
 
 def redact_error_message(text: str) -> str:
@@ -89,8 +99,8 @@ def redact_log_text(text: str, trusted_lines: frozenset[str] = frozenset()) -> s
                 safe = line
                 for pattern in _LOG_CREDENTIAL_PATTERNS:
                     safe = pattern.sub(_REDACTED, safe)
-                for pattern in (_WINDOWS_PATH, _WORKSPACE_PATH, _ABS_POSIX_PATH):
-                    safe = pattern.sub(_REDACTED, safe)
+                safe = _WINDOWS_PATH.sub(_REDACTED, safe)
+                safe = _LOG_PATH.sub(_redact_log_path, safe)
                 safe = safe[:_MAX_STRING]
         line_size = len(safe.encode("utf-8", errors="replace")) + 1
         if size + line_size > _MAX_LOG_BYTES - 64:
