@@ -27,7 +27,8 @@ Edit `.env` and change `POSTGRES_PASSWORD` and `DATABASE_URL` credentials.
 
 Leave `ADMIN_API_KEY=` empty to keep the admin API disabled. Only if admin
 endpoints are needed, generate a unique key with `openssl rand -hex 32` and set
-it in `.env`; never reuse an example value. Studio never forwards an admin key:
+it in `.env`; never reuse an example value. The Studio nginx proxy (the Docker image)
+never forwards an admin key:
 use the loopback API directly (or an SSH tunnel to it) for administration.
 An older `.env` containing `ADMIN_API_KEY=local-admin-key-change-me` now fails at
 API startup in every environment with an actionable message. Unset it for local
@@ -103,14 +104,15 @@ The overlay uses [`ports: !override`](https://docs.docker.com/reference/compose-
 to replace, rather than append to, the base Studio binding. Older Compose must
 be upgraded; do not remove the tag to work around an error.
 
-After reviewing the trust and firewall limits below, replace the example with
-the server's actual LAN address:
-
 Before opting in, complete step 1: change the database credentials and remove any
 old example admin key. Leave admin disabled unless needed; otherwise generate a
-unique key with `openssl rand -hex 32`. Studio strips client `X-Admin-Key` on every
+unique key with `openssl rand -hex 32`. The Studio nginx proxy (the Docker image)
+strips client `X-Admin-Key` on every
 API proxy path, including `/health`, and never injects an admin key. A browser
 request with a forged `X-Confirm-Action: yes` cannot supply admin authentication.
+
+After reviewing the trust and firewall limits below, replace the example with
+the server's actual LAN address:
 
 ```bash
 STUDIO_WEB_BIND=192.168.1.10 make docker-local-up
