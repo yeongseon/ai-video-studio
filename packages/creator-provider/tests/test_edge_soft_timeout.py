@@ -77,10 +77,12 @@ async def test_edge_tts_saves_word_boundaries_next_to_audio(
 ) -> None:
     # Given Edge TTS generation for an artifact path.
     saved_paths: list[tuple[str, str | None]] = []
+    constructor_kwargs: list[dict[str, str]] = []
 
     class FakeCommunicate:
         def __init__(self, **kwargs: str) -> None:
             assert kwargs["text"] == "정확한 대본"
+            constructor_kwargs.append(kwargs)
 
         async def save(self, audio_path: str, metadata_path: str | None = None) -> None:
             saved_paths.append((audio_path, metadata_path))
@@ -126,3 +128,4 @@ async def test_edge_tts_saves_word_boundaries_next_to_audio(
         ],
     }
     assert result.metadata == {"word_timestamps_path": str(metadata_path)}
+    assert constructor_kwargs[0].get("boundary") == "WordBoundary"

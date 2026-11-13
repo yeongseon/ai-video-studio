@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import logging
 import tempfile
 from importlib import import_module
 from pathlib import Path
@@ -13,6 +14,8 @@ from creator_provider.base import AudioResult, TTSProvider
 from creator_provider.exceptions import ProviderError
 from creator_provider.validation import MAX_TTS_TEXT_CHARS, validate_prompt_length
 from creator_provider.word_timing_envelope import envelope, parse_sdk_rows, write_atomic
+
+logger = logging.getLogger(__name__)
 
 # Default Korean voices
 _DEFAULT_VOICES: dict[str, str] = {
@@ -62,6 +65,7 @@ class EdgeTTSProvider(TTSProvider):
                 output_path = Path(tmp.name)
 
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        metadata: dict[str, str] = {}
 
         try:
             # Support rate/pitch/volume parameters for quality control
@@ -69,19 +73,40 @@ class EdgeTTSProvider(TTSProvider):
             pitch = merged_params.get("pitch", "+0Hz")  # e.g. "+5Hz", "-2Hz"
             volume = merged_params.get("volume", "+0%")  # e.g. "+10%", "-20%"
             communicate = edge_tts.Communicate(
-                text=text, voice=voice_name, rate=rate, pitch=pitch, volume=volume
+                text=text, voice=voice_name, rate=rate, pitch=pitch, volume=volume,
+                boundary="WordBoundary",
             )
             word_timestamps_path = Path(f"{output_path}.words.jsonl")
-            with tempfile.NamedTemporaryFile(
-                dir=output_path.parent, suffix=".words.jsonl", delete=False
-            ) as metadata_file:
-                sdk_metadata_path = Path(metadata_file.name)
-            try:
-                await communicate.save(str(output_path), str(sdk_metadata_path))
-                words = parse_sdk_rows(sdk_metadata_path.read_text(encoding="utf-8"))
-                write_atomic(word_timestamps_path, envelope(output_path, text, words))
-            finally:
-                sdk_metadata_path.unlink(missing_ok=True)
+            sdk_metadata_path: Path | None = None
+            if output_path_str:
+                try:
+                    word_timestamps_path.unlink(missing_ok=True)
+                    with tempfile.NamedTemporaryFile(
+                        dir=output_path.parent, suffix=".words.jsonl", delete=False
+                    ) as metadata_file:
+                        sdk_metadata_path = Path(metadata_file.name)
+                except OSError:
+                    logger.warning(
+                        "Could not stage Edge TTS timing metadata for %s", output_path,
+                        exc_info=True,
+                    )
+            if sdk_metadata_path is not None:
+                try:
+                    await communicate.save(str(output_path), str(sdk_metadata_path))
+                    try:
+                        words = parse_sdk_rows(sdk_metadata_path.read_text(encoding="utf-8"))
+                        write_atomic(word_timestamps_path, envelope(output_path, text, words))
+                        metadata["word_timestamps_path"] = str(word_timestamps_path)
+                    except (ProviderError, OSError, KeyError, TypeError, ValueError):
+                        word_timestamps_path.unlink(missing_ok=True)
+                        logger.warning(
+                            "Skipping unusable Edge TTS timing metadata for %s", output_path,
+                            exc_info=True,
+                        )
+                finally:
+                    sdk_metadata_path.unlink(missing_ok=True)
+            else:
+                await communicate.save(str(output_path))
         except SoftTimeLimitExceeded:
             raise
         except ConnectionError as exc:
@@ -100,5 +125,5 @@ class EdgeTTSProvider(TTSProvider):
             audio_path=str(output_path),
             duration_seconds=duration,
             model_key=self.model_key,
-            metadata={"word_timestamps_path": str(word_timestamps_path)},
+            metadata=metadata,
         )

@@ -89,10 +89,11 @@ def test_edge_sdk_timeout_reaches_audio_task_without_fallback(
     # Given the real Edge adapter whose SDK save raises a soft deadline.
     case = audio_case
     calls: list[tuple[str, str | None]] = []
+    constructor_kwargs: list[dict[str, str]] = []
 
     class FakeCommunicate:
-        def __init__(self, **_kwargs: str) -> None:
-            pass
+        def __init__(self, **kwargs: str) -> None:
+            constructor_kwargs.append(kwargs)
 
         async def save(self, path: str, metadata_path: str | None = None) -> None:
             calls.append((path, metadata_path))
@@ -126,6 +127,7 @@ def test_edge_sdk_timeout_reaches_audio_task_without_fallback(
     assert calls[0][1] != f"{output_path}.words.jsonl"
     assert not Path(f"{output_path}.words.jsonl").exists()
     case.usage.assert_not_awaited()
+    assert constructor_kwargs[0].get("boundary") == "WordBoundary"
 
 
 @pytest.mark.parametrize("error", [
