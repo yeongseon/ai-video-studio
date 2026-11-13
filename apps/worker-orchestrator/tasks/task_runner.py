@@ -98,6 +98,7 @@ class TaskRunnerConfig:
     # Media-writing tasks (video, image, audio) are refused before their first write when the
     # artifact or scratch filesystem is below its free-space watermark.
     requires_free_space: bool = False
+    uses_render_scratch: bool = False
 
 
 @dataclass
@@ -286,7 +287,7 @@ async def _run_task_inner(
         try:
             scratch_root = configured_scratch_root()
         except RenderScratchConfigurationError:
-            if config.task_name in {"render_video", "generate_audio"}:
+            if config.uses_render_scratch:
                 raise
             scratch_root = None
         if scratch_root is not None:

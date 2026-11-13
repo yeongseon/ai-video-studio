@@ -128,6 +128,7 @@ def render_video(self: Task, run_id: int, render_profile: str = "shorts_default"
         task_name="render_video", allowed_stages=frozenset({RunStage.RENDER_GENERATING}),
         safe_stages=frozenset({RunStage.RENDER_GENERATING.value}), success_stage=RunStage.FINAL_REVIEW.value,
         requires_free_space=True,
+        uses_render_scratch=True,
     )
 
     async def execute(ctx: TaskContext) -> TaskResult:

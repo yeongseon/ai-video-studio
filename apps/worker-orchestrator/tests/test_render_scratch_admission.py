@@ -3,6 +3,7 @@ from dataclasses import replace
 
 import pytest
 from creator_service.storage_policy import FilesystemLowSpace
+from creator_service.render_scratch import RenderScratchConfigurationError
 from tasks import task_runner
 from worker_loop import run_in_worker_loop
 
@@ -70,3 +71,18 @@ def test_non_scratch_jobs_ignore_invalid_render_setting(
     # When admitted, then healthy image/paragraph jobs can still execute.
     task_runner.run_task(runner_case.delivery(), runner_case.run_id, config, _executing(calls))
     assert calls == ["validation-task"]
+
+
+@pytest.mark.parametrize("task_name", ["render_video", "generate_audio"])
+def test_scratch_jobs_reject_invalid_setting_before_execution(
+    runner_case: RunnerCase, volumes: Volumes, watermarks: None,
+    monkeypatch: pytest.MonkeyPatch, task_name: str,
+) -> None:
+    # Given an invalid setting for a scratch-using media job.
+    monkeypatch.setenv("RENDER_SCRATCH_DIR", "relative")
+    config = replace(_guarded(runner_case.config), task_name=task_name, uses_render_scratch=True)
+    calls: list[str] = []
+    # When admission runs, then execution (including paid provider work) never starts.
+    with pytest.raises(RenderScratchConfigurationError):
+        task_runner.run_task(runner_case.delivery(), runner_case.run_id, config, _executing(calls))
+    assert calls == []
