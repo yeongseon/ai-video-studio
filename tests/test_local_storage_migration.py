@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import json
 import os
 from pathlib import Path
 import re
@@ -9,6 +10,14 @@ import subprocess
 from typing import Final
 
 from creator_service.object_storage import LocalStorageBackend
+from local_storage_migration_cases import (
+    test_env_receipt_when_aliasing_dotenv_is_refused as test_env_receipt_when_aliasing_dotenv_is_refused,
+    test_inspect_when_scaled_prints_every_artifact_writer as test_inspect_when_scaled_prints_every_artifact_writer,
+    test_plain_compose_when_migrated_uses_persistent_storage as test_plain_compose_when_migrated_uses_persistent_storage,
+    test_switch_when_destination_group_is_wrong_refuses as test_switch_when_destination_group_is_wrong_refuses,
+    test_switch_when_dotenv_already_defines_storage_refuses as test_switch_when_dotenv_already_defines_storage_refuses,
+    test_switch_when_updating_dotenv_preserves_bytes_and_permissions as test_switch_when_updating_dotenv_preserves_bytes_and_permissions,
+)
 import pytest
 
 ROOT: Final = Path(__file__).resolve().parents[1]
@@ -62,6 +71,7 @@ def migration(tmp_path: Path) -> Migration:
     (source / "empty-directory").mkdir()
     destination = tmp_path / "hdd #1"
     destination.mkdir()
+    (tmp_path / ".env").write_text(f"API_KEY={SECRET}\n", encoding="utf-8")
     return Migration(tmp_path, source, destination, tmp_path / "source.sha256", tmp_path / "storage.env")
 
 
@@ -74,10 +84,11 @@ def project(migration: Migration) -> Path:
         pytest.skip(message)
     directory = migration.root / "compose-project"
     directory.mkdir()
-    shutil.copyfile(ROOT / "docker-compose.yml", directory / "docker-compose.yml")
+    for name in ("docker-compose.yml", "docker-compose.local-server.yml", "docker-compose.scaled-workers.yml"):
+        shutil.copyfile(ROOT / name, directory / name)
     (directory / ".env").write_text(
         f"POSTGRES_DB=storage_test\nPOSTGRES_USER=storage_test\nPOSTGRES_PASSWORD={SECRET}\n"
-        f"API_KEY={SECRET}\nARTIFACTS_HOST_DIR=/legacy/from-dotenv\n", encoding="utf-8",
+        f"API_KEY={SECRET}\n", encoding="utf-8",
     )
     return directory
 
@@ -174,7 +185,7 @@ def test_rollback_when_switching_storage_preserves_storage_keys(migration: Migra
     assert copied.returncode == 0, copied.stderr
     switched = migration.run("Switch")
     assert switched.returncode == 0, switched.stderr
-    assert migration.env_file.read_text() == f"ARTIFACTS_HOST_DIR='{migration.destination}'\n"
+    assert json.loads(migration.env_file.read_text())["addition"] == f"ARTIFACTS_HOST_DIR='{migration.destination}'\n"
     storage_key = "run-7/final video.mp4"
     original = LocalStorageBackend(str(migration.source))
     selected = LocalStorageBackend(str(migration.destination))
@@ -186,7 +197,7 @@ def test_rollback_when_switching_storage_preserves_storage_keys(migration: Migra
 
     # Then the original remains usable under the same storage key without reverse-copying.
     assert result.returncode == 0, result.stderr
-    assert migration.env_file.read_text() == f"ARTIFACTS_HOST_DIR='{migration.source}'\n"
+    assert (migration.root / ".env").read_text() == f"API_KEY={SECRET}\n"
     assert original.download_bytes(storage_key) == b"published\x00fixture\xff"
     assert (migration.destination / storage_key).read_bytes() == b"published\x00fixture\xff"
 
@@ -194,29 +205,48 @@ def test_rollback_when_switching_storage_preserves_storage_keys(migration: Migra
 def test_inspect_when_switching_and_rolling_back_shows_the_literal_paths_and_no_secrets(
     migration: Migration, project: Path,
 ) -> None:
-    # Given a verified copy, and a .env that sets another value and holds real-looking secrets,
+    # Given a verified copy, and a .env holding real-looking secrets,
     # with paths containing a space, a variable-like name and a comment marker.
     assert migration.run("Copy").returncode == 0
-    assert migration.run("Switch").returncode == 0
+    assert migration.run("Switch", cwd=project).returncode == 0
 
-    # When inspecting with the override listed after .env, as the guide prescribes.
+    # When inspecting the persisted project configuration.
     switched = _inspect(migration, project)
 
-    # Then Compose reads the destination literally, the later file wins, and no secret is printed.
+    # Then Compose reads the destination literally and no secret is printed.
     assert switched.stdout.splitlines() == [
         f"api ['{migration.destination}'] 1024 MiB", f"worker ['{migration.destination}'] 4096 MiB",
     ]
     assert SECRET not in switched.stdout + switched.stderr
 
     # When rolling back and inspecting again.
-    assert migration.run("Rollback").returncode == 0
+    assert migration.run("Rollback", cwd=project).returncode == 0
     rolled_back = _inspect(migration, project)
 
-    # Then the original source, with its own `$`, is read literally too.
+    # Then the default project source is restored without leaking secrets.
     assert rolled_back.stdout.splitlines() == [
-        f"api ['{migration.source}'] 1024 MiB", f"worker ['{migration.source}'] 4096 MiB",
+        f"api ['{project / 'data/artifacts'}'] 1024 MiB",
+        f"worker ['{project / 'data/artifacts'}'] 4096 MiB",
     ]
     assert SECRET not in rolled_back.stdout + rolled_back.stderr
+
+
+def test_variable_defaults_when_sourced_keep_private_metadata_outside_checkout(migration: Migration) -> None:
+    # Given the variable setup from the first Bash block, without host-specific probes.
+    text = GUIDE.read_text(encoding="utf-8")
+    block = text.split("```bash\n", 1)[1].split("```", 1)[0].split("df -h", 1)[0]
+    # When sourcing it into an operator shell with a private temporary directory.
+    result = subprocess.run(
+        ["bash", "-c", block + '\nprintf "%s\\n%s\\n" "$MANIFEST" "$ENV_FILE"'],
+        cwd=migration.root, env={"PATH": os.environ["PATH"], "TMPDIR": str(migration.destination)},
+        capture_output=True, text=True, check=False, timeout=30,
+    )
+    # Then neither default can be accidentally staged from the checkout.
+    assert result.returncode == 0, result.stderr
+    paths = [Path(line) for line in result.stdout.splitlines()]
+    assert len(paths) == 2
+    assert all(path.is_relative_to(migration.destination) for path in paths)
+    assert paths[0] != paths[1]
 
 
 def test_copy_when_destination_is_a_symlink_to_existing_media_changes_nothing(migration: Migration) -> None:

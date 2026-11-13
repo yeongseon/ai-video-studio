@@ -22,8 +22,9 @@ copied blindly from this example. Start in the repository root, using Bash:
 ```bash
 SRC="$(pwd -P)/data/artifacts"
 DEST="/data/ai-video-studio/artifacts"
-MANIFEST="$(pwd -P)/artifacts-before-migration.sha256"
-ENV_FILE="$(pwd -P)/.env.storage"
+STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/sfs-storage.XXXXXX")"
+MANIFEST="$STATE_DIR/artifacts-before-migration.sha256"
+ENV_FILE="$STATE_DIR/storage-receipt.json"
 export SRC DEST MANIFEST ENV_FILE
 df -h "$SRC" /data
 findmnt --target /data --output TARGET,SOURCE,FSTYPE,OPTIONS
@@ -52,8 +53,10 @@ Have the host administrator provision only the new dedicated tree, for example
 Do not recursively change the old tree or use world-writable permissions.
 For rootless Docker/userns-remap, first determine the mapped host IDs with the
 administrator; literal host `1000:1000` is not sufficient in that topology.
-After copying, the administrator may assign `chown -R 1000:1000 "$DEST"` to the
-new dedicated tree only, if needed. Recheck permissions before restarting writers.
+Copy as UID/GID `1000:1000`, or have the administrator run the mandatory ownership
+correction in Copy on the new dedicated tree only. Switch gates every entry's
+ownership. This procedure targets rootful Docker without userns-remap; do not use
+these literal-ID gates for other topologies without a separately reviewed procedure.
 
 Docker creates a **missing** bind-mount source as a root-owned directory, with no
 error, on whatever filesystem is there. If `/data` is not mounted when the containers
@@ -64,7 +67,8 @@ and never let Docker create it implicitly.
 `ARTIFACTS_HOST_DIR` changes only the host bind source. API and Worker still see
 `/app/data/artifacts`; keep `ARTIFACT_ROOT=./data/artifacts` (image working directory
 `/app`) or `/app/data/artifacts`, never the host HDD path. Keep `STORAGE_BACKEND=local`.
-Relative host paths are resolved against the base Compose file's directory.
+Host paths must be absolute or start with `./` (resolved against the base Compose
+file's directory); a bare `media/hdd` is treated as a named volume, not a bind path.
 Default: `ARTIFACTS_HOST_DIR=./data/artifacts`. Dev, E2E and local-server overlays
 inherit this bind; the scaled workers use the same host variable. The E2E runner's
 separate `artifact_data` volume and Worker `dlq_data` volume are not relocated.
@@ -91,11 +95,17 @@ Use **copy, never move**: no `mv`, no rsync `--remove-source-files`, no `--delet
 Use a new empty destination, disjoint from the source; do not merge unrelated data.
 The commands below assume a nonempty regular-file media tree (empty directories
 are supported). Symlinks and special files require separate review, not following
-links outside the tree. Set the four absolute variables above; `MANIFEST` must be
-outside both trees. `SRC` and `DEST` must be absolute paths without single quotes or
+links outside the tree. **Paste or source the initial variable block into the
+operator's Bash shell** so its exports persist. Keep its private state directory
+outside the checkout and both media trees; it contains private artifact filenames.
+Do not delete it during acceptance (temporary-directory cleanup may remove it; use
+a private persistent directory outside the checkout for a long maintenance window).
+`ENV_FILE` is a storage-only rollback receipt, never the project `.env` or its alias.
+`SRC` and `DEST` must be absolute paths without single quotes or
 newlines, and not ending in a backslash, and the blocks refuse anything else. Spaces, `$` and `#` are fine: the override
-file is written with the path single-quoted, which Compose reads literally, so it never
-re-interpolates or truncates the path. Save each block as its own script and run it
+line is written with the path single-quoted, which Compose reads literally, so it never
+re-interpolates or truncates the path. Save each Copy/Verify/Switch/Inspect/Rollback
+block as its own script and run it from the project directory
 with `bash -euo pipefail script.sh`; never paste one into a login shell, where its
 `exit` and `set -e` would end your session. **Verify before switching.**
 Keep the manifest and the old directory untouched until the operator explicitly approves deletion.
@@ -121,12 +131,18 @@ test ! -e "$MANIFEST"
 (cd "$SRC" && find . -type f -exec sha256sum -- {} +) > "$MANIFEST"
 test -s "$MANIFEST"
 rsync --archive --no-owner --no-group -- "$SRC/" "$DEST/"
+if [ "$(id -u):$(id -g)" != "1000:1000" ]; then
+  chown -R 1000:1000 -- "$DEST"
+fi
+chmod 0750 -- "$DEST"
 ```
 
 The trailing slashes copy the contents, preserving relative paths, hidden files
 and empty directories. The copy must exit successfully; investigate any errors.
-Run as an account able to read every source file and write the new tree; ownership
-is intentionally not copied. Provision/check destination ownership as above.
+Run as `1000:1000` with access to every source entry, or as the administrator who
+can perform the mandatory `chown`. Archive mode copies source modes, including the
+root directory's mode; the final `chmod` restores the dedicated root to `0750`.
+Check traversal and write permissions throughout the tree before restarting writers.
 If the block fails, do not switch; investigate using a new reviewed empty
 destination and a new manifest path rather than deleting the old directory.
 
@@ -171,20 +187,63 @@ trap 'rm -rf "$inventory"' EXIT
 (cd "$SRC" && find . -type f -print0 | LC_ALL=C sort -z) > "$inventory/source"
 (cd "$DEST" && find . -type f -print0 | LC_ALL=C sort -z) > "$inventory/destination"
 cmp "$inventory/source" "$inventory/destination"
-printf "ARTIFACTS_HOST_DIR='%s'\n" "$DEST" > "$ENV_FILE"
+find "$DEST" \( ! -uid 1000 -o ! -gid 1000 \) -print > "$inventory/wrong-owner"
+test ! -s "$inventory/wrong-owner" || { echo "DEST must be owned by 1000:1000 throughout" >&2; exit 1; }
+python3 - <<'PY'
+import hashlib, json, os, pathlib, re, stat, tempfile
+
+dotenv = pathlib.Path.cwd() / ".env"
+receipt = pathlib.Path(os.environ["ENV_FILE"])
+if receipt.resolve() == dotenv.resolve():
+    raise SystemExit("ENV_FILE must not alias project .env")
+info = dotenv.lstat()
+if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
+    raise SystemExit(".env must be a regular, singly linked file owned by the operator")
+original = dotenv.read_bytes()
+if re.search(rb"(?m)^[ \t]*(?:export[ \t]+)?ARTIFACTS_HOST_DIR[ \t]*(?:=|:|\r?$)", original):
+    raise SystemExit(".env already defines ARTIFACTS_HOST_DIR; reconcile it before migration")
+separator = b"" if not original or original.endswith(b"\n") else b"\n"
+line = f"ARTIFACTS_HOST_DIR='{os.environ['DEST']}'\n".encode()
+record = {"size": len(original), "sha256": hashlib.sha256(original).hexdigest(),
+          "addition": (separator + line).decode()}
+fd, temporary = tempfile.mkstemp(prefix=".env-storage-", dir=dotenv.parent)
+try:
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(original + separator + line)
+        stream.flush()
+        os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
+        os.fchown(stream.fileno(), info.st_uid, info.st_gid)
+        os.fsync(stream.fileno())
+    with receipt.open("x", encoding="utf-8") as stream:
+        os.chmod(receipt, 0o600)
+        json.dump(record, stream)
+        stream.flush()
+        os.fsync(stream.fileno())
+    os.replace(temporary, dotenv)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
 ```
 
-This writes only a dedicated storage override file, not your secrets-bearing
-`.env`. Ensure neither a shell-exported `ARTIFACTS_HOST_DIR` nor a later env-file
-overrides it. Pass both files, in this order, to every later Compose command,
-including the approved recreation and any maintenance operation: a plain
-`docker compose up` without `--env-file .env --env-file "$ENV_FILE"` falls back to
-`./data/artifacts` and would recreate containers on the old tree.
+This atomically appends exactly one storage line to the project `.env`, preserving
+all existing bytes, ownership and mode, without printing or backing up secrets.
+The private receipt records only the addition and the original size/hash. A crash
+before the rename may leave a receipt but no switch: inspect before retrying; never
+overwrite a receipt blindly. Do not edit `.env` concurrently with these blocks.
+Ensure no exported `ARTIFACTS_HOST_DIR`, `COMPOSE_ENV_FILES`, `COMPOSE_DISABLE_ENV_FILE`
+or explicit `--env-file` bypasses this project configuration. Remove conflicting
+shell/service-manager overrides before acceptance and future maintenance.
+Plain `docker compose`, `make docker-up`, `make docker-local-up`/`docker-local-build`
+and the plain Compose calls in `scripts/cutover_runtime_acceptance.sh` now resolve
+the same persisted value without extra env-file flags. Do not replace `.env` from
+an example after migration: doing so loses this setting as well as credentials.
 
 ### Inspect
 
-Print only the effective bind sources and memory limits of the API and Worker (add the
-overlay files you normally pass with `-f`; Compose prints a literal `$` as `$$`, which
+Print only effective bind sources and memory limits of every artifact consumer
+(select your usual overlays via `COMPOSE_FILE`, or add their `-f` flags; Compose
+prints a literal `$` as `$$`, which
 the snippet undoes). **Never print or share the whole
 `docker compose config` output:** it contains the secrets from `.env` on every Compose
 version, even with `--no-env-resolution`, because interpolated fields carry them too.
@@ -194,14 +253,15 @@ secret value, so do not share that either.
 
 ```bash
 set -euo pipefail
-docker compose --env-file .env --env-file "$ENV_FILE" -f docker-compose.yml config --format json |
+docker compose config --format json |
   python3 -c '
 import json, sys
 services = json.load(sys.stdin)["services"]
-for name in ("api", "worker"):
-    service = services[name]
+for name, service in services.items():
     sources = [v["source"].replace("$$", "$") for v in service.get("volumes", []) if v.get("target") == "/app/data/artifacts"]
-    print(name, sources, int(service["deploy"]["resources"]["limits"]["memory"]) // 2**20, "MiB")
+    if sources:
+        memory = service.get("deploy", {}).get("resources", {}).get("limits", {}).get("memory")
+        print(name, sources, f"{int(memory) // 2**20} MiB" if memory is not None else "unset")
 '
 ```
 
@@ -225,11 +285,42 @@ set -euo pipefail
 case "$SRC" in *"'"* | *$'\n'* | *\\) echo "SRC must not contain quotes or newlines or end with a backslash" >&2; exit 1 ;; esac
 case "$SRC" in /*) ;; *) echo "SRC must be an absolute path" >&2; exit 1 ;; esac
 (cd "$SRC" && sha256sum --check --strict "$MANIFEST")
-printf "ARTIFACTS_HOST_DIR='%s'\n" "$SRC" > "$ENV_FILE"
+python3 - <<'PY'
+import hashlib, json, os, pathlib, stat, tempfile
+
+dotenv = pathlib.Path.cwd() / ".env"
+receipt = pathlib.Path(os.environ["ENV_FILE"])
+if receipt.resolve() == dotenv.resolve():
+    raise SystemExit("ENV_FILE must not alias project .env")
+info = dotenv.lstat()
+if not stat.S_ISREG(info.st_mode) or info.st_nlink != 1 or info.st_uid != os.geteuid():
+    raise SystemExit(".env must be a regular, singly linked file owned by the operator")
+record = json.loads(receipt.read_text(encoding="utf-8"))
+current = dotenv.read_bytes()
+size, addition = record["size"], record["addition"].encode()
+prefix, suffix = current[:size], current[size:]
+if hashlib.sha256(prefix).hexdigest() != record["sha256"] or not suffix.startswith(addition):
+    raise SystemExit(".env changed since Switch; reconcile manually without discarding secrets")
+fd, temporary = tempfile.mkstemp(prefix=".env-storage-", dir=dotenv.parent)
+try:
+    with os.fdopen(fd, "wb") as stream:
+        stream.write(prefix + suffix[len(addition):])
+        stream.flush()
+        os.fchmod(stream.fileno(), stat.S_IMODE(info.st_mode))
+        os.fchown(stream.fileno(), info.st_uid, info.st_gid)
+        os.fsync(stream.fileno())
+    os.replace(temporary, dotenv)
+finally:
+    if os.path.exists(temporary):
+        os.unlink(temporary)
+PY
 ```
 
-Rollback = point the variable back to the original directory, inspect config
-again with the same env-file order, then have the operator recreate affected
+Rollback removes exactly the addition recorded by Switch, including a separator
+added for a missing final newline. It refuses a changed original prefix and retains
+later appended settings. The default `./data/artifacts` must be the original source
+for this procedure; an already customized storage setting requires a separate plan.
+Inspect plain Compose config again, then have the operator recreate affected
 containers and repeat authorized existing-asset checks before allowing writes.
 No reverse-copy or deletion is needed during this pre-write acceptance window.
 If writes already resumed on the HDD, stop all writers again and reconcile new
