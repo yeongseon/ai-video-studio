@@ -1,25 +1,13 @@
-# Override for local server access from other machines on the LAN.
+# Local server: private by default, with explicit trusted-LAN opt-in.
+# Requires Docker Compose >= 2.24.4 for !override (replace, never append ports).
 #
 # Usage:
-#   docker compose -f docker-compose.yml -f docker-compose.local-server.yml up -d
+#   make docker-local-up
 #
-# This exposes studio-web on all interfaces (0.0.0.0) so other devices
-# on the same network can reach the UI.  API, Postgres, and Redis remain
-# bound to 127.0.0.1 for security.
+# Use the Make helpers to validate STUDIO_WEB_BIND before invoking Docker.
+# Only studio-web may opt into LAN access; backend loopback bindings are inherited.
 
 services:
   studio-web:
-    ports:
-      - "${STUDIO_WEB_BIND:-0.0.0.0}:${STUDIO_WEB_PORT:-5174}:8080"
-
-  api:
-    ports:
-      - "127.0.0.1:8000:8000"
-
-  postgres:
-    ports:
-      - "127.0.0.1:5432:5432"
-
-  redis:
-    ports:
-      - "127.0.0.1:6379:6379"
+    ports: !override
+      - "${STUDIO_WEB_BIND:-127.0.0.1}:${STUDIO_WEB_PORT:-5174}:8080"

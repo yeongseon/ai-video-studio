@@ -45,7 +45,7 @@ from restore_drill_runtime import (
 
 
 ROOT = Path(__file__).parents[1]
-POSTGRES_IMAGE = "postgres:16.6-alpine"
+POSTGRES_IMAGE = "postgres:16.15-alpine@sha256:aa6cb33cf4c19c765cefcf48d96176258800870a9a1e930ad126200f9d825139"
 FFMPEG_IMAGE = "jrottenberg/ffmpeg:7.1-alpine"
 PASSWORD = "synthetic-local-only"
 FINGERPRINT = "sha256:" + "a" * 64

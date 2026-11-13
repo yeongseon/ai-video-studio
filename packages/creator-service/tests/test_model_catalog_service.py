@@ -53,7 +53,7 @@ class TestModelCatalogService:
         assert len(result["script_models"]) == 6  # qwen3-4b, gpt-4o-mini, claude-sonnet, gemini-flash, llama-3.3-70b, llama-4-scout
         assert len(result["image_models"]) == 9  # sd15, dall-e-3, sd3-medium, imagen-3, pollinations, placeholder, hf-flux-schnell, groq-svg, codex-gpt-image
         assert len(result["tts_models"]) == 5  # qwen3-tts, elevenlabs, openai-tts, edge-tts, cosyvoice-0.5b
-        assert len(result["stt_models"]) == 2  # whisper-small, groq-whisper-large-v3-turbo
+        assert len(result["stt_models"]) == 3
 
         # Verify local models are still present and correctly labeled
         script_keys = {m["key"] for m in result["script_models"]}
@@ -123,7 +123,7 @@ class TestModelCatalogService:
         assert set(result.keys()) == {"providers", "gpu_lock"}
         assert isinstance(result["providers"], list)
 
-        assert len(result["providers"]) == 16
+        assert len(result["providers"]) == 17
 
         provider = result["providers"][0]
         assert set(provider.keys()) == {"name", "healthy", "status"}

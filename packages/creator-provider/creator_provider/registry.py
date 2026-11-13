@@ -47,6 +47,7 @@ class ProviderRegistry:
         from creator_provider.llm.ollama_provider import OllamaProvider
         from creator_provider.llm.openai_provider import OpenAIProvider
         from creator_provider.stt.whisper_provider import WhisperSTTProvider
+        from creator_provider.stt.script_timestamp_aligner import ScriptTimestampAligner
         from creator_provider.tts.elevenlabs_provider import ElevenLabsProvider
         from creator_provider.tts.openai_tts_provider import OpenAITTSProvider
         from creator_provider.tts.qwen_tts_provider import QwenTTSProvider
@@ -67,6 +68,7 @@ class ProviderRegistry:
         registry.register_provider("elevenlabs_tts", ElevenLabsProvider)
         registry.register_provider("openai_tts", OpenAITTSProvider)
         registry.register_provider("whisper", WhisperSTTProvider)
+        registry.register_provider("script_timestamp_aligner", ScriptTimestampAligner)
         registry.register_provider("openai_llm", OpenAIProvider)
         registry.register_provider("anthropic_llm", AnthropicProvider)
         registry.register_provider("gemini_llm", GeminiProvider)
@@ -150,6 +152,16 @@ class ProviderRegistry:
                 endpoint=os.getenv("STT_WHISPER_BASE_URL", "http://stt-whisper:8200"),
                 category=ProviderCategory.STT,
                 requires_gpu=True,
+                is_local=True,
+            )
+        )
+        registry.register_model(
+            ModelCatalogEntry(
+                model_key="script-timestamps",
+                provider_type="script_timestamp_aligner",
+                endpoint="",
+                category=ProviderCategory.STT,
+                requires_gpu=False,
                 is_local=True,
             )
         )

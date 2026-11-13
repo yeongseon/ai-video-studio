@@ -94,11 +94,12 @@ is confirmed.
 | #700 | Duration presets + Custom, observable onboarding milestone, Timeline continuation | No claim of exhaustive usability validation |
 | #701 | Safe error parsing, actionable failures, bounded HTTP/DLQ serialization | Redaction is not universal detection of every possible secret |
 | #702 | Walkthrough corrected; actual automated and browser execution documented | Fresh-user under-10-minute KPI has not been measured |
-| #576 | Investigated existing script/audio and alignment integration requirements | **Not implemented**: no real alignment runtime/model and no accuracy benchmark |
+| #576 | Opt-in `script-timestamps` path uses Edge TTS provider-native word boundaries and exact approved-script text | Limited to newly generated Edge TTS audio; no cross-provider aligner or Korean timing benchmark |
 
-For #576, proportional subtitle timestamps or Whisper re-transcription would not
-satisfy forced alignment. A real alignment backend and representative Korean
-audio/timing benchmark are required; no simulated completion is claimed here.
+For #576, the default remains `whisper-small`. Selecting `script-timestamps`
+fails closed when provider-native word boundaries are absent or do not match the
+approved script; it never invents proportional timings. The remaining real-audio
+Korean benchmark and non-Edge provider support keep the issue open.
 
 ## Reproduce
 

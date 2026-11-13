@@ -251,10 +251,14 @@ def generate_scene_image(
                         storage_key=uploaded.key,
                         is_active=is_active,
                         idempotency_key=f"{ctx.task_id}:{target_scene.scene_id}",
+                        upload_intent_id=batch.upload_cleanup_intents.get(uploaded.key),
                     )
                 except SceneAssetAcceptanceRejected:
                     await batch.discard_rejected_upload(target_path, uploaded)
                     raise Ignore() from None
+
+                if asset.storage_key == uploaded.key:
+                    batch.upload_cleanup_intents.pop(uploaded.key, None)
 
                 scene_result.update(
                     {
@@ -285,7 +289,10 @@ def generate_scene_image(
                     ctx.mark_provider_accounted()
                     await batch.checkpoint()
                 except Ignore:
-                    await _visual_asset_service.storage.delete_asset(asset.id)
+                    # An idempotent replay returns the winning delivery's asset, not ours.
+                    if asset.asset_path == target_path:
+                        await batch.record_rejected_upload(target_path, uploaded)
+                        await _visual_asset_service.storage.delete_asset(asset.id)
                     await batch.discard_rejected_upload(target_path, uploaded)
                     batch.results.remove(scene_result)
                     raise
