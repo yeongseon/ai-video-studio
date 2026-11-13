@@ -38,6 +38,13 @@ Admin authentication is enforced at **two layers**:
 This ensures that even if a new admin sub-route is added without the proper
 dependency, the middleware still blocks unauthenticated access.
 
+Studio never injects an admin key and strips client `X-Admin-Key` from **every**
+location proxying to the API: general API, all three upload locations, `/health`,
+`/healthz`, `/docs`, and `/openapi.json`. The creator `X-API-Key` policy is
+unchanged. Even a forged `X-Confirm-Action: yes` cannot authenticate an admin
+operation through Studio. Operators must use the loopback API directly or an SSH
+tunnel to it for admin requests. This does not enable public/shared Studio access.
+
 ---
 
 ## Personal API Keys and Attribution
@@ -189,6 +196,20 @@ reverse proxy with TLS.
 |-------------|---------------|-------------------|
 | Development | None | Returns 401 on admin requests |
 | Production | 16 characters | API refuses to start (fail-fast) |
+
+Both shipped environment examples leave `ADMIN_API_KEY=` empty. Keep it empty
+for local use unless admin endpoints are needed; generate a unique key with
+`openssl rand -hex 32` when needed. Never reuse an example value. Production
+continues to require a key of at least 16 characters.
+
+Publicly known shipped examples (`local-admin-key-change-me` and the old guide's
+literal `<a-strong-random-string>`) are rejected at API startup in **every
+environment**, including development. The configuration error names
+`ADMIN_API_KEY` and tells the operator to unset it (admin API disabled outside
+production) or generate a key. On upgrade, installations whose `.env` still uses
+one of these examples must do that before restarting. Both admin authentication
+layers and the `/health` admin-detail check treat these values as not configured,
+even if startup validation is bypassed.
 
 ### Rate Limiting
 
