@@ -1,0 +1,121 @@
+from __future__ import annotations
+
+import json
+import os
+import sys
+from pathlib import Path
+
+import pytest
+
+sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
+import restore_drill
+from restore_drill_runtime import DrillError
+from tests.restore_drill_fake import DrillSandbox
+
+
+@pytest.fixture
+def sandbox(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> DrillSandbox:
+    monkeypatch.setattr(os, "environ", {"PATH": "/usr/bin:/bin", "HOME": str(tmp_path), "LANG": "C.UTF-8"})
+    fake = DrillSandbox()
+    release = tmp_path / "release.json"
+    release.write_text(json.dumps({name: f"registry/{name}@sha256:" + "0123456789abcdef" * 4 for name in ("api", "worker", "web")}))
+    monkeypatch.setenv("RESTORE_RELEASE_MANIFEST", str(release))
+    monkeypatch.delenv("RESTORE_CORRUPT_AUDIO_METADATA", raising=False)
+    monkeypatch.setattr("restore_drill.shutil.which", lambda name: f"/synthetic/{name}")
+    monkeypatch.setattr("restore_drill.subprocess.run", fake.run)
+    monkeypatch.setattr("restore_drill_runtime.subprocess.Popen", fake.popen)
+    monkeypatch.setattr("restore_drill.wait_for_api", lambda *args: None)
+    monkeypatch.setattr("restore_drill.verify_http", lambda *args: None)
+    return fake
+
+
+@pytest.mark.parametrize("child", ["docker", "migration", "verifier", "git", "render", "api", "guard", "reconciler", "readiness", "cleanup"])
+def test_every_child_uses_isolated_environment_when_parent_is_poisoned(
+    sandbox: DrillSandbox, monkeypatch: pytest.MonkeyPatch, child: str
+) -> None:
+    # Given an operator shell with synthetic production credentials and destinations.
+    poison = {name: f"poison-{name}" for name in (
+        "REDIS_URL", "DATABASE_URL", "OPENAI_API_KEY", "CELERY_BROKER_URL",
+        "CUSTOM_API_KEY", "CUSTOM_TOKEN", "CUSTOM_SECRET", "OTEL_EXPORTER_OTLP_ENDPOINT",
+        "AWS_ACCESS_KEY_ID", "AZURE_STORAGE_CONNECTION_STRING", "GOOGLE_APPLICATION_CREDENTIALS",
+        "STORAGE_BACKEND", "DOCKER_HOST", "PGSERVICE", "PG_RESTORE", "PYTHONPATH",
+    )}
+    for name, value in poison.items():
+        monkeypatch.setenv(name, value)
+
+    # When running every drill phase against injected external processes.
+    assert restore_drill.main() == 0
+
+    # Then each subprocess gets an explicit environment, never ambient configuration.
+    selections = {
+        "docker": lambda c: c[0] == "docker",
+        "migration": lambda c: "alembic" in c,
+        "verifier": lambda c: any(value.endswith("restore_verify.py") for value in c),
+        "git": lambda c: c[0] == "git",
+        "render": lambda c: any("render_saved_timeline" in value for value in c),
+        "api": lambda c: "uvicorn" in c,
+        "guard": lambda c: any("HTTPServer" in value for value in c),
+        "reconciler": lambda c: any("reconcile_stale_dispatches" in value for value in c),
+        "readiness": lambda c: "pg_isready" in c,
+        "cleanup": lambda c: c[:2] == ("docker", "rm"),
+    }
+    calls = [(command, env) for command, env in sandbox.calls if selections[child](command)]
+    assert calls, child
+    for index, (command, environment) in enumerate(calls):
+        assert environment is not None, command
+        assert not set(poison.values()).intersection(environment.values()), command
+        assert environment["REDIS_URL"] == "", command
+        if child in {"migration", "render", "api", "reconciler"}:
+            expected_port = "15432" if child == "migration" and index < 2 else "25432"
+            assert environment["DATABASE_URL"] == f"postgresql://restore:synthetic-local-only@127.0.0.1:{expected_port}/restore"
+        else:
+            assert "DATABASE_URL" not in environment
+
+
+@pytest.mark.parametrize("existing", ["restore-source-", "restore-target-"])
+def test_drill_refuses_existing_name_before_starting_any_container(
+    sandbox: DrillSandbox, existing: str
+) -> None:
+    # Given either planned PostgreSQL container name is already owned elsewhere.
+    sandbox.existing = existing
+
+    # When / Then the typed failure propagates to a nonzero CLI exit before creation/deletion.
+    with pytest.raises(DrillError, match="container already exists") as error:
+        restore_drill.main()
+    assert type(error.value).__name__ == "ContainerNameCollisionError"
+    assert sandbox.docker_calls("run") == []
+    assert sandbox.docker_calls("rm") == []
+
+
+@pytest.mark.parametrize("failed_start", ["restore-source-", "restore-target-"])
+def test_cleanup_removes_only_successfully_created_containers_when_start_fails(
+    sandbox: DrillSandbox, failed_start: str
+) -> None:
+    # Given a failed docker run, including a race after the preflight check.
+    sandbox.failed_start = failed_start
+
+    # When
+    with pytest.raises(DrillError, match="synthetic start failure"):
+        restore_drill.main()
+
+    # Then the failed name is never removed, even after the first container succeeded.
+    removed = [name for call in sandbox.docker_calls("rm") for name in call[3:]]
+    assert all(not name.startswith(failed_start) for name in removed)
+    assert len(removed) == int(failed_start == "restore-target-")
+    assert all(name.startswith("restore-source-") for name in removed)
+
+
+def test_happy_path_removes_both_containers_it_created(sandbox: DrillSandbox) -> None:
+    # Given an empty disposable sandbox.
+    # When
+    assert restore_drill.main() == 0
+
+    # Then both created names are checked before any container starts and cleaned up.
+    created = [call[call.index("--name") + 1] for call in sandbox.docker_calls("run") if "--name" in call]
+    checked = [call[call.index("--filter") + 1] for call in sandbox.docker_calls("ps")]
+    assert checked == [f"name=^/{name}$" for name in created]
+    operations = [command[1] for command, _ in sandbox.calls if command[0] == "docker"]
+    assert operations[:2] == ["ps", "ps"]
+    removed = [name for call in sandbox.docker_calls("rm") for name in call[3:]]
+    assert removed == created
+    assert len(created) == 2

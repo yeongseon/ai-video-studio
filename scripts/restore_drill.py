@@ -42,6 +42,8 @@ from restore_drill_runtime import (
     wait_for_postgres,
     validate_release_manifest,
 )
+from restore_drill_process import ContainerNameCollisionError, child_environment
+from restore_drill_render import timeline_render_program
 
 
 ROOT = Path(__file__).parents[1]
@@ -73,46 +75,7 @@ def create_media(media: Path) -> None:
 def render_restored_timeline(
     database_url: str, restored: Path, fixture: RuntimeFixture
 ) -> tuple[int, RuntimeFixture, dict[str, str | int]]:
-    program = f"""
-import anyio, json
-from datetime import datetime, timezone
-from pathlib import Path
-from creator_service.render_profile import RenderProfile
-from creator_service.audio_service import audio_service
-from creator_service.render_service import render_service
-from tasks.task_runner import TaskContext
-from tasks.timeline_render import RenderLayers, render_saved_timeline
-
-async def main():
-    artifact_root = Path({str(restored)!r})
-    output = artifact_root / 'final.mp4'
-    context = TaskContext(
-        run_id={fixture.run_id}, task_id='restore-drill-render',
-        run={{'metadata_json': {{'render_source': 'timeline', 'render_timeline_revision': 1}}}},
-        workspace_id={fixture.workspace_id}, project_id={fixture.project_id},
-        start_time=datetime.now(timezone.utc),
-    )
-    narration = await audio_service.get_latest(context.run_id)
-    if narration is None:
-        raise RuntimeError('restored audio metadata did not resolve narration')
-    audio_path = artifact_root / narration.path
-    if not audio_path.is_file():
-        raise RuntimeError('restored audio metadata did not resolve narration')
-    count = await render_saved_timeline(
-        context, RenderProfile.fast_preview(), output,
-        layers=RenderLayers(audio=audio_path),
-    )
-    artifact = await render_service.create_artifact(
-        run_id={fixture.run_id}, path=str(output), render_profile='restore_drill',
-        storage_provider='local', storage_key='final.mp4',
-        idempotency_key='restore-drill-render',
-    )
-    print(json.dumps({{'count': count, 'artifact_id': artifact.id, 'audio_path': str(audio_path)}}))
-
-anyio.run(main)
-"""
-    environment = {
-        **os.environ,
+    environment = child_environment({
         "DATABASE_URL": database_url,
         "ARTIFACT_ROOT": str(restored),
         "STORAGE_BACKEND": "local",
@@ -125,11 +88,11 @@ anyio.run(main)
                 "packages/creator-provider",
             )
         ),
-    }
+    })
     result = run(
         sys.executable,
         "-c",
-        program,
+        timeline_render_program(restored, fixture),
         cwd=ROOT / "apps/worker-orchestrator",
         env=environment,
     )
@@ -215,6 +178,10 @@ def main() -> int:
         return 77
     suffix = hashlib.sha256(str(time.time_ns()).encode()).hexdigest()[:10]
     source, target = f"restore-source-{suffix}", f"restore-target-{suffix}"
+    for container in (source, target):
+        if docker("ps", "-a", "--filter", f"name=^/{container}$", "--format", "{{.Names}}").stdout.strip():
+            raise ContainerNameCollisionError(f"container already exists: {container}")
+    created_containers: list[str] = []
     durations: dict[str, float] = {}
     started = time.monotonic()
     with tempfile.TemporaryDirectory(prefix="restore-drill-") as temporary:
@@ -227,18 +194,19 @@ def main() -> int:
             create_media(media)
             for container in (source, target):
                 docker("run", "-d", "--name", container, "-p", "127.0.0.1::5432", "-e", "POSTGRES_USER=restore", "-e", f"POSTGRES_PASSWORD={PASSWORD}", "-e", "POSTGRES_DB=restore", POSTGRES_IMAGE)
+                created_containers.append(container)
                 wait_for_postgres(container)
             source_url = mapped_postgres_url(source, PASSWORD)
             target_url = mapped_postgres_url(target, PASSWORD)
             phase = time.monotonic()
-            run(sys.executable, "-m", "alembic", "upgrade", "head", cwd=ROOT / "apps/api", env={**os.environ, "DATABASE_URL": source_url})
+            run(sys.executable, "-m", "alembic", "upgrade", "head", cwd=ROOT / "apps/api", env={"DATABASE_URL": source_url})
             alembic_head = run(
                 sys.executable,
                 "-m",
                 "alembic",
                 "current",
                 cwd=ROOT / "apps/api",
-                env={**os.environ, "DATABASE_URL": source_url},
+                env={"DATABASE_URL": source_url},
             ).stdout.split()[0]
             fixture = seed_production_fixture(source, media)
             docker("exec", source, "pg_dump", "-U", "restore", "-d", "restore", "--format=custom", "--file=/tmp/database.dump")
@@ -257,7 +225,7 @@ def main() -> int:
             phase = time.monotonic()
             docker("cp", str(bundle / "database.dump"), f"{target}:/tmp/database.dump")
             docker("exec", target, "pg_restore", "-U", "restore", "-d", "restore", "--clean", "--if-exists", "/tmp/database.dump")
-            run(sys.executable, "-m", "alembic", "upgrade", "head", cwd=ROOT / "apps/api", env={**os.environ, "DATABASE_URL": target_url})
+            run(sys.executable, "-m", "alembic", "upgrade", "head", cwd=ROOT / "apps/api", env={"DATABASE_URL": target_url})
             run(sys.executable, str(verifier), "restore-media", str(bundle), "--target", str(restored), "--expected-alembic-revision", alembic_head, "--expected-secret-fingerprint", FINGERPRINT)
             if os.environ.get("RESTORE_CORRUPT_AUDIO_METADATA") == "delete":
                 docker("exec", target, "psql", "-U", "restore", "-d", "restore", "-c", "DELETE FROM creator_artifacts WHERE id=700")
@@ -307,7 +275,8 @@ def main() -> int:
                 except ChildShutdownError as exc:
                     if cleanup_error is None:
                         cleanup_error = exc
-            subprocess.run(["docker", "rm", "-f", source, target], capture_output=True, check=False)
+            if created_containers:
+                subprocess.run(["docker", "rm", "-f", *created_containers], env=child_environment(), capture_output=True, check=False)
             raise_cleanup_error(cleanup_error)
 
 
