@@ -44,8 +44,8 @@ _LOG_TOKEN_PREFIX = re.compile(
     r"(?<![^\W_])" + _TOKEN_BODY
 )
 _ASSIGNMENT = re.compile(
-    r"(?<![\w.-])(?:"
-    r"[bBrRuU]{0,2}(?P<quote>['\"])(?P<quoted_name>[\w. -]++)(?P=quote)|(?P<name>[\w.-]++)"
+    r"(?:"
+    r"[bBrRuU]{0,2}(?P<quote>['\"])(?P<quoted_name>[\w. -]++)(?P=quote)|(?<![\w.-])(?P<name>[\w.-]++)"
     r")[ \t]*+[=:][ \t]*+"
 )
 _UNQUOTED_VALUE = re.compile(r"[^\s,;&'\"\[\]{}()]+")
@@ -178,18 +178,21 @@ def _redact_named_values(text: str) -> str:
         if start == len(text):
             continue
         quoted = _QUOTED_VALUE.match(text, start)
-        if quoted:
+        if name.lower().endswith("authorization") and (not quoted or quoted["prefix"]):
+            line_end = _LINE_BREAK.search(text, start)
+            end = line_end.start() if line_end else len(text)
+        elif quoted:
             end = quoted.end()
             while end < len(text) and text[end] != quoted["quote"]:
                 end += 2 if text[end] == "\\" else 1
             end = min(end, len(text))
             if quoted["prefix"]:
                 end += end < len(text)
+                suffix = _UNQUOTED_VALUE.match(text, end)
+                if suffix:
+                    end = suffix.end()
             else:
                 start = quoted.end()
-        elif name.lower().endswith("authorization"):
-            line_end = _LINE_BREAK.search(text, start)
-            end = line_end.start() if line_end else len(text)
         else:
             value = _UNQUOTED_VALUE.match(text, start)
             if value is None:
