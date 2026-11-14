@@ -13,6 +13,8 @@ from starlette.convertors import IntegerConvertor, StringConvertor
 from starlette.routing import Mount, Route, compile_path
 from starlette.staticfiles import StaticFiles
 
+PRESERVED_SAMPLES = ("/api/creator/x", "/api/admin/x", "/release/identity")
+
 
 def _assert_log_route_contract(application: FastAPI) -> None:
     pending = [("", route, {}) for route in application.routes]
@@ -27,6 +29,11 @@ def _assert_log_route_contract(application: FastAPI) -> None:
                     assert re.fullmatch(r"[a-z][a-z0-9_]*_id", name), path
                     assert not re.search(r"token|signature|key|secret|credential|code", name), path
                     assert type(converter) in (IntegerConvertor, StringConvertor), path
+            elif not route.routes:
+                base = path.rstrip("/")
+                assert not any(sample.startswith(base + "/") for sample in PRESERVED_SAMPLES), (
+                    f"Route-less mount shadows a preserved prefix: {path or '/'}"
+                )
             pending.extend((path, child, convertors) for child in route.routes)
             continue
         assert isinstance(route, Route), f"Unreviewed route type: {route}"
@@ -118,6 +125,24 @@ def test_log_route_contract_rejects_files_when_mount_has_no_routes() -> None:
     # When / Then an unbounded private suffix must force a conscious route review.
     with pytest.raises(AssertionError, match="/api/creator/files"):
         _assert_log_route_contract(application)
+
+
+@pytest.mark.parametrize("mount_path", ["/", "/api"])
+def test_log_route_contract_rejects_an_ancestor_mount_without_routes(mount_path: str) -> None:
+    # Given a route-less file-serving app mounted above a preserved prefix.
+    application = FastAPI()
+    application.mount(mount_path, StaticFiles())
+    # When / Then it could serve preserved-looking private paths, so the guard must reject it.
+    with pytest.raises(AssertionError, match="shadows a preserved prefix"):
+        _assert_log_route_contract(application)
+
+
+def test_log_route_contract_accepts_a_route_less_mount_that_cannot_shadow_a_prefix() -> None:
+    # Given a route-less mount that is unrelated to every preserved prefix.
+    application = FastAPI()
+    application.mount("/static", StaticFiles())
+    # When / Then the guard has nothing to reject.
+    _assert_log_route_contract(application)
 
 
 def test_log_route_contract_accepts_ids_when_mounts_are_nested() -> None:
