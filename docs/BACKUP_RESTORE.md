@@ -85,9 +85,22 @@ Run all checks against the disposable restored environment and retain machine-re
 
 `scripts/restore_drill.py` creates synthetic workspaces A/B, a revoked key, an approved Timeline, and image/audio/video fixtures; dumps PostgreSQL, restores it into a fresh container, checks isolation/revocation/checksums, and performs a local FFmpeg MP4 re-render. It uses ephemeral containers and temporary files only.
 
+Child environments keep only `PATH`, `HOME`, standard locale variables, `TMPDIR`
+and `VIRTUAL_ENV`; ambient database/broker destinations, provider/cloud credentials,
+Celery configuration and telemetry settings are dropped in favour of explicit drill
+values. Docker CLI calls alone also retain `DOCKER_HOST`, `DOCKER_CONTEXT`,
+`DOCKER_CONFIG`, `DOCKER_CERT_PATH`, `DOCKER_TLS_VERIFY` and `XDG_RUNTIME_DIR` for
+rootless/remote daemon selection; these selectors never reach non-Docker children.
+`HOME` still selects tool configuration, including Docker configuration/contexts:
+this filters variables, not a sandbox. API/reconciler state and fallback paths are
+pinned under the temporary drill root. The drill refuses either existing planned
+container name before startup; cleanup removes successful starts, and recovers a
+failed start only by matching its exact name and per-run `restore-drill.run` nonce
+label, removing the returned container IDs rather than an unproven name.
+
 ```bash
 python3 -m pytest tests/test_restore_verify.py -q
-python3 -m pytest tests/test_restore_drill.py -v
+python3 -m pytest tests/test_restore_drill.py tests/test_restore_drill_isolation.py -v
 ```
 
 The Docker test skips when Docker is unavailable and runs as the separate `restore-drill` CI job. A skip is not restore evidence. The repository addition itself does **not** claim the Docker drill or a production restore was executed. The unit verifier runs without Docker.
