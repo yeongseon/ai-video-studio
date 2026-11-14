@@ -21,6 +21,7 @@ from creator_service.render_profile import AudioCodec, Codec, RenderProfile
 from creator_service.media_integrity import MediaExpectation, validate_media
 from creator_service.render_frame_budget import allocate_frames
 from creator_service.render_scratch import cleanup_render_scratch, create_render_scratch
+from creator_service.render_scratch_monitor import register_scratch, render_budget
 
 logger = logging.getLogger(__name__)
 
@@ -303,6 +304,7 @@ def render_image_segment(
     return output_path
 
 
+@render_budget("render_plan")
 def render_plan(plan: RenderPlan, output_path: Path) -> Path:
     """Render a mixed image/video plan to a single video.
 
@@ -316,7 +318,7 @@ def render_plan(plan: RenderPlan, output_path: Path) -> Path:
 
     profile = render_profile_from_plan(plan)
     tmp_dir = create_render_scratch(output_path, ".render_plan_")
-    tmp_output = output_path.with_suffix(f".tmp.{os.getpid()}.{os.urandom(4).hex()}.mp4")
+    tmp_output = register_scratch(output_path.with_suffix(f".tmp.{os.getpid()}.{os.urandom(4).hex()}.mp4"))
     try:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         segment_paths: list[Path] = []

@@ -3,6 +3,8 @@ import math
 import os
 import signal
 import subprocess
+import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from .render_profile import RenderProfile
 from .media_integrity import MediaExpectation, validate_media
 from .render_frame_budget import allocate_frames
 from .render_scratch import audio_concat_list, create_render_scratch
+from .render_scratch_monitor import POLL_SECONDS, RenderScratchLimitExceeded, current_budget, register_scratch, render_budget
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +58,24 @@ def _validate_durations(durations: list[float]) -> None:
             raise ValueError(f"scene_durations[{i}] must be positive, got {d}")
 
 
+def _signal_group(proc: subprocess.Popen[str], sig: int) -> None:
+    with suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, sig)
+
+
+def _wait_without_reaping(proc: subprocess.Popen[str], grace: float) -> None:
+    """Give the direct child time to exit but leave it unreaped, so a later group SIGKILL stays safe."""
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        try:
+            if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is not None:
+                return
+        except ChildProcessError:
+            return
+        time.sleep(0.01)
+    logger.debug("Render scratch termination grace expired")
+
+
 def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
     """Run FFmpeg with proper process-group isolation and timeout cleanup.
 
@@ -69,17 +90,41 @@ def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str
         text=True,
         start_new_session=True,
     )
+    budget = current_budget.get()
+    deadline = time.monotonic() + timeout
+    # Group signals are only safe while the unreaped child still pins its pid as the group id.
+    reaped = False
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        # Kill the entire process group to clean up any children
-        try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        proc.kill()  # fallback
-        proc.wait()
+        while True:
+            if budget is not None:
+                budget.check()
+            remaining = deadline - time.monotonic()
+            try:
+                stdout, stderr = proc.communicate(timeout=min(POLL_SECONDS, remaining) if budget is not None else remaining)
+            except subprocess.TimeoutExpired:
+                if budget is None or time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(cmd, timeout) from None
+                continue
+            reaped = True
+            if budget is not None:
+                budget.check()
+            break
+    except RenderScratchLimitExceeded:
+        if not reaped:
+            _signal_group(proc, signal.SIGTERM)
+            _wait_without_reaping(proc, 2)
         raise
+    finally:
+        if not reaped:
+            _signal_group(proc, signal.SIGKILL)
+        proc.kill()
+        proc.wait()
+        with suppress(subprocess.TimeoutExpired):
+            proc.communicate(timeout=1)
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
     return subprocess.CompletedProcess(
         args=cmd, returncode=proc.returncode, stdout=stdout, stderr=stderr
     )
@@ -290,6 +335,7 @@ class FFmpegService:
                 f"(rc={result.returncode}): {result.stderr[-200:]}"
             )
 
+    @render_budget("render")
     def render(self, input_data: RenderInput, output_path: Path) -> Path:
         """Execute FFmpeg render using two-pass concat demuxer approach.
 
@@ -342,7 +388,7 @@ class FFmpegService:
                     f.write(f"file '{seg.name}'\nduration {budget / self.profile.fps:.12f}\n")
 
             unique_suffix = f".tmp.{os.getpid()}.{os.urandom(4).hex()}.mp4"
-            tmp_output = output_path.with_suffix(unique_suffix)
+            tmp_output = register_scratch(output_path.with_suffix(unique_suffix))
 
             need_subs = self.profile.burn_subtitles and input_data.subtitle_path is not None
 

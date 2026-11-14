@@ -250,6 +250,71 @@ side are not checked. The API does not check at enqueue time, so a refusal
 appears in the run's task list rather than as an immediate HTTP error. How much
 one run may write is not bounded by this check.
 
+### Per-delivery render scratch limit (#1031)
+
+`RENDER_SCRATCH_MAX_BYTES` limits the sum of regular-file sizes inside **this
+delivery's** allocated `.render_tmp_*`, `.render_plan_*`, `timeline-*`,
+`audio-concat-*` and `sfx_*` directories plus its temporary MP4 (and the legacy
+system-temp concat file). Published outputs, retained BGM/mixed/normalized audio,
+styled subtitles, media inputs outside scratch and other deliveries are excluded.
+Materialized Timeline inputs inside scratch count: a Timeline copies its source media
+into `timeline-*`, and uploads allow up to 500 MiB per video, so a Timeline built from
+several large videos can exceed the 2 GiB default on its own. Size the setting above the
+combined size of the largest project's sources plus the render's own scratch, or set it to
+`0`; the actionable error names the setting. Symlinks are never followed.
+The scratch allocator registers exact paths into a delivery-local context; nested
+render calls reuse it, while concurrent deliveries have separate budgets.
+
+The default is **2147483648 bytes (2 GiB)**, over 60 times the measured 34.0 MB
+peak scratch of a noisy 60-second `shorts_default` render (six segments plus a
+21.3 MB temporary MP4). This is generous headroom, not a forecast or reservation.
+`0` disables accounting. The setting is read once per delivery, not at import;
+ASCII decimal digits with surrounding whitespace are accepted. Negative values,
+signs, underscores, non-ASCII digits, nonnumeric/empty values and integers too
+large to parse fall back to the default with one warning naming the setting.
+
+The shared FFmpeg runner polls in its waiting thread every **0.5 seconds**
+(never more than 1 second); it also checks at process completion. If observed
+bytes are **greater than** the cap (equality passes), it sends SIGTERM to the
+whole process group, allows up to **2 seconds** for the direct child to exit,
+then sends SIGKILL to the group, reaps its direct child and closes/drains pipes.
+Existing caller cleanup removes scratch and the unpublished temporary MP4 before
+the typed `RenderScratchLimitExceeded` escapes the delivery. Existing published
+outputs remain byte-identical because rename occurs only after success.
+
+The task fails through the existing guarded failure path with actionable code
+`RENDER_SCRATCH_LIMIT`. Static recovery text explains preservation, checking
+unusually large inputs or a runaway filter graph, and asking the operator to
+raise the setting or set it to `0`. Like the admission-floor categories,
+`retryable=true` means recovery/restart after correcting the cause, **not** an
+automatic Celery retry. The persisted code rebuilds the same API envelope.
+
+**Limits:** this is a polled limit, not a byte-level overshoot bound. Detection
+can take one poll interval plus additional polls for very large trees: each poll
+consumes at most 100,000 entries from a resumable iterative scan. A running pass
+compares its accumulated total on every poll; once exhausted, the next poll
+starts a new pass. Files deleted after being counted stay counted for that pass,
+so churn can over-approximate current usage. Sizes are apparent file sizes: sparse
+files and hard links count at full size, which can only over-count. An entry that
+cannot be read (permission denied, a symlink swapped in, no free descriptors) is
+skipped with one warning per walk and never fails the render. Growth after a file was visited is
+observed on a subsequent pass. Detection latency and the up-to-two-second TERM
+grace allow further writes. A byte overshoot guarantee would require a write-rate
+bound, which this monitor does not provide. Filesystem syscalls are cooperative,
+not preemptible hard-realtime operations. The generous default is intended to
+make realistic overshoot insignificant, not to reserve disk capacity.
+
+The limit measures scratch, **not final output size**, and runs on the solo pool
+because enforcement lives in the runner rather than Celery timeout hooks. Every
+member of a terminated group receives SIGKILL; no group member remains running
+when the runner exits. Only the direct child belongs to the runner for reaping.
+Descendants may remain zombies until PID 1 or a nearest subreaper reaps them;
+zombies cannot write and hold no scratch/disk. Containers whose PID 1 does not
+reap orphans should use an init (for example Docker `init: true`). FFmpeg itself
+normally has no children. No production subreaper/supervisor is installed.
+This does not replace crash reclamation, free-space admission or the separate
+prefork hard-kill process-control work.
+
 ### Render scratch placement (#1029)
 
 `RENDER_SCRATCH_DIR` optionally separates render scratch from published artifacts.
@@ -318,8 +383,8 @@ worker UID/GID (**1000:1000 in the shipped images**); adjust these IDs for a cus
 image. Do not use a shared group/world-writable bind source. Configure/mount the same path in the API process
 when using lightweight synchronous rendering. Do not serve or upload this root.
 The configured root and its ancestors are operator-controlled: do not let other
-users rename/replace them during rendering. Per-run caps (#1031), concurrency
-changes and live-host measurements remain separate work.
+users rename/replace them during rendering. Concurrency changes and live-host
+measurements remain separate work.
 
 ### Render crash cleanup (#1030)
 

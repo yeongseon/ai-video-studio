@@ -201,7 +201,7 @@ def test_audio_concat_and_sfx_use_configured_scratch(
         return subprocess.CompletedProcess(cmd, 0, "", "")
 
     monkeypatch.setattr(ffmpeg_service, "_run_ffmpeg", concat)
-    monkeypatch.setattr("creator_service.bgm_service.subprocess.run", sfx)
+    monkeypatch.setattr("creator_service.bgm_service._run_ffmpeg", sfx)
     # When each helper prepares its transient input.
     FFmpegService().concatenate_audio(["voice.wav"], str(tmp_path / "artifacts" / "audio.wav"))
     BgmService().mix_sfx_at_timestamps("voice.wav", [(0, "ping")], str(tmp_path / "artifacts" / "mixed.mp3"))
