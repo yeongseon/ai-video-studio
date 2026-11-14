@@ -82,7 +82,9 @@ def main() -> int:
         return 2
     loopback = any(address in network for network in LOOPBACK_NETWORKS)
     if not loopback and not any(address in network for network in LAN_NETWORKS):
-        print("STUDIO_WEB_BIND outside local allowlist; global addresses are forbidden", file=sys.stderr)
+        print("STUDIO_WEB_BIND is outside the local allowlist (loopback, private, shared 100.64.0.0/10, "
+              "link-local, unique-local or a wildcard); global and special-purpose addresses are never accepted",
+              file=sys.stderr)
         return 2
     if not loopback and not confirmed:
         print("STUDIO_WEB_BIND non-loopback address requires STUDIO_WEB_LAN_OK=1", file=sys.stderr)
