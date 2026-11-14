@@ -113,7 +113,7 @@ jobs:
         env:
           RESTORE_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           RESTORE_RELEASE_MANIFEST: /tmp/approved-release-manifest.json
-        run: python3 -m pytest tests/test_restore_drill.py -v -s
+        run: python3 -m pytest tests/test_restore_drill.py tests/test_restore_drill_isolation.py -v -s
 
   lint:
     needs: impact
