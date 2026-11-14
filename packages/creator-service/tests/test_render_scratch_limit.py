@@ -124,6 +124,52 @@ with open(sys.argv[1], 'wb', buffering=0) as stream:
     assert list((tmp_path / "render").iterdir()) == []
 
 
+def test_normal_completion_never_signals_the_already_reaped_process_group(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given a runner whose child exits normally and is reaped by communicate().
+    signalled: list[tuple[int, int]] = []
+    real_killpg = os.killpg
+
+    def recording_killpg(pgid: int, sig: int) -> None:
+        signalled.append((pgid, sig))
+        real_killpg(pgid, sig)
+
+    monkeypatch.setattr(os, "killpg", recording_killpg)
+    # When the process finishes successfully.
+    result = _run_ffmpeg([sys.executable, "-c", "print('done')"], timeout=5)
+    # Then no group signal may target the freed pid, which the kernel could reuse.
+    assert result.returncode == 0
+    assert signalled == []
+
+
+def test_limit_kills_a_term_ignoring_grandchild_after_the_direct_child_exits_on_term(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subreaper: set[int],
+) -> None:
+    # Given a direct child that exits on SIGTERM while its grandchild ignores it.
+    monkeypatch.setenv("RENDER_SCRATCH_MAX_BYTES", "1024")
+    pids = tmp_path / "pids"
+    script = f"""
+import os, signal, subprocess, sys, time
+from pathlib import Path
+signal.signal(signal.SIGTERM, lambda *_: os._exit(0))
+child = subprocess.Popen([sys.executable, '-c', 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(20)'])
+Path({str(pids)!r}).write_text(str(child.pid))
+with open(sys.argv[1], 'wb', buffering=0) as stream:
+    for _ in range(120):
+        stream.write(b'x' * 1024)
+        time.sleep(0.05)
+"""
+    # When the delivery crosses the cap.
+    with pytest.raises(ServiceError) as raised:
+        run_standin(tmp_path / "render", script)
+    # Then the group SIGKILL still reaches the grandchild, which the test subreaper then reaps.
+    assert type(raised.value).__name__ == "RenderScratchLimitExceeded"
+    grandchild = int(pids.read_text())
+    assert _wait_for_zombie(grandchild) == "Z"
+    _, status = os.waitpid(grandchild, 0)
+    assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
+    assert _children() <= subreaper
+
+
 def test_boundary_allows_exact_cap_but_rejects_one_more_byte(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Given adjacent sizes, the exact cap must remain allowed, not >= rejected.
     monkeypatch.setenv("RENDER_SCRATCH_MAX_BYTES", "1024")

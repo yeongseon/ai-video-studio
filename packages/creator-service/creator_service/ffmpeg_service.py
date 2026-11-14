@@ -58,6 +58,24 @@ def _validate_durations(durations: list[float]) -> None:
             raise ValueError(f"scene_durations[{i}] must be positive, got {d}")
 
 
+def _signal_group(proc: subprocess.Popen[str], sig: int) -> None:
+    with suppress(ProcessLookupError, PermissionError):
+        os.killpg(proc.pid, sig)
+
+
+def _wait_without_reaping(proc: subprocess.Popen[str], grace: float) -> None:
+    """Give the direct child time to exit but leave it unreaped, so a later group SIGKILL stays safe."""
+    deadline = time.monotonic() + grace
+    while time.monotonic() < deadline:
+        try:
+            if os.waitid(os.P_PID, proc.pid, os.WEXITED | os.WNOWAIT | os.WNOHANG) is not None:
+                return
+        except ChildProcessError:
+            return
+        time.sleep(0.01)
+    logger.debug("Render scratch termination grace expired")
+
+
 def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str]:
     """Run FFmpeg with proper process-group isolation and timeout cleanup.
 
@@ -74,6 +92,8 @@ def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str
     )
     budget = current_budget.get()
     deadline = time.monotonic() + timeout
+    # Group signals are only safe while the unreaped child still pins its pid as the group id.
+    reaped = False
     try:
         while True:
             if budget is not None:
@@ -85,22 +105,18 @@ def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str
                 if budget is None or time.monotonic() >= deadline:
                     raise subprocess.TimeoutExpired(cmd, timeout) from None
                 continue
+            reaped = True
             if budget is not None:
                 budget.check()
             break
     except RenderScratchLimitExceeded:
-        with suppress(ProcessLookupError):
-            os.killpg(proc.pid, signal.SIGTERM)
-        try:
-            proc.wait(timeout=2)
-        except subprocess.TimeoutExpired:
-            logger.debug("Render scratch termination grace expired")
+        if not reaped:
+            _signal_group(proc, signal.SIGTERM)
+            _wait_without_reaping(proc, 2)
         raise
     finally:
-        # Linux keeps a PID pinned while it is still a live process group id, so after the
-        # direct child was reaped this signal can only reach leftover members of that group.
-        with suppress(ProcessLookupError, PermissionError):
-            os.killpg(proc.pid, signal.SIGKILL)
+        if not reaped:
+            _signal_group(proc, signal.SIGKILL)
         proc.kill()
         proc.wait()
         with suppress(subprocess.TimeoutExpired):
