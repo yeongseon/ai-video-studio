@@ -115,7 +115,6 @@ def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str
     finally:
         if proc.returncode is None:
             _signal_group(proc, signal.SIGKILL)
-        if proc.returncode is None:
             proc.kill()
         try:
             proc.wait(timeout=10)
