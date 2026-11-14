@@ -4,6 +4,7 @@ from pathlib import Path, PurePosixPath
 
 from creator_domain.models import MediaAsset, RenderPlan
 from creator_service.object_storage import ArtifactStorageBackend
+from creator_service.render_scratch_monitor import current_budget
 
 
 class RenderSourceError(RuntimeError):
@@ -37,6 +38,9 @@ def materialize_plan(
                 raise RenderSourceError("Render source is empty")
             path = destination / f"source_{len(sources):04d}"
             path.write_bytes(data)
+            budget = current_budget.get()
+            if budget is not None:
+                budget.add_baseline(len(data))
             sources[key] = str(path)
     return plan.model_copy(update={
         "segments": [segment.model_copy(update={"source": sources[segment.source]})
