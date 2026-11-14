@@ -82,7 +82,8 @@ def sweep_render_scratch(
         if name not in bounds:
             bounds.append(name)
 
-    def skip(reason: str, *, warning: bool = False) -> None:
+    def skip(reason: str, *, root: str = "artifact", warning: bool = False) -> None:
+        reason = f"{root}:{reason}"
         skipped[reason] += 1
         if warning and skipped[reason] == 1:
             logger.warning("Render scratch sweep skipped %s", reason)
@@ -107,7 +108,7 @@ def sweep_render_scratch(
                     break
                 name = entry.name
                 if not any(pattern.fullmatch(name) for pattern in SCRATCH_NAME_PATTERNS):
-                    skip("unrecognised")
+                    skip("unrecognised", root=root)
                     continue
                 if len(names) >= MAX_ENTRIES_PER_DIRECTORY:
                     bound(f"{root}:directory_entries")
@@ -126,11 +127,11 @@ def sweep_render_scratch(
             try:
                 info = os.stat(name, dir_fd=parent, follow_symlinks=False)
                 if stat.S_ISLNK(info.st_mode):
-                    skip("symlink", warning=True)
+                    skip("symlink", root=root, warning=True)
                     continue
                 partial = PARTIAL_MP4_NAME.fullmatch(name) is not None
                 if not (stat.S_ISREG(info.st_mode) if partial else stat.S_ISDIR(info.st_mode)):
-                    skip("type")
+                    skip("type", root=root)
                     continue
                 age = max(0, now - max(info.st_mtime, info.st_ctime))
                 old = maximum_age > 0 and age >= maximum_age
@@ -141,26 +142,24 @@ def sweep_render_scratch(
                     if len(raw_pid) <= 7 and 1 <= int(raw_pid) <= 4194304:
                         gone = not runtime.pid_alive(int(raw_pid))
                 if not (old or gone):
-                    skip("fresh_or_live")
+                    skip("fresh_or_live", root=root)
                     continue
                 remove_scratch_entry(parent, name, info)
                 removed += 1
                 logger.info("Render scratch entry removed", extra={"scratch_name": name, "run_id": run_id})
             except FileNotFoundError:
-                skip("vanished")
+                skip("vanished", root=root)
             except OSError:
-                skip("deletion_error", warning=True)
-        if root_examined[root] >= policy.max_entries:
-            bound(f"{root}:max_entries")
+                skip("deletion_error", root=root, warning=True)
 
     if policy.scratch_root is not None and not bounded():
         try:
             with directory_fd(policy.scratch_root) as scratch_fd:
                 clean(scratch_fd, None, "scratch")
         except FileNotFoundError:
-            skip("root_absent")
+            skip("root_absent", root="scratch")
         except OSError:
-            skip("root_error", warning=True)
+            skip("root_error", root="scratch", warning=True)
     def clean_artifacts() -> None:
         nonlocal runs
         if bounded():
@@ -183,9 +182,6 @@ def sweep_render_scratch(
                         heapq.heappushpop(newest, candidate)
             for _, name in sorted(newest, reverse=True):
                 if bounded():
-                    break
-                if root_examined["artifact"] >= policy.max_entries:
-                    bound("artifact:max_entries")
                     break
                 if runs >= policy.max_run_directories:
                     bound("artifact:max_run_directories")

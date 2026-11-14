@@ -92,7 +92,7 @@ def test_entry_budgets_are_independent_when_either_root_is_full(tmp_path: Path, 
     other = "artifact" if crowded == "scratch" else "scratch"
     assert not (parents[other] / named()).exists()
     assert result.examined == 2
-    assert result.bounds == ("scratch:max_entries", "artifact:max_entries")
+    assert result.bounds == (f"{crowded}:max_entries",)
 
 
 def test_global_removal_budget_stops_both_roots_after_scratch_first(tmp_path: Path) -> None:

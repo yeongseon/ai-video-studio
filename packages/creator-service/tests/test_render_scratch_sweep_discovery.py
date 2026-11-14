@@ -25,7 +25,7 @@ def test_junk_cannot_starve_recognised_scratch(tmp_path: Path, monkeypatch, loca
     # Then recognised scratch is reclaimed without retaining junk as candidates.
     assert not entry.exists()
     assert result.removed == result.examined == 1
-    assert result.skipped["unrecognised"] == 6
+    assert result.skipped[f"{location}:unrecognised"] == 6
     assert not result.bounds
 
 

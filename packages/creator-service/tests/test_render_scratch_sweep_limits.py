@@ -92,7 +92,7 @@ def test_vanished_entry_is_not_deletion_error(tmp_path: Path, monkeypatch: pytes
     # When the losing sweeper reclaims the same entry.
     result = sweep_render_scratch(tmp_path, SweepPolicy(), SweepRuntime(now=lambda: path.stat().st_ctime + 7200))
     # Then the benign race is counted as vanished rather than failed deletion.
-    assert result.skipped == {"vanished": 1}
+    assert result.skipped == {"artifact:vanished": 1}
     assert result.removed == 0
 
 
@@ -127,7 +127,7 @@ def test_wrong_types_are_kept(tmp_path: Path) -> None:
     # When age would otherwise qualify them; then both are preserved.
     result = sweep_render_scratch(tmp_path, SweepPolicy(), SweepRuntime(now=lambda: regular.stat().st_ctime + 7200))
     assert result.removed == 0
-    assert result.skipped["type"] == 2
+    assert result.skipped["artifact:type"] == 2
     assert regular.read_bytes() == b"not scratch"
     assert directory.is_dir()
 

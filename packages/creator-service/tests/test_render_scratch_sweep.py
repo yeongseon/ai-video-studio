@@ -76,8 +76,8 @@ def test_sweep_confines_symlinks_and_published_subtrees(tmp_path: Path, caplog) 
     assert (payload / "keep").read_bytes() == b"victim"
     assert (published / "keep").read_bytes() == b"published"
     assert (render / named()).is_symlink()
-    assert result.skipped["symlink"] == 3
-    assert sum(record.message == "Render scratch sweep skipped symlink" for record in caplog.records) == 1
+    assert result.skipped["artifact:symlink"] == 3
+    assert sum(record.message == "Render scratch sweep skipped artifact:symlink" for record in caplog.records) == 1
 
 
 def test_age_uses_last_change_not_backdated_mtime(tmp_path: Path) -> None:
