@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import os
 from collections.abc import Callable
 from hashlib import blake2s
@@ -9,6 +10,8 @@ from celery import Task
 from celery.utils.nodenames import gethostname
 from celery.worker.request import Request
 from creator_domain.sanitize import sanitize_path_component
+
+logger = logging.getLogger(__name__)
 
 
 def delivery_owner(task_id: str, worker_hostname: str, worker_pid: int) -> str:
@@ -71,19 +74,25 @@ class ProductionRequest(Request):
         ):
             hostname = gethostname()
             owner = delivery_owner(self.id, hostname, self.worker_pid)
-            finalize_hard_timeout(
-                self.id,
-                owner,
-                run_id,
-                timeout,
-                safe_failure_stages,
-            )
-            self.task.hard_timeout_cleanup(
-                run_id,
-                self.id,
-                hostname,
-                self.worker_pid,
-            )
+            try:
+                finalize_hard_timeout(
+                    self.id,
+                    owner,
+                    run_id,
+                    timeout,
+                    safe_failure_stages,
+                )
+            except Exception:
+                logger.error("Hard-timeout finalization failed for run %d", run_id, exc_info=True)
+            try:
+                self.task.hard_timeout_cleanup(
+                    run_id,
+                    self.id,
+                    hostname,
+                    self.worker_pid,
+                )
+            except Exception:
+                logger.warning("Hard-timeout cleanup failed for run %d", run_id, exc_info=True)
 
 
 class ProductionTask(Task):
