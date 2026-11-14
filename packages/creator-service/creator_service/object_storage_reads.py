@@ -26,7 +26,7 @@ class StorageObjectMissing(RuntimeError):
         return "Object not found"
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class StorageReadError(RuntimeError):
     """Exception state remains mutable so Python can attach traceback and cause."""
 
