@@ -3,6 +3,7 @@
 import json
 import logging
 import math
+import re
 import traceback
 from itertools import islice
 from types import TracebackType
@@ -13,6 +14,7 @@ from creator_service.error_redaction import (
     is_sensitive_log_key,
     redact_log_text,
 )
+from creator_service.telemetry import CORRELATION_ATTRIBUTE, attach_trace_context_filter
 from creator_service.uvicorn_logging import UvicornAccessFilter
 
 _REDACTED = "<redacted>"
@@ -29,6 +31,7 @@ _STANDARD_ATTRIBUTES = frozenset({
     "name", "msg", "args", "created", "filename", "funcName", "levelname", "levelno",
     "lineno", "module", "msecs", "message", "pathname", "process", "processName",
     "relativeCreated", "thread", "threadName", "exc_info", "exc_text", "stack_info",
+    CORRELATION_ATTRIBUTE,
 })
 
 
@@ -190,6 +193,34 @@ class _LogSanitizer:
         return items
 
 
+_TRACE_ID = re.compile(r"[0-9a-f]{32}")
+_SPAN_ID = re.compile(r"[0-9a-f]{16}")
+
+
+def _correlation_fields(record: logging.LogRecord) -> dict[str, str]:
+    """Exempt SDK correlation ids, never user data, only with matching filter provenance.
+
+    These random identifiers enable trace joins; shape alone cannot prove provenance.
+    Both nonzero lowercase hex ids must match the filter's pair before either is exempt.
+    """
+    provenance = record.__dict__.get(CORRELATION_ATTRIBUTE)
+    trace_id = record.__dict__.get("trace_id")
+    span_id = record.__dict__.get("span_id")
+    if type(provenance) is not tuple or len(provenance) != 2:
+        return {}
+    if type(trace_id) is not str or type(span_id) is not str:
+        return {}
+    if not all(type(value) is str for value in provenance):
+        return {}
+    if (trace_id, span_id) != provenance:
+        return {}
+    if not _TRACE_ID.fullmatch(trace_id) or not _SPAN_ID.fullmatch(span_id):
+        return {}
+    if trace_id == "0" * 32 or span_id == "0" * 16:
+        return {}
+    return {"trace_id": trace_id, "span_id": span_id}
+
+
 class JsonFormatter(logging.Formatter):
     """JSON formatter for structured logging.
 
@@ -234,6 +265,7 @@ class JsonFormatter(logging.Formatter):
                 log_obj["exc_info"] = _UNREPRESENTABLE
 
         log_obj.update(self._extras(record))
+        log_obj.update(_correlation_fields(record))
 
         try:
             return json.dumps(log_obj, allow_nan=False)
@@ -272,6 +304,7 @@ def setup_json_logging(service_name: str, level: str = "INFO") -> None:
     root_logger = logging.getLogger()
     handler = logging.StreamHandler()
     handler.setFormatter(JsonFormatter(service_name=service_name))
+    attach_trace_context_filter(handler)
     root_logger.handlers = [handler]
     root_logger.setLevel(getattr(logging, level))
 
