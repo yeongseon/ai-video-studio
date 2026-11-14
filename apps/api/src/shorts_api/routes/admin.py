@@ -139,7 +139,7 @@ async def admin_unstick_run(
     logger.warning("Admin mutation requested: unstick run_id=%s", run_id)
     audit_id = str(uuid.uuid4())
     audit_logger.warning(
-        "ADMIN_ACTION: unstick_run | run_id=%s | key=%s | request_id=%s | source_ip=%s | audit_id=%s",
+        "ADMIN_ACTION: unstick_run | run_id=%s | key_fingerprint=%s | request_id=%s | source_ip=%s | audit_id=%s",
         run_id,
         key_fingerprint,
         request_id,
@@ -175,7 +175,7 @@ async def admin_clear_cache(
     audit_id = str(uuid.uuid4())
     if key_pattern is None:
         audit_logger.warning(
-            "ADMIN_ACTION: cache_clear | dry_run=%s | key=%s | request_id=%s | source_ip=%s | audit_id=%s",
+            "ADMIN_ACTION: cache_clear | dry_run=%s | key_fingerprint=%s | request_id=%s | source_ip=%s | audit_id=%s",
             dry_run,
             key_fingerprint,
             request_id,
@@ -184,7 +184,7 @@ async def admin_clear_cache(
         )
     else:
         audit_logger.warning(
-            "ADMIN_ACTION: cache_clear | key_pattern=%s | dry_run=%s | key=%s | request_id=%s | source_ip=%s | audit_id=%s",
+            "ADMIN_ACTION: cache_clear | key_pattern=%s | dry_run=%s | key_fingerprint=%s | request_id=%s | source_ip=%s | audit_id=%s",
             safe_pattern,
             dry_run,
             key_fingerprint,
@@ -197,7 +197,7 @@ async def admin_clear_cache(
     if not dry_run:
         if key_pattern is None or key_pattern.strip() in _DANGEROUS_PATTERNS:
             audit_logger.warning(
-                "ADMIN_REJECTED: cache_clear | reason=dangerous_pattern | pattern=%s | key=%s | audit_id=%s",
+                "ADMIN_REJECTED: cache_clear | reason=dangerous_pattern | pattern=%s | key_fingerprint=%s | audit_id=%s",
                 safe_pattern,
                 key_fingerprint,
                 audit_id,
@@ -213,7 +213,7 @@ async def admin_clear_cache(
         )
         if not pattern_allowed:
             audit_logger.warning(
-                "ADMIN_REJECTED: cache_clear | reason=prefix_not_allowed | pattern=%s | key=%s | audit_id=%s",
+                "ADMIN_REJECTED: cache_clear | reason=prefix_not_allowed | pattern=%s | key_fingerprint=%s | audit_id=%s",
                 safe_pattern,
                 key_fingerprint,
                 audit_id,
