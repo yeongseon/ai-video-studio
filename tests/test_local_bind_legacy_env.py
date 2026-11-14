@@ -80,3 +80,70 @@ def test_legacy_wildcard_requires_exact_shell_confirmation(tmp_path: Path, confi
     # Then startup is refused before Docker.
     assert result.returncode != 0
     assert calls == ""
+
+
+@pytest.mark.parametrize("wildcard", ["[::]", "[::ffff:0.0.0.0]", "0.0.0.0", "::"])
+@pytest.mark.parametrize("quote", ["", "'", '"'])
+@pytest.mark.parametrize("prefix", ["", "export ", "\ufeff"])
+@pytest.mark.parametrize("separator", ["=", ": "])
+def test_legacy_wildcard_syntax_is_refused(
+    tmp_path: Path, wildcard: str, quote: str, prefix: str, separator: str,
+) -> None:
+    # Given a Compose dotenv spelling of an unconfirmed legacy wildcard.
+    line = f"{prefix}STUDIO_WEB_BIND{separator}{quote}{wildcard}{quote}\n"
+    (tmp_path / ".env").write_text(line, encoding="utf-8")
+    # When the supported Make entry point inspects it.
+    result, calls = _run_make(tmp_path, "docker-local-up")
+    # Then quoting, brackets, colon or BOM cannot hide the wildcard.
+    assert result.returncode != 0
+    assert calls == ""
+    assert "STUDIO_WEB_LAN_OK=1" in result.stderr
+
+
+@pytest.mark.parametrize("line", ["STUDIO_WEB_BIND=", "STUDIO_WEB_BIND=''", 'STUDIO_WEB_BIND: ""'])
+def test_empty_legacy_value_is_silent(tmp_path: Path, line: str) -> None:
+    # Given an empty value that Compose defaults to loopback.
+    (tmp_path / ".env").write_text(line + "\n", encoding="utf-8")
+    # When Make validates its independent default.
+    result, calls = _run_make(tmp_path, "docker-local-up")
+    # Then no false exposure warning is emitted.
+    assert result.returncode == 0, result.stderr
+    assert result.stderr == ""
+    assert calls == "bind=[127.0.0.1]\n"
+
+
+@pytest.mark.parametrize("directory", [False, True], ids=["invalid-byte", "directory"])
+@pytest.mark.parametrize("bind", ["127.0.0.1", "192.168.1.10"])
+def test_uninspectable_env_preserves_bind_validation(tmp_path: Path, directory: bool, bind: str) -> None:
+    # Given an advisory file that is not UTF-8 text or cannot be read as a file.
+    path = tmp_path / ".env"
+    if directory:
+        path.mkdir()
+    else:
+        path.write_bytes(b"X=\xff\n")
+    env = {key: value for key, value in os.environ.items() if not key.startswith("STUDIO_WEB_")}
+    env["STUDIO_WEB_BIND"] = bind
+    # When validating the actual shell bind independently of the scan.
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/validate_local_bind.py")], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    # Then the ordinary loopback/LAN decision survives without a traceback.
+    assert result.returncode == (0 if bind == "127.0.0.1" else 2), result.stderr
+    assert "Traceback" not in result.stderr
+    if directory:
+        warnings = [line for line in result.stderr.splitlines() if line.startswith("WARNING:")]
+        assert len(warnings) == 1
+        assert "cannot inspect .env" in warnings[0]
+        assert "legacy STUDIO_WEB_BIND check skipped" in warnings[0]
+
+
+def test_dynamic_legacy_value_warns_without_expansion(tmp_path: Path) -> None:
+    # Given an unresolved dotenv expression that is not a literal wildcard.
+    (tmp_path / ".env").write_text("STUDIO_WEB_BIND=${H:-0.0.0.0}\n", encoding="utf-8")
+    # When Make exports its independently validated loopback.
+    result, calls = _run_make(tmp_path, "docker-local-up")
+    # Then the advisory scan warns but neither expands nor authorizes the expression.
+    assert result.returncode == 0, result.stderr
+    assert "WARNING" in result.stderr
+    assert calls == "bind=[127.0.0.1]\n"

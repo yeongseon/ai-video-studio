@@ -39,19 +39,28 @@ def literal_address(raw: str) -> IPv4Address | IPv6Address | None:
 def legacy_env_is_safe(confirmed: bool) -> bool:
     """Diagnose assignments without trusting .env for bind or confirmation values."""
     try:
-        lines = Path(".env").read_text(encoding="utf-8").splitlines()
+        lines = Path(".env").read_text(encoding="utf-8-sig", errors="replace").splitlines()
     except FileNotFoundError:
+        return True
+    except OSError as error:
+        print(f"WARNING: cannot inspect .env ({error.strerror}); "
+              "legacy STUDIO_WEB_BIND check skipped", file=sys.stderr)
         return True
     safe = True
     for line in lines:
-        assignment = re.fullmatch(r"\s*(?:export\s+)?STUDIO_WEB_BIND\s*=(.*)", line)
+        assignment = re.fullmatch(r"\s*(?:export\s+)?STUDIO_WEB_BIND\s*[=:](.*)", line)
         if assignment is None:
             continue
         try:
             values = shlex.split(assignment.group(1), comments=True)
         except ValueError:
-            values = []
-        address = literal_address(values[0]) if len(values) == 1 else None
+            values = [assignment.group(1)]
+        if not values or values == [""]:
+            continue
+        raw = values[0] if len(values) == 1 else ""
+        if raw.startswith("[") and raw.endswith("]"):
+            raw = raw[1:-1]
+        address = literal_address(raw)
         if address is not None and any(address in network for network in LOOPBACK_NETWORKS):
             continue
         print("WARNING: .env contains non-loopback STUDIO_WEB_BIND; remove this line: "
