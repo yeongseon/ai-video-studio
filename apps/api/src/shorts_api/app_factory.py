@@ -50,8 +50,8 @@ logger = logging.getLogger(__name__)
 validate_production_config()
 _ACCESS_PATH_ESCAPES = {
     code: f"\\x{code:02x}" if code < 128 else f"\\u{code:04x}"
-    for code in (*range(32), 127, 0x2028, 0x2029)
-}
+    for code in (*range(32), *range(0x7F, 0xA0), 0x2028, 0x2029, *range(0x202A, 0x202F), *range(0x2066, 0x206A))
+} | {ord("\\"): "\\\\"}
 
 
 runs_router = APIRouter()

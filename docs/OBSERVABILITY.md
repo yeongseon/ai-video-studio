@@ -152,9 +152,12 @@ Structured logging is configured in `creator_service/logging_config.py`:
   parameters, accumulates nested mount prefixes, and refuses uninspectable
   file-serving mounts under preserved prefixes; it is a regression aid, not
   runtime authorization. The API access-log path argument visibly escapes
-  U+0000–U+001F and U+007F as `\xNN`, and U+2028/U+2029 as `\uNNNN`, from the
-  decoded ASGI path before URL parsing can discard controls. Normal paths are
-  unchanged; the stream formatter and Uvicorn query filter remain unchanged.
+  U+0000–U+001F and U+007F as `\xNN`; U+0080–U+009F (including U+0085),
+  U+2028/U+2029 and the bidirectional overrides and isolates U+202A–U+202E and
+  U+2066–U+2069 as `\uNNNN`; and doubles a literal backslash so that it cannot pass
+  for an escape. The decoded ASGI path is used because URL parsing can discard
+  controls. Normal paths are unchanged; the stream formatter and Uvicorn query
+  filter remain unchanged.
 - The shared error-text redactor used by API error responses, DLQ values and JSON
   logs hides URLs, credential URIs, Bearer tokens, 20+ hexadecimal characters and
   provider-shaped tokens (`sk-`/`sk_`, `gsk-`/`gsk_`, `ghp-`/`ghp_`, `xoxb-`/`xoxb_`,
