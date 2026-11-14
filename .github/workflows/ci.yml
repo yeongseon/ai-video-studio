@@ -208,7 +208,7 @@ jobs:
       - name: Test architecture dependency checker
         run: python3 -m pytest tests/test_package_dependency_cli.py tests/test_package_dependency_parser.py tests/test_package_dependency_compliance.py tests/test_architecture_diagrams.py -q
       - name: Inspect local storage Compose configuration without containers
-        run: python3 -m pytest tests/test_local_storage_compose.py -q
+        run: python3 -m pytest tests/test_local_storage_compose.py tests/test_local_acceptance_env.py tests/test_local_dockerignore.py -q
       - name: Test full and quick Make check targets with a fake toolchain
         run: python3 -m pytest tests/test_make_check_targets.py -q
       - name: Test PR impact classifier fail-closed policy
@@ -547,6 +547,8 @@ jobs:
             /tmp/release-lifecycle-evidence.log
             /tmp/release-lifecycle-evidence
       - name: Runtime cutover acceptance
+        env:
+          CUTOVER_ACCEPTANCE_DISPOSABLE: "1"
         run: scripts/cutover_runtime_acceptance.sh
 
   ci-required:

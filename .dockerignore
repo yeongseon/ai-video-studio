@@ -1,0 +1,37 @@
+# Secrets at any depth, including interrupted storage/env publication copies.
+**/.env*
+**/*.pem
+**/*.key
+**/.netrc
+**/secrets/
+**/.aws/
+**/.ssh/
+**/.npmrc
+**/*.env
+!**/.env.example
+!**/.env.*.example
+**/.env.example/**
+**/.env.*.example/**
+
+data/
+apps/api/data/artifacts/
+apps/worker-orchestrator/data/
+.git
+.venv/
+**/node_modules
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.mypy_cache
+**/.ruff_cache
+**/.coverage*
+**/coverage
+**/coverage.xml
+**/htmlcov
+
+# Local editor and agent state is never a build input.
+.omc/
+.omo/
+.claude/
+.idea/
+.vscode/

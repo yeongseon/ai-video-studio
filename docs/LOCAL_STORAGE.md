@@ -264,8 +264,8 @@ share it, since the hash could help guess low-entropy secrets. A crash
 before the rename may leave a receipt but no switch: inspect before retrying; never
 overwrite a receipt blindly. Do not edit `.env` concurrently with these blocks.
 After an interrupted Switch or Rollback, look for leftover `.env-storage-*` files
-in the checkout and securely shred those plaintext secret copies before any build
-or sharing. Git ignores them, but that is not secure erasure; on copy-on-write,
+in the checkout and securely shred those plaintext secret copies before sharing.
+Git and the root `.dockerignore` exclude them, but that is not secure erasure; on copy-on-write,
 snapshot or SSD filesystems follow the host's secure-erasure policy as well.
 Ensure no exported `ARTIFACTS_HOST_DIR`, `COMPOSE_ENV_FILES`, `COMPOSE_DISABLE_ENV_FILE`
 or explicit `--env-file` bypasses this project configuration. Remove conflicting
@@ -273,7 +273,21 @@ shell/service-manager overrides before acceptance and future maintenance.
 Plain `docker compose`, `make docker-up`, `make docker-local-up`/`docker-local-build`
 resolve the persisted value without extra env-file flags.
 `scripts/cutover_runtime_acceptance.sh` is a disposable CI acceptance harness that
-overwrites `.env`; **never run it on a migrated or production checkout**.
+refuses to run when `.env` exists, before copying or changing it. Run it from a
+fresh clone or `git worktree`, or move/rename the real `.env` first.
+`CUTOVER_ACCEPTANCE_DISPOSABLE=1` explicitly means **this checkout is disposable:
+its `.env` will be replaced**; CI sets it in its fresh checkout. Never set it on a
+migrated or production checkout. Replacing an existing `.env` emits a loud WARNING
+to stderr naming the checkout directory (no warning for an absent `.env`). Without
+the opt-in, the harness publishes its private temporary file with `ln -T --`, refusing
+atomically if any entry (file, directory or symlink) appeared at `.env` after the
+guard, and it needs a filesystem that supports hard links; only the opt-in uses `mv -T`.
+Its own later API-key rewrite uses `os.replace`. Cleanup after EXIT/INT/TERM removes
+the temporary name and only a successfully published harness `.env`; it never backs
+up or restores an operator's `.env`. Git and Docker ignore `.env-cutover-*` leftovers,
+but SIGKILL/reboot still requires private-checkout cleanup before reuse. The root
+Docker context retains only synthetic `.env.example` and `.env.*.example` files,
+not contents of directories with those names. Keep all `*.example` files synthetic.
 Do not replace `.env` from
 an example after migration: doing so loses this setting as well as credentials.
 
