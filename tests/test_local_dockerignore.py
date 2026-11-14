@@ -3,6 +3,8 @@
 from pathlib import Path
 import re
 import shlex
+import subprocess
+import sys
 from typing import Final
 
 import pytest
@@ -92,15 +94,43 @@ def test_copy_sources_and_descendants_survive_when_using_root_context() -> None:
             if not tokens or tokens[0].upper() != "COPY" or any(token.startswith("--from=") for token in tokens):
                 continue
             sources.update(token for token in tokens[1:-1] if not token.startswith("--"))
-    # Then explicit sources and all shipped descendants survive, except reinstallable caches.
+    # Then explicit sources and all tracked descendants survive filtering.
     assert "scripts" in sources and "apps/studio-web" in sources and "packages" in sources
     for source in sorted(sources):
         matches = list(ROOT.glob(source))
         assert matches, source
         for match in matches:
-            paths = [match, *match.rglob("*")] if match.is_dir() else [match]
-            for path in paths:
-                relative = path.relative_to(ROOT)
-                if {"node_modules", "__pycache__"}.intersection(relative.parts) or path.suffix == ".pyc":
-                    continue
-                assert not _ignored(relative.as_posix(), rules), relative
+            relative = match.relative_to(ROOT).as_posix()
+            assert not _ignored(relative, rules), relative
+            tracked = subprocess.run(
+                ["git", "ls-files", "-z", "--", relative], cwd=ROOT,
+                env={"GIT_MASTER": "1"}, capture_output=True, text=True, check=True,
+            ).stdout.split("\0")
+            assert any(tracked), source
+            for path in filter(None, tracked):
+                assert not _ignored(path, rules), path
+
+
+def test_copy_contract_ignores_untracked_local_files(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given tracked build inputs plus a developer's untracked secret and coverage.
+    for source in ("scripts", "packages", "apps/studio-web", "apps/api", "apps/worker-orchestrator"):
+        (tmp_path / source).mkdir(parents=True, exist_ok=True)
+    (tmp_path / ".dockerignore").write_text((ROOT / ".dockerignore").read_text())
+    compose = []
+    for app in ("api", "worker-orchestrator", "studio-web"):
+        name = f"apps/{app}/Dockerfile"
+        (tmp_path / name).write_text("COPY scripts packages apps/studio-web /app/\n")
+        compose.append(f"    context: .\n    dockerfile: {name}\n")
+    (tmp_path / "docker-compose.yml").write_text("".join(compose))
+    (tmp_path / "scripts/input.sh").write_text("true\n")
+    (tmp_path / "packages/input.txt").write_text("synthetic\n")
+    subprocess.run(["git", "init", "-q", str(tmp_path)], env={"GIT_MASTER": "1"}, check=True)
+    subprocess.run(["git", "-C", str(tmp_path), "add", "."], env={"GIT_MASTER": "1"}, check=True)
+    (tmp_path / "apps/studio-web/.env.local").write_text("API_KEY=synthetic\n")
+    (tmp_path / "apps/studio-web/coverage").mkdir()
+    (tmp_path / "apps/studio-web/coverage/local.html").write_text("local\n")
+    monkeypatch.setattr(sys.modules[__name__], "ROOT", tmp_path)
+    # When running the same COPY-survival contract on this checkout.
+    test_copy_sources_and_descendants_survive_when_using_root_context()
+    # Then only tracked inputs were considered, without altering local files.
+    assert (tmp_path / "apps/studio-web/.env.local").read_text() == "API_KEY=synthetic\n"
