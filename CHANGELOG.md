@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Security
 
+- Upgrade FastAPI to 0.133.0, Starlette to 1.10.0 and python-multipart to 0.0.33 past published advisories while preserving JSON parsing without Content-Type and rejection of text/plain JSON bodies (#1023 group 1).
 - Upgrade the HTTP client stack to aiohttp 3.14.5, anyio 4.16.0, certifi 2026.10.23, idna 3.20 and multidict 6.9.1 past published advisories, with required yarl 1.25.1 and typing-extensions 4.16.0 dependencies (#1023 group 3).
 
 ### Added

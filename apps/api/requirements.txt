@@ -1,5 +1,5 @@
-fastapi==0.129.0
-python-multipart==0.0.22
+fastapi==0.133.0
+python-multipart==0.0.33
 uvicorn==0.40.0
 celery==5.6.3
 redis==6.4.0
