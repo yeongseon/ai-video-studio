@@ -13,6 +13,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ARTIFACT_RETENTION_DAYS` env var (default 90) + `sweep_expired_artifacts` beat task that marks expired artifacts for deletion (#587).
 - CI smoke: `celery inspect registered` verifies every beat task is registered on the worker (#585).
 - CI smoke: POST through nginx (port 5174) with the browser Origin header to catch CSRF regressions (#586).
+- Local runtime acceptance now requires one healthy Beat, preserves it across repeated supported startup, verifies reconciliation dispatch logs, and rejects a stopped scheduler (#990).
 
 ### Fixed
 
