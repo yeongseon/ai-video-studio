@@ -13,10 +13,14 @@ from importlib import import_module
 from unittest.mock import AsyncMock, patch
 
 import pytest
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
+from starlette.requests import Request
 
 app = import_module("shorts_api.main").app
 admin = import_module("shorts_api.routes.admin")
+auth = import_module("shorts_api.auth")
+health = import_module("shorts_api.health")
 
 
 # -- Mocks for admin_service methods --
@@ -215,16 +219,99 @@ class TestMiddlewareBlocksNonexistentAdminPaths:
 
 
 class TestTimingSafeComparison:
-    """Verify that require_admin uses hmac.compare_digest (timing-safe)."""
+    """Verify that every admin-key comparison delegates to the shared constant-time helper."""
 
-    def test_hmac_compare_digest_is_used(self) -> None:
-        """Inspect source code for hmac.compare_digest usage."""
+    def test_require_admin_uses_shared_constant_time_helper(self) -> None:
+        """Inspect the source of require_admin for the delegation to admin_key_matches."""
         import inspect
 
         source = inspect.getsource(admin.require_admin)
         assert "admin_key_matches" in source, (
             "require_admin must delegate to the shared timing-safe byte comparison"
         )
+
+
+class _Verdict:
+    """admin_key_matches stand-in: records each comparison and answers with a fixed verdict."""
+
+    def __init__(self, verdict: bool) -> None:
+        self.verdict = verdict
+        self.calls: list[tuple[str | None, str]] = []
+
+    def __call__(self, provided: str | None, expected: str) -> bool:
+        self.calls.append((provided, expected))
+        return self.verdict
+
+
+# Mixed case on purpose: lowercasing either side before the helper is called changes what the recorder sees.
+_CONFIGURED_KEY = "Test-Admin-KEY-secure-16chars"
+# A plain comparison cannot give both answers: the helper refuses the correct key and accepts a wrong one.
+_VERDICTS = pytest.mark.parametrize(
+    ("provided", "verdict"),
+    [(_CONFIGURED_KEY, False), ("Wrong-KEY-Mixed-Case", True)],
+    ids=["correct-key-refused-by-helper", "wrong-key-accepted-by-helper"],
+)
+
+
+class TestEveryComparisonSiteDelegatesToTheSharedHelper:
+    """Reverting any of the three comparison sites to a plain == must fail a test (#1079)."""
+
+    @pytest.fixture(autouse=True)
+    def _mixed_case_admin_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ADMIN_API_KEY", _CONFIGURED_KEY)
+
+    @_VERDICTS
+    async def test_require_admin_takes_its_decision_from_the_shared_helper(
+        self, monkeypatch: pytest.MonkeyPatch, provided: str, verdict: bool,
+    ) -> None:
+        # Given the shared helper replaced by a recorder with a fixed verdict.
+        recorder = _Verdict(verdict)
+        monkeypatch.setattr(admin, "admin_key_matches", recorder)
+
+        # When the router dependency decides.
+        try:
+            accepted = await admin.require_admin(x_admin_key=provided) == provided
+        except HTTPException as error:
+            assert error.status_code == 403
+            accepted = False
+
+        # Then the helper was asked about exactly this key and its answer decided.
+        assert recorder.calls == [(provided, _CONFIGURED_KEY)]
+        assert accepted is verdict
+
+    @_VERDICTS
+    def test_middleware_takes_its_decision_from_the_shared_helper(
+        self, monkeypatch: pytest.MonkeyPatch, provided: str, verdict: bool,
+    ) -> None:
+        # Given the shared helper replaced by a recorder, and the middleware alone in front of an unknown admin path.
+        recorder = _Verdict(verdict)
+        monkeypatch.setattr(auth, "admin_key_matches", recorder)
+        isolated = FastAPI()
+        isolated.add_middleware(auth.ApiKeyMiddleware)
+
+        # When the middleware decides.
+        with TestClient(isolated) as client:
+            response = client.get("/api/admin/nonexistent", headers={"x-admin-key": provided})
+
+        # Then the helper was asked about exactly this key; passing the middleware ends in routing (404), refusing in 403.
+        assert recorder.calls == [(provided, _CONFIGURED_KEY)]
+        assert response.status_code == (404 if verdict else 403)
+
+    @_VERDICTS
+    def test_health_check_takes_its_decision_from_the_shared_helper(
+        self, monkeypatch: pytest.MonkeyPatch, provided: str, verdict: bool,
+    ) -> None:
+        # Given the shared helper replaced by a recorder, and a health request carrying the key.
+        recorder = _Verdict(verdict)
+        monkeypatch.setattr(health, "admin_key_matches", recorder)
+        request = Request({"type": "http", "headers": [(b"x-admin-key", provided.encode())]})
+
+        # When the health endpoint decides whether the caller is an admin.
+        is_admin = health._is_admin_request(request)
+
+        # Then the helper was asked about exactly this key and its answer decided.
+        assert recorder.calls == [(provided, _CONFIGURED_KEY)]
+        assert is_admin is verdict
 
 
 class TestProductionKeyLengthEnforcement:
