@@ -7,10 +7,10 @@ audio generators and mixes them with narration audio for YouTube Shorts.
 from __future__ import annotations
 
 import logging
-import subprocess
 from pathlib import Path
 
 from .render_scratch import create_sfx_scratch
+from .ffmpeg_service import _run_ffmpeg
 
 logger = logging.getLogger(__name__)
 
@@ -78,9 +78,7 @@ class BgmService:
             str(out),
         ]
 
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=60, start_new_session=True
-        )
+        result = _run_ffmpeg(cmd, timeout=60)
         if result.returncode != 0:
             logger.error("BGM generation failed: %s", result.stderr[-500:])
             raise RuntimeError(f"BGM generation failed: {result.stderr}")
@@ -139,9 +137,7 @@ class BgmService:
             str(out),
         ]
 
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=120, start_new_session=True
-        )
+        result = _run_ffmpeg(cmd, timeout=120)
         if result.returncode != 0:
             # Fallback: try simpler mix without sidechain (older FFmpeg may lack it)
             logger.warning("Sidechain ducking failed, falling back to simple mix: %s", result.stderr[-200:])
@@ -164,9 +160,7 @@ class BgmService:
                 "192k",
                 str(out),
             ]
-            result = subprocess.run(
-                cmd_simple, capture_output=True, text=True, timeout=120, start_new_session=True
-            )
+            result = _run_ffmpeg(cmd_simple, timeout=120)
             if result.returncode != 0:
                 logger.error("Audio mixing failed: %s", result.stderr[-500:])
                 raise RuntimeError(f"Audio mixing failed: {result.stderr}")
@@ -202,9 +196,7 @@ class BgmService:
             str(out),
         ]
 
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=30, start_new_session=True
-        )
+        result = _run_ffmpeg(cmd, timeout=30)
         if result.returncode != 0:
             logger.error("SFX generation failed (%s): %s", sfx_type, result.stderr[-300:])
             raise RuntimeError(f"SFX generation failed ({sfx_type}): {result.stderr}")
@@ -285,9 +277,7 @@ class BgmService:
                 str(out),
             ]
 
-            result = subprocess.run(
-                cmd, capture_output=True, text=True, timeout=120, start_new_session=True
-            )
+            result = _run_ffmpeg(cmd, timeout=120)
             if result.returncode != 0:
                 logger.warning("SFX mixing failed, returning original: %s", result.stderr[-300:])
                 return base_audio_path
@@ -348,9 +338,7 @@ class BgmService:
             str(out),
         ]
 
-        result = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=120, start_new_session=True
-        )
+        result = _run_ffmpeg(cmd, timeout=120)
         if result.returncode != 0:
             logger.warning("Loudness normalization failed, returning original: %s", result.stderr[-300:])
             return input_path
