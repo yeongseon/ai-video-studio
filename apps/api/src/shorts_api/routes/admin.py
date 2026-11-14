@@ -13,7 +13,6 @@ handled separately from this API surface.
 from __future__ import annotations
 
 import hashlib
-import hmac
 import logging
 import os
 import uuid
@@ -25,7 +24,7 @@ from shorts_api.admin_rate_limit import DestructiveOpRateLimiter as DestructiveO
 
 from creator_service.admin_service import admin_service
 from creator_service.blocking_io import run_admin_limiter
-from shorts_api.lifecycle import configured_admin_api_key
+from shorts_api.lifecycle import admin_key_matches, configured_admin_api_key
 
 logger = logging.getLogger(__name__)
 audit_logger = logging.getLogger("admin.audit")
@@ -56,7 +55,7 @@ async def require_admin(x_admin_key: str | None = Header(default=None)) -> str:
     if environment == "production" and (not expected or len(expected) < 16):
         logger.error("ADMIN_API_KEY is not set or too short (min 16 chars)")
         raise HTTPException(status_code=503, detail="Admin API not configured")
-    if not expected or not hmac.compare_digest(x_admin_key, expected):
+    if not expected or not admin_key_matches(x_admin_key, expected):
         raise HTTPException(status_code=403, detail="Admin access denied")
     return x_admin_key
 
