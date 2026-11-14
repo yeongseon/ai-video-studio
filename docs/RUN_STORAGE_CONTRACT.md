@@ -324,7 +324,8 @@ reap orphans should use an init (for example Docker `init: true`). FFmpeg itself
 normally has no children. Descendants that leave the process group (`setsid`)
 or detach their stdio are not covered; FFmpeg does neither. Group signalling
 relies on an unreaped direct child pinning the pid: ignoring SIGCHLD in the worker
-would auto-reap children and void that argument (Celery does not ignore SIGCHLD).
+would auto-reap children and void that argument (the solo pool of the render worker
+does not ignore SIGCHLD).
 No production subreaper/supervisor is installed.
 This does not replace crash reclamation, free-space admission or the separate
 prefork hard-kill process-control work.
