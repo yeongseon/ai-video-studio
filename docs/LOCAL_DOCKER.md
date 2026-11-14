@@ -37,9 +37,15 @@ use, or generate a new key; production still requires at least 16 characters.
 If you already have a `.env` that was copied from an older `.env.local.example`,
 delete any `STUDIO_WEB_BIND=0.0.0.0` line from it now. The Make guard inspects `.env`
 as text (never sources or executes it), warns on every uncommented non-loopback
-`STUDIO_WEB_BIND=` assignment, and refuses a wildcard unless the shell has exactly
-`STUDIO_WEB_LAN_OK=1`. Quoted values and `export` prefixes are recognized; commented
-assignments and loopback literals are silent. Its exported bind still takes precedence
+`STUDIO_WEB_BIND` assignment, and refuses a wildcard unless the shell has exactly
+`STUDIO_WEB_LAN_OK=1`. Quoted values, `export` prefixes, `=` or `:` separators,
+a UTF-8 BOM and one bracket pair around a legacy literal are recognized. Commented
+assignments, empty values and loopback literals are silent. Invalid UTF-8 bytes are
+replaced; an unreadable `.env` (including a directory) produces one warning and the
+advisory scan is skipped. Bind validation still runs normally: its exported value
+wins over `.env`, so skipping inspection does not open an exposure path through Make.
+Unresolvable expressions such as `${H:-0.0.0.0}` warn without expansion.
+Its exported bind still takes precedence
 over `.env`. Direct Compose invocations bypass this guard and can publish Studio on
 every interface from the legacy line, even without confirmation.
 
@@ -130,13 +136,19 @@ For IPv6, the equivalent guarded command is:
 STUDIO_WEB_BIND=fd00::10 STUDIO_WEB_LAN_OK=1 make docker-local-up
 ```
 
-Every non-loopback literal requires exactly `STUDIO_WEB_LAN_OK=1`, including private
-IPv4, bridge gateways, link-local, unique-local and wildcards (`0.0.0.0` or `::`).
+The validator uses an explicit, Python-version-independent allowlist after unwrapping
+IPv4-mapped IPv6 literals:
+
+- Without confirmation: only `127.0.0.0/8` and `::1`.
+- With exactly `STUDIO_WEB_LAN_OK=1`: `10.0.0.0/8`, `172.16.0.0/12`,
+  `192.168.0.0/16`, `100.64.0.0/10` (shared address space, including CGNAT/Tailscale),
+  `169.254.0.0/16`, `fe80::/10`, `fc00::/7`, and the wildcards `0.0.0.0` and `::`.
+- Everything else is refused even with confirmation, including global addresses,
+  documentation/benchmark/reserved ranges, multicast, NAT64, 6to4, Teredo,
+  site-local IPv6 and IPv4-compatible IPv6. Public addresses are never an option.
+
 Values such as `true`, `yes`, `01` or whitespace-padded `1` are rejected as confirmation.
-Global addresses (for example `8.8.8.8`, `1.1.1.1`, `2606:4700:4700::1111`) are
-always refused, even with confirmation: never use a public address for this workflow.
-Only loopback literals (`127.0.0.0/8`, `::1`, including normalized IPv4-mapped
-loopback) are accepted without confirmation; `localhost` and other hostnames stay
+Mapped forms follow the unwrapped IPv4 policy; `localhost` and other hostnames stay
 rejected. Prefer a specific trusted-LAN interface address; wildcards may expose
 every interface (including public and IPv6/dual-stack paths), so confirmation alone
 cannot make them safe. These

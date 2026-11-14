@@ -189,9 +189,19 @@ require every published backend port to have a loopback host IP, reject
 `network_mode: host` for every service, and allow only Studio's selected bind.
 In-memory mutations prove the checker rejects Flower on `0.0.0.0`, a GPU port on
 `::`, and host networking without ports. `tests/test_local_bind.py` tests the
-dependency-free validator and real Make recipes: every non-loopback literal needs
-exactly `STUDIO_WEB_LAN_OK=1`, and global addresses are always refused, including
-IPv4-mapped public literals. `tests/test_local_docs_contract.py` checks the documented
+dependency-free validator and real Make recipes against a version-independent,
+default-deny allowlist after IPv4-mapped IPv6 unwrapping:
+
+- Only `127.0.0.0/8` and `::1` need no confirmation.
+- Only `10.0.0.0/8`, `172.16.0.0/12`, `192.168.0.0/16`, `100.64.0.0/10`
+  (CGNAT/Tailscale shared address space), `169.254.0.0/16`, `fe80::/10`, `fc00::/7`,
+  and wildcards `0.0.0.0` and `::` are accepted with exactly `STUDIO_WEB_LAN_OK=1`.
+- All other literals are refused even with confirmation: global addresses,
+  documentation/benchmark/reserved ranges, multicast, NAT64, 6to4, Teredo,
+  site-local IPv6 and IPv4-compatible IPv6. Mapped forms use the IPv4 policy.
+
+`tests/test_local_bind_legacy_env.py` covers legacy wildcard spellings, empty values
+and tolerant file inspection. `tests/test_local_docs_contract.py` checks the documented
 prerequisites and opt-in examples. These are configuration/contract tests, not
 live network or firewall verification.
 
@@ -199,8 +209,13 @@ Direct Compose invocations bypass the Make guard and interpolate `.env` themselv
 an operator-edited bind, including a legacy wildcard, can publish Studio without
 confirmation. Make warns on uncommented non-loopback bind assignments in `.env`
 and refuses legacy wildcards without exact shell confirmation; it never loads
-the file as shell code or takes confirmation from it. Its validated exported bind
-wins over `.env`. Public or multi-user Studio exposure remains unsupported: the
+the file as shell code or takes confirmation from it. It recognizes quotes, `export`,
+`=`/`:` separators, a UTF-8 BOM and one bracket pair around legacy literals only;
+empty values and loopback are silent. Unresolvable expressions warn without expansion.
+Invalid UTF-8 bytes are replaced. An unreadable `.env` produces one warning and skips
+the advisory scan, but normal bind validation continues. Its validated exported bind
+wins over `.env`, so a skipped scan cannot open an exposure path through Make.
+Public or multi-user Studio exposure remains unsupported: the
 proxy injects a shared creator key, not per-browser authentication. Wildcard binds
 can include public interfaces even though public IP literals are refused; trust
 and Docker-aware firewall isolation still require operator verification.

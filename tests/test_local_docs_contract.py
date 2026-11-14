@@ -124,3 +124,24 @@ def test_shipped_admin_key_is_disabled(path: str) -> None:
     values = [line.partition("=")[2].strip() for line in text.splitlines() if line.startswith("ADMIN_API_KEY=")]
     # Then it cannot enable the admin API with a publicly known credential.
     assert values == [""]
+
+
+@pytest.mark.parametrize("path", ["docs/LOCAL_DOCKER.md", "docs/SECURITY.md"])
+def test_local_policy_documents_the_explicit_allowlist(path: str) -> None:
+    # Given the operator and security descriptions of accepted interfaces.
+    text = _text(path)
+    # When checking the machine-readable CIDRs against the agreed exposure policy.
+    for network in (
+        "127.0.0.0/8", "::1", "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16",
+        "100.64.0.0/10", "169.254.0.0/16", "fe80::/10", "fc00::/7", "0.0.0.0", "::",
+    ):
+        # Then neither guide omits an accepted range.
+        assert f"`{network}`" in text, (path, network)
+
+
+def test_security_ci_inventory_names_legacy_scan_suite() -> None:
+    # Given the security guide's inventory of CI evidence.
+    text = _text("docs/SECURITY.md")
+    # When checking the named suite for the advisory file boundary.
+    # Then readers can find its dedicated regression evidence.
+    assert "tests/test_local_bind_legacy_env.py" in text
