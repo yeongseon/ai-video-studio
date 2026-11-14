@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `StorageReadError` is hashable by identity like the other storage exceptions (`eq=False` on its dataclass), so two read failures with the same `kind` are distinct set members instead of raising `unhashable type` (#1122).
 - OpenTelemetry Console and OTLP exports now redact log bodies, derived chained exceptions and string extras before exporting, and redact span exception-event attributes and status descriptions; redaction failures fail closed without changing JSON stream logging or metrics (#1058).
 - The API server process under default Uvicorn import-string CLI startup now uses the shared redacting JSON stream formatter, including chained exceptions; `uvicorn.access` omits query strings and respects `--no-access-log` (#1035). This applies in every environment, not to `--reload` / `--workers` supervisor lines, custom `--log-config`, app-object startup after import, or OpenTelemetry exporters (see #1058; trace-context placement is tracked in #1059).
 - Shared API, DLQ and JSON-log error redaction now detects sensitive name/value assignments (including Python string prefixes, escaped quotes and authorization schemes) and HuggingFace/Replicate token prefixes; admin audit attribution uses `key_fingerprint` instead of `key`, and unsigned Azure storage warnings use `object_name` instead of `key` so non-secret identifiers stay readable (#1005).
