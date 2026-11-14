@@ -156,6 +156,7 @@ def _probe_source_duration(source: Path) -> float:
             ],
             capture_output=True,
             text=True,
+            errors="replace",
             timeout=_PROBE_TIMEOUT_SECONDS,
         )
     except (subprocess.TimeoutExpired, OSError) as error:
