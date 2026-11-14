@@ -193,6 +193,7 @@ def test_exported_log_attributes_never_carry_the_private_correlation_pair(pipeli
     exported, = pipeline.logs.get_finished_logs()
     # Then the private provenance stays in process while the JSON stream keeps the real ids.
     assert "_otel_correlation" not in exported.log_record.attributes
+    assert sum(isinstance(item, telemetry.TraceContextFilter) for item in pipeline.handler.filters) == 1
     emitted = json.loads(pipeline.stream.getvalue())
     assert emitted["trace_id"] != "<redacted>"
     assert len(emitted["trace_id"]) == 32

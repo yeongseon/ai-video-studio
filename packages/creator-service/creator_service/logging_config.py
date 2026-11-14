@@ -14,8 +14,8 @@ from creator_service.error_redaction import (
     is_sensitive_log_key,
     redact_log_text,
 )
-from creator_service.uvicorn_logging import UvicornAccessFilter
 from creator_service.telemetry import CORRELATION_ATTRIBUTE, attach_trace_context_filter
+from creator_service.uvicorn_logging import UvicornAccessFilter
 
 _REDACTED = "<redacted>"
 _UNREPRESENTABLE = "<unrepresentable>"
@@ -193,6 +193,10 @@ class _LogSanitizer:
         return items
 
 
+_TRACE_ID = re.compile(r"[0-9a-f]{32}")
+_SPAN_ID = re.compile(r"[0-9a-f]{16}")
+
+
 def _correlation_fields(record: logging.LogRecord) -> dict[str, str]:
     """Exempt SDK correlation ids, never user data, only with matching filter provenance.
 
@@ -210,7 +214,7 @@ def _correlation_fields(record: logging.LogRecord) -> dict[str, str]:
         return {}
     if (trace_id, span_id) != provenance:
         return {}
-    if not re.fullmatch(r"[0-9a-f]{32}", trace_id) or not re.fullmatch(r"[0-9a-f]{16}", span_id):
+    if not _TRACE_ID.fullmatch(trace_id) or not _SPAN_ID.fullmatch(span_id):
         return {}
     if trace_id == "0" * 32 or span_id == "0" * 16:
         return {}

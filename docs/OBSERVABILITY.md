@@ -215,10 +215,13 @@ Structured logging is configured in `creator_service/logging_config.py`:
   instrumentation using these providers receives the same boundary, but separately
   installed providers/exporters/handlers or direct output are not intercepted.
   Metrics are unchanged and are not redacted. No new configuration is required.
-- With telemetry enabled and a valid active span, `TraceContextFilter` runs on
-  root handlers, covering direct-root records and propagated application and
-  Uvicorn records. Logging setup filters each installed handler; telemetry setup
-  also filters existing root handlers, idempotently.
+- `TraceContextFilter` runs on the root handlers and adds the correlation fields
+  only when telemetry is enabled and a valid span is active; it covers direct-root
+  records and propagated application and Uvicorn records. Logging setup filters each
+  installed handler; telemetry setup also filters existing root handlers and the SDK
+  log handler, idempotently. A handler added to the root logger later by other code
+  gets no filter of its own and sees the fields only when a filtered handler handled
+  the same record first.
 - JSON exempts only top-level `trace_id` and `span_id` from hex redaction when
   both match the filter's private provenance pair and are nonzero lowercase hex
   strings of exactly 32 and 16 characters, respectively. These SDK correlation
