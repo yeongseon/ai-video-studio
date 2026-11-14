@@ -9,6 +9,8 @@ from packaging.version import Version
 
 ROOT: Final = Path(__file__).resolve().parents[3]
 ADVISORY_FLOORS: Final = {
+    "pillow": "13.0.0",
+    "cairosvg": "2.9.1",
     "aiohttp": "3.14.4",
     "anyio": "4.14.2",
     "certifi": "2026.10.18",
