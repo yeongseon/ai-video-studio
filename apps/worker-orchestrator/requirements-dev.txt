@@ -1,4 +1,4 @@
 watchfiles==1.1.1
 ruff==0.11.13
-pytest==8.4.2
+pytest==9.0.3
 pytest-cov==6.2.1

@@ -20,6 +20,7 @@ ADVISORY_FLOORS: Final = {
     "multidict": "6.9.1",
     "opentelemetry-api": "1.45.2",
     "pygments": "2.20.0",
+    "pytest": "9.0.3",
     "python-multipart": "0.0.31",
     "requests": "2.33.0",
     "starlette": "1.3.1",
