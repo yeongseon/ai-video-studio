@@ -3,13 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from dataclasses import fields
-from typing import TYPE_CHECKING
-
-if TYPE_CHECKING:
-    from _typeshed import DataclassInstance
+from dataclasses import Field, fields
+from typing import Any, ClassVar, Protocol
 
 Reduced = tuple[Callable[..., BaseException], tuple[type[BaseException], dict[str, object]]]
+
+
+class _DataclassInstance(Protocol):
+    """What ``dataclasses.fields`` accepts, as the stub-only ``_typeshed.DataclassInstance`` defines it.
+
+    The import contract (``test_python_import_contract.py``) declares every import, type-checking ones included,
+    and ``_typeshed`` has no distribution, so the protocol is spelled out here.
+    """
+
+    __dataclass_fields__: ClassVar[dict[str, Field[Any]]]
 
 
 def rebuild_exception(cls: Callable[..., BaseException], values: dict[str, object]) -> BaseException:
@@ -24,6 +31,6 @@ def rebuild_exception(cls: Callable[..., BaseException], values: dict[str, objec
     return cls(**values)
 
 
-def field_values(error: DataclassInstance) -> dict[str, object]:
+def field_values(error: _DataclassInstance) -> dict[str, object]:
     """The fields of a dataclass instance by name, the keywords ``rebuild_exception`` passes back."""
     return {field.name: getattr(error, field.name) for field in fields(error)}
