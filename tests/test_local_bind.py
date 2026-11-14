@@ -3,11 +3,13 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-import shutil
 import subprocess
 import sys
 
 import pytest
+
+sys.path.insert(0, str(Path(__file__).parent))
+from local_make_harness import _run_make
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -85,31 +87,6 @@ def test_make_guards_binding_before_docker(target: str) -> None:
     assert command.index("scripts/validate_local_bind.py") < command.index("docker compose")
     assert 'STUDIO_WEB_BIND="$(python3 scripts/validate_local_bind.py)" &&' in command
     assert "export STUDIO_WEB_BIND &&" in command
-
-
-FAKE_DOCKER = '#!/bin/sh\necho "bind=[$STUDIO_WEB_BIND]" >> "$FAKE_DOCKER_LOG"\n'
-
-
-def _run_make(
-    tmp_path: Path, target: str, **settings: str,
-) -> tuple[subprocess.CompletedProcess[str], str]:
-    """Execute the real recipe with a recording stand-in for docker: nothing is ever started."""
-    fake_bin = tmp_path / "bin"
-    fake_bin.mkdir()
-    docker = fake_bin / "docker"
-    docker.write_text(FAKE_DOCKER, encoding="utf-8")
-    docker.chmod(0o755)
-    log = tmp_path / "docker-calls.log"
-    log.write_text("", encoding="utf-8")
-    shutil.copyfile(ROOT / "Makefile", tmp_path / "Makefile")
-    (tmp_path / "scripts").mkdir()
-    shutil.copyfile(ROOT / "scripts/validate_local_bind.py", tmp_path / "scripts/validate_local_bind.py")
-    env = {"PATH": f"{fake_bin}:/usr/bin:/bin", "FAKE_DOCKER_LOG": str(log), **settings}
-    result = subprocess.run(
-        ["make", "-s", *target.split()], cwd=tmp_path, env=env,
-        capture_output=True, text=True, timeout=30, check=False,
-    )
-    return result, log.read_text(encoding="utf-8")
 
 
 @pytest.mark.parametrize("target", ["docker-local-up", "docker-local-build"])

@@ -8,7 +8,8 @@ import sys
 
 import pytest
 
-from tests.test_local_bind import _run_make
+sys.path.insert(0, str(Path(__file__).parent))
+from local_make_harness import _run_make
 
 ROOT = Path(__file__).resolve().parents[1]
 

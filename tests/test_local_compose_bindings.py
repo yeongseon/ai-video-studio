@@ -7,12 +7,14 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import sys
 from typing import Final
 
 from pydantic import BaseModel, ConfigDict, Field
 import pytest
 
-from tests import test_local_bind
+sys.path.insert(0, str(Path(__file__).parent))
+from local_make_harness import _run_make
 
 ROOT: Final = Path(__file__).resolve().parents[1]
 MINIMUM: Final = (2, 24, 4)  # `ports: !override`, the minimum the local server guide documents
@@ -182,19 +184,20 @@ def test_shipped_local_example_keeps_a_direct_compose_run_private(compose: str, 
 
 
 def test_make_export_wins_over_legacy_env_in_real_compose(
-    compose: str, tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+    compose: str, tmp_path: Path,
 ) -> None:
     # Given legacy wildcard text and a confirmed, distinct IPv6 shell selection.
     for name in LOCAL_FILES:
         shutil.copyfile(ROOT / name, tmp_path / name)
     (tmp_path / ".env").write_text(SYNTHETIC_ENV + "STUDIO_WEB_BIND=0.0.0.0\n", encoding="utf-8")
-    monkeypatch.setattr(test_local_bind, "FAKE_DOCKER", (
+    docker_script = (
         f'#!/bin/sh\n"{compose}" compose --profile "*" -f docker-compose.yml '
         '-f docker-compose.local-server.yml config --format json > "$FAKE_DOCKER_LOG"\n'
-    ))
+    )
     # When the real Make recipe hands its export to a config-only Compose stand-in.
-    result, rendered = test_local_bind._run_make(
+    result, rendered = _run_make(
         tmp_path, "docker-local-up STUDIO_WEB_BIND=fd00::10 STUDIO_WEB_LAN_OK=1",
+        docker_script=docker_script,
     )
     # Then real interpolation uses the guard's bracketed IPv6 output, not the file.
     assert result.returncode == 0, result.stderr
