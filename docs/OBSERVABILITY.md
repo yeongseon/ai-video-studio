@@ -132,6 +132,29 @@ Structured logging is configured in `creator_service/logging_config.py`:
   `--no-access-log` remains respected.
 - JSON logging is configured unconditionally at application import, in development
   as well as production.
+- Log text preserves exact route shapes under `/api/creator` and `/api/admin`
+  (ASCII letter/digit/underscore/hyphen segments), `/release/identity`,
+  `/release/worker-identity`, and `/docs/oauth2-redirect`. Single-segment paths
+  such as `/health`, `/healthz`, `/docs`, `/redoc`, and `/openapi.json` also remain
+  readable. A route is independent only at a left boundary not preceded by a
+  word character, `.`, `:`, `@`, or `-`; relative file/authority prefixes cannot
+  turn a private path suffix into a preserved route.
+  Within a route, preserve a segment only if it is `[0-9]{1,20}`, or
+  `[a-z][a-z_-]{0,23}` without a `[0-9a-f]{12,}` run or a case-insensitive
+  credential prefix anywhere (`eyJ`, `hf_`, `r8_`, `sk-`, `sk_`, `gsk`, `ghp`,
+  `xoxb`, `AKIA`, `AIza`, `pplx-`). The explicit frozen framework exception set
+  is `{"openapi.json", "oauth2-redirect"}`. The first unsafe segment and its
+  entire remaining tail, including a trailing slash, become one `<redacted>`;
+  non-route-shaped multi-segment paths are hidden whole. This is a conservative
+  heuristic, not a guarantee against arbitrary credentials: a short lowercase
+  word or numeric value can still look like a safe route segment. Never put
+  secrets in routes. The live-route drift guard checks static segments and
+  parameters, accumulates nested mount prefixes, and refuses uninspectable
+  file-serving mounts under preserved prefixes; it is a regression aid, not
+  runtime authorization. The API access-log path argument visibly escapes
+  U+0000–U+001F and U+007F as `\xNN`, and U+2028/U+2029 as `\uNNNN`, from the
+  decoded ASGI path before URL parsing can discard controls. Normal paths are
+  unchanged; the stream formatter and Uvicorn query filter remain unchanged.
 - The shared error-text redactor used by API error responses, DLQ values and JSON
   logs hides URLs, credential URIs, Bearer tokens, 20+ hexadecimal characters and
   provider-shaped tokens (`sk-`/`sk_`, `gsk-`/`gsk_`, `ghp-`/`ghp_`, `xoxb-`/`xoxb_`,
