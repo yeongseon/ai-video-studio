@@ -146,7 +146,8 @@ redis:
 
 The `docker-compose.local-server.yml` override keeps this policy by default:
 - `studio-web` is published on `127.0.0.1` (private). A trusted-LAN address is an
-  explicit, validated opt-in for Studio only (`STUDIO_WEB_BIND`; see
+  explicit, validated opt-in through the Make start/build targets only
+  (`STUDIO_WEB_BIND` plus exactly `STUDIO_WEB_LAN_OK=1`; see
   [LOCAL_DOCKER.md](LOCAL_DOCKER.md)).
 - API, Postgres, and Redis keep their `127.0.0.1` bindings; the override cannot
   publish them on the LAN.
@@ -181,11 +182,30 @@ Before exposing the system to any network:
 
 ### CI Validation
 
-The CI workflow validates that `docker-compose.yml` does not expose the API
-on `0.0.0.0`. LAN access to the API is not supported: the
-`docker-compose.local-server.yml` override can publish only Studio, and only after
-explicit opt-in. Reach the API through the Studio proxy, an SSH tunnel, or a
-reverse proxy with TLS.
+The `docs` job in `.github/workflows/ci.yml` runs
+`tests/test_local_compose_bindings.py`: read-only real Compose renders of the base
+and local-server overlay enable all profiles (including Flower and GPU services),
+require every published backend port to have a loopback host IP, reject
+`network_mode: host` for every service, and allow only Studio's selected bind.
+In-memory mutations prove the checker rejects Flower on `0.0.0.0`, a GPU port on
+`::`, and host networking without ports. `tests/test_local_bind.py` tests the
+dependency-free validator and real Make recipes: every non-loopback literal needs
+exactly `STUDIO_WEB_LAN_OK=1`, and global addresses are always refused, including
+IPv4-mapped public literals. `tests/test_local_docs_contract.py` checks the documented
+prerequisites and opt-in examples. These are configuration/contract tests, not
+live network or firewall verification.
+
+Direct Compose invocations bypass the Make guard and interpolate `.env` themselves:
+an operator-edited bind, including a legacy wildcard, can publish Studio without
+confirmation. Make warns on uncommented non-loopback bind assignments in `.env`
+and refuses legacy wildcards without exact shell confirmation; it never loads
+the file as shell code or takes confirmation from it. Its validated exported bind
+wins over `.env`. Public or multi-user Studio exposure remains unsupported: the
+proxy injects a shared creator key, not per-browser authentication. Wildcard binds
+can include public interfaces even though public IP literals are refused; trust
+and Docker-aware firewall isolation still require operator verification.
+LAN access to the API is not supported. Reach it through the trusted Studio proxy
+or an SSH tunnel; a public deployment requires the separate authentication boundary.
 
 ---
 

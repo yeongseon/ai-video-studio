@@ -35,10 +35,13 @@ API startup in every environment with an actionable message. Unset it for local
 use, or generate a new key; production still requires at least 16 characters.
 
 If you already have a `.env` that was copied from an older `.env.local.example`,
-delete any `STUDIO_WEB_BIND=0.0.0.0` line from it now. `make docker-local-up` ignores
-that value and exports its own validated one, so the Make workflow stays private, but a
-direct `docker compose` run interpolates `.env` itself and would publish Studio on
-every interface.
+delete any `STUDIO_WEB_BIND=0.0.0.0` line from it now. The Make guard inspects `.env`
+as text (never sources or executes it), warns on every uncommented non-loopback
+`STUDIO_WEB_BIND=` assignment, and refuses a wildcard unless the shell has exactly
+`STUDIO_WEB_LAN_OK=1`. Quoted values and `export` prefixes are recognized; commented
+assignments and loopback literals are silent. Its exported bind still takes precedence
+over `.env`. Direct Compose invocations bypass this guard and can publish Studio on
+every interface from the legacy line, even without confirmation.
 
 ## 2. Start services
 
@@ -115,23 +118,30 @@ After reviewing the trust and firewall limits below, replace the example with
 the server's actual LAN address:
 
 ```bash
-STUDIO_WEB_BIND=192.168.1.10 make docker-local-up
+STUDIO_WEB_BIND=192.168.1.10 STUDIO_WEB_LAN_OK=1 make docker-local-up
 ```
 
 Use the same prefix with `make docker-local-build` when rebuilding. Both targets
 validate the bind **before Docker is invoked**. Supply a literal IPv4/IPv6
 address, not a hostname, empty value, port mapping or bracketed address.
-For example, `STUDIO_WEB_BIND=fd00::10 make docker-local-up` formats IPv6 safely.
-Wildcards additionally require explicit confirmation:
+For IPv6, the equivalent guarded command is:
 
 ```bash
-STUDIO_WEB_BIND=0.0.0.0 STUDIO_WEB_LAN_OK=1 make docker-local-up
+STUDIO_WEB_BIND=fd00::10 STUDIO_WEB_LAN_OK=1 make docker-local-up
 ```
 
-`::` has the same confirmation requirement. Prefer a specific interface address;
-wildcards may expose every interface (including IPv6/dual-stack paths). These
+Every non-loopback literal requires exactly `STUDIO_WEB_LAN_OK=1`, including private
+IPv4, bridge gateways, link-local, unique-local and wildcards (`0.0.0.0` or `::`).
+Values such as `true`, `yes`, `01` or whitespace-padded `1` are rejected as confirmation.
+Global addresses (for example `8.8.8.8`, `1.1.1.1`, `2606:4700:4700::1111`) are
+always refused, even with confirmation: never use a public address for this workflow.
+Only loopback literals (`127.0.0.0/8`, `::1`, including normalized IPv4-mapped
+loopback) are accepted without confirmation; `localhost` and other hostnames stay
+rejected. Prefer a specific trusted-LAN interface address; wildcards may expose
+every interface (including public and IPv6/dual-stack paths), so confirmation alone
+cannot make them safe. These
 settings must be shell environment variables or Make command-line assignments,
-not `.env` entries: the helper deliberately does not load `.env` and exports the
+not `.env` entries: the helper only diagnoses `.env` text and exports the
 validated result to Compose. Direct Compose invocations bypass this validation
 and are not the supported opt-in workflow; they interpolate `.env` themselves (see
 the legacy-line warning in step 1). To return to private mode:
@@ -250,7 +260,7 @@ or approve public/multi-user access.
 Inspect the merged declaration (read-only):
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.local-server.yml config --format json
+docker compose --profile '*' -f docker-compose.yml -f docker-compose.local-server.yml config --format json
 ```
 
 Pass the same `STUDIO_WEB_BIND`/`STUDIO_WEB_PORT` used at startup when inspecting

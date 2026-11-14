@@ -84,6 +84,38 @@ def test_local_example_does_not_invite_direct_lan_api_access() -> None:
     assert "another device on the LAN" not in text
 
 
+def test_lan_examples_always_include_confirmation() -> None:
+    # Given the operator-facing guide and copied example.
+    for path in ("docs/LOCAL_DOCKER.md", ".env.local.example"):
+        text = _text(path)
+        # When locating non-loopback startup examples.
+        commands = [line for line in text.splitlines() if line.lstrip("# ").startswith("STUDIO_WEB_BIND=") and "make docker-local" in line]
+        # Then every non-loopback command includes the exact confirmation.
+        assert commands
+        for line in commands:
+            if "STUDIO_WEB_BIND=127." not in line and "STUDIO_WEB_BIND=::1 " not in line:
+                assert "STUDIO_WEB_LAN_OK=1" in line, (path, line)
+
+
+def test_security_names_guard_limits_and_ci_evidence() -> None:
+    # Given the ingress policy.
+    text = _text("docs/SECURITY.md")
+    # Then enforcement is attributed to Make, not direct Compose, with precise CI evidence.
+    for token in (
+        "Direct Compose invocations bypass", "global addresses", "STUDIO_WEB_LAN_OK=1",
+        "tests/test_local_bind.py", "tests/test_local_compose_bindings.py", "`docs` job",
+        "network_mode: host",
+    ):
+        assert token in text
+
+
+def test_legacy_bind_regressions_run_in_ci() -> None:
+    # Given the workflow responsible for the local ingress contracts.
+    workflow = _text(".github/workflows/ci.yml")
+    # Then the new legacy-file suite is part of the CI pytest command.
+    assert "tests/test_local_bind_legacy_env.py" in workflow
+
+
 @pytest.mark.parametrize("path", [".env.local.example", ".env.example"])
 def test_shipped_admin_key_is_disabled(path: str) -> None:
     # Given the example copied by an operator.
