@@ -27,8 +27,11 @@ def main() -> int:
     # the wildcard confirmation, whatever the interpreter version.
     if address.version == 6 and address.ipv4_mapped is not None:
         address = address.ipv4_mapped
-    if address.is_unspecified and os.environ.get("STUDIO_WEB_LAN_OK") != "1":
-        print("STUDIO_WEB_BIND wildcard requires STUDIO_WEB_LAN_OK=1", file=sys.stderr)
+    if address.is_global:
+        print("STUDIO_WEB_BIND global addresses are forbidden; use loopback or a trusted LAN", file=sys.stderr)
+        return 2
+    if not address.is_loopback and os.environ.get("STUDIO_WEB_LAN_OK") != "1":
+        print("STUDIO_WEB_BIND non-loopback address requires STUDIO_WEB_LAN_OK=1", file=sys.stderr)
         return 2
     print(f"[{address}]" if address.version == 6 else str(address))
     return 0
