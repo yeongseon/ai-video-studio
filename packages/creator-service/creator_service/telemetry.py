@@ -186,6 +186,11 @@ def init_telemetry(service_name: str) -> None:
 
 
 def _init_otel_providers(otel: dict, service_name: str, logger: logging.Logger, root_logger: logging.Logger) -> None:
+    from creator_service.telemetry_redaction import (
+        RedactingLogRecordProcessor,
+        RedactingSpanExporter,
+    )
+
     environment = os.getenv("OTEL_ENVIRONMENT", "development")
     configured_service_name = os.getenv("OTEL_SERVICE_NAME", service_name)
     service_version = os.getenv("OTEL_SERVICE_VERSION", "unknown")
@@ -203,7 +208,7 @@ def _init_otel_providers(otel: dict, service_name: str, logger: logging.Logger, 
     tracer_provider = otel["TracerProvider"](resource=resource)
     otlp_span_exporter = otel.get("OTLPSpanExporter")
     if is_otlp and otlp_span_exporter is not None:
-        span_exporter = otlp_span_exporter(endpoint=endpoint)
+        span_exporter = RedactingSpanExporter(otlp_span_exporter(endpoint=endpoint))
         tracer_provider.add_span_processor(otel["BatchSpanProcessor"](span_exporter))
     else:
         if not is_otlp:
@@ -213,7 +218,7 @@ def _init_otel_providers(otel: dict, service_name: str, logger: logging.Logger, 
         elif otlp_span_exporter is None:
             logger.warning("OTLP span exporter is unavailable; falling back to ConsoleSpanExporter")
         tracer_provider.add_span_processor(
-            otel["SimpleSpanProcessor"](otel["ConsoleSpanExporter"]())
+            otel["SimpleSpanProcessor"](RedactingSpanExporter(otel["ConsoleSpanExporter"]()))
         )
     otel["trace"].set_tracer_provider(tracer_provider)
 
@@ -239,6 +244,7 @@ def _init_otel_providers(otel: dict, service_name: str, logger: logging.Logger, 
     otel["metrics"].set_meter_provider(meter_provider)
 
     logger_provider = otel["LoggerProvider"](resource=resource)
+    logger_provider.add_log_record_processor(RedactingLogRecordProcessor())
     otlp_log_exporter = otel.get("OTLPLogExporter")
     if is_otlp and otlp_log_exporter is not None:
         logger_provider.add_log_record_processor(
