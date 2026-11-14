@@ -8,6 +8,7 @@ from pathlib import Path, PurePosixPath
 from collections.abc import Callable, Iterator
 from typing import Final, Protocol, TypedDict
 from typing_extensions import NotRequired
+from .exception_pickling import Reduced, field_values, rebuild_exception
 from .storage_sdk_logging import private_sdk_operation
 
 READ_CHUNK_SIZE: Final = 64 * 1024
@@ -33,6 +34,9 @@ class StorageReadError(RuntimeError):
 
     def __str__(self) -> str:
         return "Storage read failed"
+
+    def __reduce__(self) -> Reduced:
+        return rebuild_exception, (type(self), field_values(self))
 
 
 def validate_range(offset: int, length: int) -> None:
