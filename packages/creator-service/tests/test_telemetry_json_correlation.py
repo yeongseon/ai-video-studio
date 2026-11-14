@@ -199,3 +199,18 @@ def test_formatter_requires_valid_pair_even_when_provenance_matches(trace_id: st
     assert output["trace_id"] == redact_log_text(trace_id)
     assert output["span_id"] == redact_log_text(span_id)
     assert "_otel_correlation" not in output
+
+
+def test_trace_context_filter_never_raises_into_the_log_call_site(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given an enrichment helper that fails while a record is being logged.
+    def failing_enrichment(record: dict) -> dict:
+        raise RuntimeError("synthetic enrichment failure")
+
+    monkeypatch.setattr(telemetry, "add_trace_context_to_log", failing_enrichment)
+    record = logging.LogRecord("creator.named", logging.INFO, __file__, 1, "message", (), None)
+    # When the handler-level filter runs.
+    kept = telemetry.TraceContextFilter().filter(record)
+    # Then logging continues without correlation fields or provenance.
+    assert kept is True
+    assert not hasattr(record, "trace_id")
+    assert not hasattr(record, "_otel_correlation")

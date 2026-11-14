@@ -11,6 +11,7 @@ from opentelemetry.trace import Status
 from opentelemetry.util.types import AnyValue, AttributeValue
 
 from creator_service import error_redaction
+from creator_service.telemetry import CORRELATION_ATTRIBUTE
 
 _REDACTED: Final = "<redacted>"
 _MAX_ITEMS: Final = 50
@@ -76,7 +77,9 @@ class RedactingLogRecordProcessor(LogRecordProcessor):
         try:
             sanitizer = _LogValues()
             body = sanitizer.visit(record.body)
-            attributes = sanitizer.attributes(record.attributes or {})
+            attributes = sanitizer.attributes(
+                {key: value for key, value in (record.attributes or {}).items() if key != CORRELATION_ATTRIBUTE}
+            )
             record.body = body
             record.attributes = attributes
             if record.event_name:

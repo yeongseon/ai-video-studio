@@ -15,7 +15,7 @@ from creator_service.error_redaction import (
     redact_log_text,
 )
 from creator_service.uvicorn_logging import UvicornAccessFilter
-from creator_service.telemetry import attach_trace_context_filter
+from creator_service.telemetry import CORRELATION_ATTRIBUTE, attach_trace_context_filter
 
 _REDACTED = "<redacted>"
 _UNREPRESENTABLE = "<unrepresentable>"
@@ -31,7 +31,7 @@ _STANDARD_ATTRIBUTES = frozenset({
     "name", "msg", "args", "created", "filename", "funcName", "levelname", "levelno",
     "lineno", "module", "msecs", "message", "pathname", "process", "processName",
     "relativeCreated", "thread", "threadName", "exc_info", "exc_text", "stack_info",
-    "_otel_correlation",
+    CORRELATION_ATTRIBUTE,
 })
 
 
@@ -199,7 +199,7 @@ def _correlation_fields(record: logging.LogRecord) -> dict[str, str]:
     These random identifiers enable trace joins; shape alone cannot prove provenance.
     Both nonzero lowercase hex ids must match the filter's pair before either is exempt.
     """
-    provenance = record.__dict__.get("_otel_correlation")
+    provenance = record.__dict__.get(CORRELATION_ATTRIBUTE)
     trace_id = record.__dict__.get("trace_id")
     span_id = record.__dict__.get("span_id")
     if type(provenance) is not tuple or len(provenance) != 2:

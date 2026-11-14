@@ -6,7 +6,7 @@ import os
 from contextlib import nullcontext
 from dataclasses import dataclass
 from importlib import import_module
-from typing import Any
+from typing import Any, Final
 
 from opentelemetry import context as otel_context
 from opentelemetry.context import get_current
@@ -43,13 +43,20 @@ class _TelemetryState:
 _STATE = _TelemetryState()
 
 
+CORRELATION_ATTRIBUTE: Final = "_otel_correlation"
+
+
 class TraceContextFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
-        enriched = add_trace_context_to_log({})
+        try:
+            enriched = add_trace_context_to_log({})
+        except Exception:
+            # A handler filter runs outside Handler.handleError: logging must never raise into callers.
+            return True
         for key, value in enriched.items():
             setattr(record, key, value)
         if enriched:
-            record._otel_correlation = (enriched["trace_id"], enriched["span_id"])
+            setattr(record, CORRELATION_ATTRIBUTE, (enriched["trace_id"], enriched["span_id"]))
         return True
 
 
