@@ -383,6 +383,7 @@ class TestProcessIsolation:
 
         mock_proc = MagicMock()
         mock_proc.pid = 99999
+        mock_proc.returncode = None
         mock_proc.communicate.side_effect = subprocess.TimeoutExpired(cmd=["ffmpeg"], timeout=60)
         mock_proc.kill.return_value = None
         mock_proc.wait.return_value = None

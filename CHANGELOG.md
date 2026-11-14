@@ -42,6 +42,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - nginx CSRF check rejected default compose port — `$host` doesn't include the port, switched to `$http_host` (#586).
 - Where Celery timeouts are enforced, render hard timeouts reclaim attributable scratch and partial MP4s; a shipped Worker-start sweep reclaims recognised dead-owner or over-age scratch in numeric run directories and the configured scratch root with bounded candidate selection and independent root budgets while preserving published outputs and younger live-owner scratch (#1030).
 - Inject trace context on root handlers for propagated application and Uvicorn logs, preserving validated filter-provenanced trace/span identifiers in JSON while retaining ordinary secret redaction (#1059).
+- Credit materialized Timeline source copies against render scratch growth, bound final child reaping to 10 seconds, avoid signalling reaped children, fail closed on unreadable scratch roots and deduplicate subtree warnings per delivery; document detached-descendant and SIGCHLD limits (#1095).
 - Storage budget and low-watermark exceptions rebuild from their fields when unpickled, including instances created with keyword arguments and subclasses with extra fields, so a result or worker boundary carries the typed 413/503 error instead of failing to unpickle it (#1087).
 
 ## [0.4.0] - 2026-07-23
