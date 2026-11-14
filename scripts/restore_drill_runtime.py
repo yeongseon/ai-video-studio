@@ -12,7 +12,7 @@ import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from restore_drill_process import DrillError, TIMEOUT, child_environment, docker_environment, docker, run
+from restore_drill_process import DrillError, TIMEOUT, child_environment, docker_environment, docker, run, worker_state_environment
 
 IMAGE_DIGEST = re.compile(r"[^@]+@sha256:([0-9a-f]{64})\Z")
 
@@ -172,8 +172,8 @@ def register_rendered_artifact(
     return {"checksum": checksum, "size_bytes": size_bytes}
 
 
-def run_reconciler(database_url: str) -> dict[str, int | list[str]]:
-    environment = child_environment({
+def run_reconciler(database_url: str, root: Path) -> dict[str, int | list[str]]:
+    environment = child_environment({**worker_state_environment(root),
         "DATABASE_URL": database_url,
         "PYTHONPATH": os.pathsep.join(
             str(Path(__file__).parents[1] / path)
@@ -232,7 +232,7 @@ def launch_provider_guard(root: Path) -> tuple[subprocess.Popen[bytes], int]:
 def launch_api(database_url: str, artifact_root: Path, fixture: RuntimeFixture, root: Path, guard_port: int) -> tuple[subprocess.Popen[bytes], RuntimeFixture]:
     port = _free_port()
     repository = Path(__file__).parents[1]
-    env = child_environment({
+    env = child_environment({**worker_state_environment(root),
         "DATABASE_URL": database_url, "ARTIFACT_ROOT": str(artifact_root),
         "STORAGE_BACKEND": "local", "ENVIRONMENT": "development", "REDIS_URL": "",
         "PYTHONPATH": os.pathsep.join(

@@ -191,3 +191,29 @@ def test_cleanup_query_failure_preserves_original_start_error(sandbox: DrillSand
     # When / Then the start error remains the primary failure.
     with pytest.raises(DrillError, match="synthetic start failure"):
         restore_drill.main()
+
+
+@pytest.mark.parametrize("child", ["api", "reconciler"])
+def test_worker_state_paths_are_inside_drill_root_when_child_imports_worker(
+    sandbox: DrillSandbox, monkeypatch: pytest.MonkeyPatch, child: str
+) -> None:
+    # Given an operator's shared-host state destinations.
+    names = ("BROKER_EPOCH_STATE_PATH", "DLQ_FALLBACK_PATH", "BEAT_HEARTBEAT_PATH")
+    for name in names:
+        monkeypatch.setenv(name, f"/synthetic-production/{name}")
+
+    # When
+    assert restore_drill.main() == 0
+
+    # Then both worker-importing children explicitly select disposable state paths.
+    environments = [env for command, env in sandbox.calls if
+                    ("uvicorn" in command if child == "api" else any("reconcile_stale_dispatches" in value for value in command))]
+    assert len(environments) == 1
+    environment = environments[0]
+    assert environment is not None
+    assert sandbox.media is not None
+    root = sandbox.media.parent.parent
+    for name in names:
+        path = Path(environment[name])
+        assert path.is_absolute()
+        assert path.is_relative_to(root)

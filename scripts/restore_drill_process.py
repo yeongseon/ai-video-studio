@@ -58,6 +58,14 @@ def docker_environment() -> dict[str, str]:
     })
 
 
+def worker_state_environment(root: Path) -> dict[str, str]:
+    return {
+        "BROKER_EPOCH_STATE_PATH": str(root / "observed-broker-epoch"),
+        "DLQ_FALLBACK_PATH": str(root / "dlq-fallback.jsonl"),
+        "BEAT_HEARTBEAT_PATH": str(root / "beat-heartbeat.json"),
+    }
+
+
 def docker(*arguments: str) -> subprocess.CompletedProcess[str]:
     return run("docker", *arguments, env=docker_environment())
 

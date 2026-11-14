@@ -245,7 +245,7 @@ def main() -> int:
             api_process, fixture = launch_api(target_url, restored, fixture, root, guard_port)
             wait_for_api(fixture.port, api_process, root / "api.log")
             verify_http(fixture, restored)
-            reconciliation = run_reconciler(target_url)
+            reconciliation = run_reconciler(target_url, root)
             states = recovery_states(target)
             if reconciliation.get("rolled_back") != 1 or reconciliation.get("stuck_failed") != 1 or reconciliation.get("errors"):
                 raise DrillError(f"unexpected reconciler result: {reconciliation}")
