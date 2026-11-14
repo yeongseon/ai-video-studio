@@ -222,9 +222,12 @@ Structured logging is configured in `creator_service/logging_config.py`:
 - JSON exempts only top-level `trace_id` and `span_id` from hex redaction when
   both match the filter's private provenance pair and are nonzero lowercase hex
   strings of exactly 32 and 16 characters, respectively. These SDK correlation
-  identifiers enable trace joins; the private provenance is never emitted.
+  identifiers enable trace joins; the private provenance is never emitted, in
+  JSON or as an exported OTLP log attribute (the redacting log processor drops it).
   Active-span values override user-supplied correlation fields. Without valid
-  provenance, user fields follow ordinary redaction. Messages, exception text,
+  provenance, user fields follow ordinary redaction; the provenance is an
+  in-process convention that only code controlling record attributes can forge.
+  The filter never raises into the logging call site. Messages, exception text,
   nested extras and every other field retain the existing redaction rules.
 
 ### Correlation Fields
