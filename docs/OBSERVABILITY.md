@@ -77,29 +77,30 @@ services:
 ### API → Worker
 
 When the API dispatches a Celery task, trace context is propagated via
-task headers. The worker extracts this context to continue the trace span.
+task headers. The worker's `trace_task` decorator extracts this context and runs
+the task inside a `celery.task.<task_name>` span, which continues the trace.
 
 ```python
-# In task_dispatch_service.py — context is injected into Celery task headers
-from creator_service.telemetry import inject_trace_context
+# In shorts_api/task_dispatch_adapter.py — the current context becomes the Celery task headers
+from creator_service.telemetry import get_trace_headers
 
-headers = {}
-inject_trace_context(headers)
-task.apply_async(args=[run_id], headers=headers)
+headers = get_trace_headers()
+task.apply_async(args=args, kwargs=kwargs, headers=headers)
 ```
 
-### Worker → Provider
+### Spans
 
-Each provider call creates a child span:
+Two places create spans today: the API request middleware (one span per request,
+from the tracer named `shorts_api.middleware.telemetry`) and `trace_task` (one
+`celery.task.<task_name>` span per task delivery). Provider calls do not create
+spans of their own. To add a span, take a named tracer:
 
 ```python
 from creator_service.telemetry import get_tracer
 
-tracer = get_tracer()
-with tracer.start_as_current_span("provider.generate_image") as span:
-    span.set_attribute("provider.name", "stable_diffusion")
-    span.set_attribute("provider.model", "sd15")
-    result = await provider.generate(...)
+tracer = get_tracer(__name__)
+with tracer.start_as_current_span("my.operation"):
+    ...
 ```
 
 ---
