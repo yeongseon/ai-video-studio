@@ -16,6 +16,7 @@ from typing import Final
 
 from creator_service.render_scratch import CONFIGURED_SCRATCH_NAME, PARTIAL_MP4_NAME, SCRATCH_NAME_PATTERNS
 from creator_service.render_scratch_cleanup import directory_fd, remove_scratch_entry
+from creator_service.render_scratch_process import process_start_time
 
 logger = logging.getLogger(__name__)
 MAX_ENTRIES_PER_DIRECTORY: Final = 10000
@@ -43,6 +44,7 @@ class SweepPolicy:
     max_run_directories: int = 1000
     budget_seconds: float = 20
     scratch_root: Path | None = None
+    start_time_slack_seconds: float = 5.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,6 +53,7 @@ class SweepRuntime:
     monotonic: Callable[[], float] = time.monotonic
     hostname: str = field(default_factory=lambda: socket.gethostname())
     pid_alive: Callable[[int], bool] = pid_is_alive
+    pid_start_time: Callable[[int], float | None] = process_start_time
 
 
 @dataclass(frozen=True, slots=True)
@@ -137,16 +140,25 @@ def sweep_render_scratch(
                 old = maximum_age > 0 and age >= maximum_age
                 owner = CONFIGURED_SCRATCH_NAME.fullmatch(name)
                 gone = False
+                reason = "max_age"
                 if owner and owner["host"] == host and age >= policy.min_grace_seconds:
                     raw_pid = owner["pid"]
                     if len(raw_pid) <= 7 and 1 <= int(raw_pid) <= 4194304:
                         gone = not runtime.pid_alive(int(raw_pid))
+                        reason = "owner_gone" if gone else "max_age"
+                        if not gone:
+                            start_time = runtime.pid_start_time(int(raw_pid))
+                            gone = start_time is not None and start_time > (
+                                max(info.st_mtime, info.st_ctime) + policy.start_time_slack_seconds
+                            )
+                            if gone:
+                                reason = "owner_pid_reused"
                 if not (old or gone):
                     skip("fresh_or_live", root=root)
                     continue
                 remove_scratch_entry(parent, name, info)
                 removed += 1
-                logger.info("Render scratch entry removed", extra={"scratch_name": name, "run_id": run_id})
+                logger.info("Render scratch entry removed", extra={"scratch_name": name, "run_id": run_id, "reason": reason})
             except FileNotFoundError:
                 skip("vanished", root=root)
             except OSError:
