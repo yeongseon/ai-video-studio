@@ -53,6 +53,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Upgrade the OpenTelemetry packages together (API, SDK, OTLP exporter, protocol and semantic conventions: 1.40.0 to 1.45.2, 0.61b0 to 0.66b2) past two published trace-context parsing advisories, with a regression floor in `test_python_advisory_floors.py` (#1023 group 5).
 - Upgrade the CI and developer tool packages `cryptography` (46.0.5 to 50.0.2), `urllib3` (2.6.3 to 2.8.0), `requests` (2.32.5 to 2.34.2) and `pygments` (2.19.2 to 2.21.0) past 13 published advisories, with regression floors in `test_python_advisory_floors.py`; `pytest` stays on 8.4.2 until `pytest-asyncio` can move (#1115) (#1023 group 6).
 - The three ffprobe probes (media upload metadata, segment source duration and audio duration) decode their output with replacement characters, so a file that cannot be probed ends as its intended error (`MediaUploadRejected`, `SegmentSourceError` or the duration `RuntimeError`) instead of an unclassified `UnicodeDecodeError` when ffprobe echoes a file name that is not valid UTF-8 on stderr (#1106).
+- Upgrade `pytest` (8.4.2 to 9.0.3) past the published `/tmp/pytest-of-{user}` temporary directory advisory (CVE-2025-71176, development and CI only) together with `pytest-asyncio` (0.26.0 to 1.3.0), whose cap held `pytest` back, with a regression floor in `test_python_advisory_floors.py`, so no published advisory remains for the pinned install closure (#1115).
 
 ## [0.4.0] - 2026-07-23
 
