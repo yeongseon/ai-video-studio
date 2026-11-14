@@ -16,7 +16,7 @@ ALLOWED = {
 
 
 def launches(owner: str, attribute: str) -> bool:
-    return attribute in LAUNCHERS.get(owner, ()) or (owner == "os" and attribute.startswith("spawn"))
+    return attribute in LAUNCHERS.get(owner, ()) or (owner == "os" and attribute.startswith(("spawn", "posix_spawn")))
 
 
 def bypasses(source: str, filename: str, allowed: set[tuple[str, str, str]]) -> list[str]:
@@ -63,7 +63,8 @@ def test_render_ffmpeg_invocations_share_the_monitored_runner() -> None:
     "import asyncio\nasync def f():\n    await asyncio.create_subprocess_exec('x')",
     "import os\ndef f():\n    os.system('x')",
     "import os\ndef f():\n    os.spawnvp(os.P_WAIT, 'x', ['x'])",
-], ids=["check_output", "alias", "from-import", "asyncio", "os-system", "os-spawn"])
+    "import os\ndef f():\n    os.posix_spawn('x', ['x'], {})",
+], ids=["check_output", "alias", "from-import", "asyncio", "os-system", "os-spawn", "os-posix-spawn"])
 def test_guard_flags_process_launches_outside_the_runner(source: str) -> None:
     # Given a module launching a process in a form the guard must understand.
     # When it is inspected with no allowed call sites.
