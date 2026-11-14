@@ -16,6 +16,8 @@ ADVISORY_FLOORS: Final = {
     "certifi": "2026.10.18",
     "idna": "3.15",
     "multidict": "6.9.1",
+    "python-multipart": "0.0.31",
+    "starlette": "1.3.1",
 }
 
 

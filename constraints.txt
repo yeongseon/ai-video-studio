@@ -81,7 +81,7 @@ defusedxml==0.7.1
     # via cairosvg
 edge-tts==7.2.8
     # via creator-provider
-fastapi==0.129.0
+fastapi==0.133.0
     # via -r apps/api/requirements.txt
 frozenlist==1.8.0
     # via
@@ -207,7 +207,7 @@ python-dateutil==2.9.0.post0
     # via
     #   botocore
     #   celery
-python-multipart==0.0.22
+python-multipart==0.0.33
     # via -r apps/api/requirements.txt
 pyyaml==6.0.3
     # via
@@ -233,7 +233,7 @@ sqlalchemy==2.0.48
     # via
     #   -r apps/api/requirements.txt
     #   alembic
-starlette==0.52.1
+starlette==1.10.0
     # via fastapi
 tabulate==0.10.0
     # via edge-tts
