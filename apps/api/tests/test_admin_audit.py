@@ -149,7 +149,7 @@ def test_audit_log_has_correct_format(client, mock_admin_service, admin_override
     # Verify all expected fields are in the audit log
     assert "ADMIN_ACTION: unstick_run" in log_output
     assert "run_id=" in log_output
-    assert "key=" in log_output  # key fingerprint
+    assert "key_fingerprint=" in log_output  # key fingerprint
     assert "request_id=" in log_output
     assert "source_ip=" in log_output
     assert "audit_id=" in log_output
@@ -185,7 +185,7 @@ def test_audit_log_cache_clear_has_correct_format(
     # Verify all expected fields for cache_clear
     assert "ADMIN_ACTION: cache_clear" in log_output
     assert "key_pattern=session:*" in log_output
-    assert "key=" in log_output  # key fingerprint
+    assert "key_fingerprint=" in log_output  # key fingerprint
     assert "request_id=req-999" in log_output
     assert "source_ip=" in log_output
     assert "audit_id=" in log_output

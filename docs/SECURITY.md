@@ -223,7 +223,7 @@ available, with an in-memory fallback.
 All admin mutations are logged to the `admin.audit` logger with:
 - Action type
 - Target resource
-- Key fingerprint (first 8 chars of SHA-256)
+- `key_fingerprint` (first 8 chars of SHA-256; formerly the `key` log field)
 - Request ID
 - Source IP
 - Unique audit ID (UUID)
