@@ -47,6 +47,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Storage budget and low-watermark exceptions rebuild from their fields when unpickled, including instances created with keyword arguments and subclasses with extra fields, so a result or worker boundary carries the typed 413/503 error instead of failing to unpickle it (#1087).
 - Worker-start scratch reclamation detects reused same-host owner pids by process start time after the grace, conservatively retaining unknown identities and preserving legacy age-only rules (#1070).
 - The shared FFmpeg runner decodes the child's output with replacement characters, so a render no longer fails with a `UnicodeDecodeError` when FFmpeg echoes input metadata that is not valid UTF-8, and a failing final drain no longer replaces the exception that is already propagating (#1103).
+- Legacy Timeline scratch names now carry the delivery pid so enforced Celery hard timeouts reclaim only that delivery's directory; older ownerless names remain age-only (#1060).
 
 ## [0.4.0] - 2026-07-23
 

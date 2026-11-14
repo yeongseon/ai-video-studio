@@ -4,6 +4,7 @@ import socket
 from pathlib import Path
 
 import pytest
+from creator_service.render_scratch import create_render_scratch
 
 
 @pytest.mark.parametrize("configured", [False, True])
@@ -137,3 +138,38 @@ def test_timeout_refuses_symlinked_run_chain(
     # When timeout cleanup runs; then the redirected contents survive.
     task.render_video.hard_timeout_cleanup(1, "delivery", "worker", 42)
     assert entry.is_dir()
+
+
+def test_timeout_reclaims_allocated_legacy_timeline_without_touching_siblings(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given the real allocator's abandoned Timeline scratch in the legacy layout.
+    task = importlib.import_module("tasks.render_video")
+    root = tmp_path / "artifacts"
+    render = root / "1/render"
+    monkeypatch.setattr(task, "_ARTIFACT_ROOT", str(root))
+    monkeypatch.setenv("ARTIFACT_ROOT", str(root))
+    monkeypatch.delenv("RENDER_SCRATCH_DIR", raising=False)
+    monkeypatch.setattr("creator_service.render_scratch.os.getpid", lambda: 42)
+    owned = create_render_scratch(render / "output.mp4", "timeline-")
+    (owned / "source").write_bytes(b"owned")
+    kept = [render / "timeline-43_deadbeef", render / "timeline-abcdefgh",
+            render / ".render_tmp_43_deadbeef", root / "2/render/timeline-42_deadbeef"]
+    for directory in kept:
+        directory.mkdir(parents=True)
+        (directory / "payload").write_bytes(b"sibling")
+    published = render / "output.mp4"
+    published.write_bytes(b"published")
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "payload").write_bytes(b"outside")
+    link = render / "timeline-42_12345678"
+    link.symlink_to(victim, target_is_directory=True)
+    # When Celery's registered hard-timeout callable handles that delivery.
+    task.render_video.hard_timeout_cleanup(1, "delivery", "celery@custom-node", 42)
+    # Then only the killed delivery's real scratch is reclaimed.
+    assert not owned.exists()
+    assert all((directory / "payload").read_bytes() == b"sibling" for directory in kept)
+    assert published.read_bytes() == b"published"
+    assert link.is_symlink()
+    assert (victim / "payload").read_bytes() == b"outside"
