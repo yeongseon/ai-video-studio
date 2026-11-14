@@ -343,8 +343,9 @@ The maximum-age floor of twice the render hard limit assumes enforced limits.
 Keep the configured age well above the longest legitimate render (default 3600
 seconds); do not set it near 1320 seconds on a solo pool.
 
-In the unset layout, timeout attribution uses the pid only within this one run's
-render directory. A sibling container retrying the same run with a colliding pid
+Pid-only names include legacy scratch directories AND the partial
+`output.tmp.<pid>.<hex>.mp4` in EITHER layout, inside one run's render directory.
+Their timeout attribution uses the pid only. A sibling container retrying the same run with a colliding pid
 in the timeout-finalization-to-cleanup window could lose its scratch or partial
 output. This requires unlikely timing but is not excluded by pid-only names.
 
@@ -356,9 +357,11 @@ wired here; its configured scratch can be reclaimed at Worker start, while its
 system-temp concat list and `sfx_` directory remain outside this cleanup scope.
 
 At `worker_ready` (main process, once per Worker start), an injectable sweep
-inspects the same immediate `render/` children across runs and the top level of
+inspects the immediate `<ARTIFACT_ROOT>/<numeric run id>/render/` children and the top level of
 a valid configured scratch root. It never consults DB state or descends into
-published directories. An invalid configured root is skipped with one warning;
+published directories. Run names must contain only ASCII decimal digits and be
+at most 20 characters long; arbitrary top-level names such as `workspaces` are
+excluded entirely. An invalid configured root is skipped with one warning;
 the artifact-tree sweep can still proceed. This is **startup only**, not a
 periodic/Beat sweep and not an API/lightweight startup hook.
 
@@ -383,6 +386,17 @@ owner death. Either of these conditions permits reclamation:
   with one warning (currently 1320 seconds = 2 × 660). The worker computes this
   floor; creator-service has no worker import.
 
+**The owner-gone rule assumes ONE pid namespace per `socket.gethostname()`.**
+Containers sharing a hostname but not a pid namespace are NOT supported for
+this rule: host networking, `--uts=host`, or replicas with an identical explicit
+`hostname:` can create this topology. A probe in one container can then report
+a live sibling's pid absent and delete its scratch after the 60-second grace.
+The shipped Compose files set neither host networking/UTS sharing nor an explicit
+hostname. Keep hostnames unique across independent pid namespaces. Otherwise,
+set the grace above every legitimate render lifetime and choose the age rule
+accordingly; age zero alone does not disable owner-gone reclamation. Disable
+the startup sweep if those lifetime bounds cannot be guaranteed.
+
 Other-host entries and legacy pid-only names (including partial MP4s) use **only
 the age rule**: a shared artifact volume may belong to another container with
 the same pid. Ownerless legacy Timeline scratch uses age only too. Thus a crash
@@ -402,26 +416,33 @@ in that case; the age rule is the usual reclaim path.
 | `RENDER_SCRATCH_SWEEP_ENABLED` | `true` | Case-insensitive `1/true/yes` enables; `0/false/no` disables startup cleanup, not the timeout hook |
 | `RENDER_SCRATCH_MAX_AGE_SECONDS` | `3600` | Last-change lifetime; `0` disables age reclamation |
 | `RENDER_SCRATCH_SWEEP_MIN_GRACE_SECONDS` | `60` | Minimum age for a proven same-host dead owner |
-| `RENDER_SCRATCH_SWEEP_MAX_RUN_DIRECTORIES` | `1000` | Newest numeric run directories inspected per boot; nonnumeric names follow within the same opening budget |
-| `RENDER_SCRATCH_SWEEP_MAX_ENTRIES` | `10000` | Independent direct-child entry budget for each root, including published render files in the artifact budget only |
+| `RENDER_SCRATCH_SWEEP_MAX_RUN_DIRECTORIES` | `1000` | Newest numeric run directories inspected per boot; nonnumeric names are excluded |
+| `RENDER_SCRATCH_SWEEP_MAX_ENTRIES` | `10000` | Independent recognised direct-child candidate budget for each root; unrelated names consume no entry slots |
 | `RENDER_SCRATCH_SWEEP_MAX_REMOVALS` | `500` | Successful entry removals |
 | `RENDER_SCRATCH_SWEEP_BUDGET_SECONDS` | `20` | Cooperative monotonic wall-time budget |
 
-Each integer setting is parsed independently. Invalid, nonnumeric or negative
-values fall back to that setting's default with one warning naming the setting.
+Each integer setting is parsed independently: ASCII decimal digits, surrounding
+whitespace ignored. Signs, underscores, non-ASCII digits and other invalid values
+(including values too large for integer conversion) fall back to that setting's
+default with one warning naming the setting.
 Zero is valid only for maximum age; all other integer limits must be positive.
 An invalid enabled value falls back to enabled with one warning.
 
 The configured scratch root is swept **first**, then the artifact tree, each with
 its own entry budget. Only removals and wall time are global stop conditions.
-Artifact-root discovery enumerates names within the time budget, selects the
-newest `max_run_directories` numeric ids and at most 100 sorted nonnumeric names.
+Artifact-root discovery selects the newest `max_run_directories` numeric ids
+while scanning within the time budget, retaining only a bounded heap of names.
 Older runs' leftovers wait for retention deletion of their run directory while
-they remain outside that newest-run window. Child discovery examines the first
-10000 sorted names per directory, reports overflow, and continues to the next
+they remain outside that newest-run window. Child discovery filters exact
+recognised patterns without syscalls and retains only the first 10000 candidates
+in sorted order per directory. Unrecognised names are counted, not retained, and
+cannot starve scratch candidates. Candidate overflow is reported before continuing to the next
 run. Discovery or entry limits in one root never stop the other root.
 Distinct bounds are logged once and local bounds identify their root, such as
 `scratch:max_entries` and `artifact:max_run_directories`.
+Entry exhaustion is reported only when an unexamined candidate remains.
+Skip counters and warn-once state are also root-qualified, for example
+`scratch:root_error` and `artifact:root_absent`.
 Timeout cleanup has a
 shared 10000-entry budget and a two-second cooperative deadline across its two
 locations. These budgets stop **between** filesystem operations: a blocked

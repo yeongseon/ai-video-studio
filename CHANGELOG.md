@@ -29,7 +29,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Studio's Vite development proxy strips client `X-Admin-Key` on every proxied prefix without changing creator-key handling (#1056).
 - Local artifact downloads always returned 404 — the route read `file_path` (absolute) instead of `storage_key` (root-relative). Legacy rows now normalized via `os.path.relpath` (#584).
 - nginx CSRF check rejected default compose port — `$host` doesn't include the port, switched to `$http_host` (#586).
-- Where Celery timeouts are enforced, render hard timeouts reclaim attributable scratch and partial MP4s; a shipped Worker-start sweep reclaims recognised dead-owner or over-age scratch with independent root budgets while preserving published outputs and younger live-owner scratch (#1030).
+- Where Celery timeouts are enforced, render hard timeouts reclaim attributable scratch and partial MP4s; a shipped Worker-start sweep reclaims recognised dead-owner or over-age scratch in numeric run directories and the configured scratch root with bounded candidate selection and independent root budgets while preserving published outputs and younger live-owner scratch (#1030).
 
 ## [0.4.0] - 2026-07-23
 
