@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import errno
+import logging
+import os
 import sys
 from pathlib import Path
 
@@ -7,6 +10,7 @@ import pytest
 from creator_domain.exceptions import ServiceError
 from creator_service import ffmpeg_service
 from creator_service.ffmpeg_service import FFmpegService, RenderInput, _run_ffmpeg
+from creator_service.render_scratch_monitor import RenderScratchBudget
 
 
 class Completed(Exception):
@@ -65,3 +69,34 @@ def test_walk_ignores_outside_symlinks_but_counts_owned_regular_files(tmp_path: 
         LinkWriter().render(RenderInput([owned], None, None, [1024]), tmp_path / "output.mp4")
     with pytest.raises(ServiceError):
         LinkWriter().render(RenderInput([owned], None, None, [1025]), tmp_path / "output.mp4")
+
+
+@pytest.mark.parametrize("code", [errno.EACCES, errno.ELOOP, errno.EMFILE], ids=["eacces", "eloop", "emfile"])
+def test_walk_skips_a_subtree_that_cannot_be_opened_instead_of_failing_the_render(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, code: int,
+) -> None:
+    # Given a scratch tree with a readable file and a subdirectory whose open fails.
+    root = tmp_path / "scratch"
+    (root / "locked").mkdir(parents=True)
+    (root / "locked" / "hidden").write_bytes(b"x" * 1000)
+    (root / "readable").write_bytes(b"x" * 10)
+    real_open = os.open
+
+    def flaky_open(path, flags, *args, **kwargs):
+        if os.fspath(path) == "locked":
+            raise OSError(code, "injected")
+        return real_open(path, flags, *args, **kwargs)
+
+    budget = RenderScratchBudget(cap_bytes=100, label="walk")
+    budget.register(root)
+
+    # When the budget scans it, with the open of that subdirectory failing.
+    with caplog.at_level(logging.WARNING), monkeypatch.context() as patch:
+        patch.setattr(os, "open", flaky_open)
+        budget.check()
+
+    # Then it counts what it can read, keeps the render alive and reports the errno once.
+    assert budget._total == 10
+    skipped = [record for record in caplog.records if "skipped" in record.message]
+    assert len(skipped) == 1
+    assert errno.errorcode[code] in skipped[0].getMessage()

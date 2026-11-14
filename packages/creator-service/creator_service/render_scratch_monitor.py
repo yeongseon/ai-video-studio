@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import errno
 import logging
 import os
 import stat
@@ -56,6 +57,14 @@ def _cap_from_env() -> int:
 
 def _sizes(paths: tuple[Path, ...]) -> Generator[int, None, None]:
     """Yield once per entry; descriptor-relative no-follow opens fence symlink swaps."""
+    reported = False
+
+    def skipped(error: OSError) -> None:
+        nonlocal reported
+        if not reported:
+            reported = True
+            logger.warning("Render scratch walk skipped an unreadable entry (%s)", errno.errorcode.get(error.errno or 0, "OSError"))
+
     for path in paths:
         try:
             info = path.lstat()
@@ -72,7 +81,11 @@ def _sizes(paths: tuple[Path, ...]) -> Generator[int, None, None]:
                 stack = [(descriptor, entries, resources)]
                 while stack:
                     parent, iterator, owner = stack[-1]
-                    entry = next(iterator, None)
+                    try:
+                        entry = next(iterator, None)
+                    except OSError as error:
+                        skipped(error)
+                        entry = None
                     if entry is None:
                         stack.pop()
                         owner.close()
@@ -88,7 +101,13 @@ def _sizes(paths: tuple[Path, ...]) -> Generator[int, None, None]:
                             stack.append((child, child_resources.enter_context(os.scandir(child)), child_resources))
                     except (FileNotFoundError, NotADirectoryError):
                         continue
+                    except OSError as error:
+                        skipped(error)
+                        continue
         except (FileNotFoundError, NotADirectoryError):
+            continue
+        except OSError as error:
+            skipped(error)
             continue
 
 
