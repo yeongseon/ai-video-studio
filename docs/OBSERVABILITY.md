@@ -132,6 +132,18 @@ Structured logging is configured in `creator_service/logging_config.py`:
   `--no-access-log` remains respected.
 - JSON logging is configured unconditionally at application import, in development
   as well as production.
+- The shared error-text redactor used by API error responses, DLQ values and JSON
+  logs hides URLs, credential URIs, Bearer tokens, 20+ hexadecimal characters and
+  provider-shaped tokens (`sk-`/`sk_`, `gsk-`/`gsk_`, `ghp-`/`ghp_`, `xoxb-`/`xoxb_`,
+  `hf_`, `r8_`, `AKIA`, `AIza`, each with at least six body characters from ASCII
+  letters, digits, `_` and `-`). Sensitive `name=value` and `name:value` assignments,
+  including quoted JSON/dict keys, use the same key predicate as log extras; only
+  their values are replaced with `<redacted>`. Unquoted values end at whitespace,
+  comma, semicolon, ampersand, quotes or brackets (`[]{}()`); quoted values end at
+  the first matching literal quote (or input end if unterminated). Backslash escapes
+  are not decoded. `token_count`, `key_id` and `max_tokens` remain readable;
+  `password_policy` is sensitive under that predicate. Detection is heuristic,
+  not a guarantee for arbitrary opaque credentials or tokens split across lines.
 - Supervisor lines from `--reload` / `--workers` are not covered: those processes
   never import the application and may retain plain-text logging.
 - Custom `--log-config` handlers are not preserved or covered. Passing an already
