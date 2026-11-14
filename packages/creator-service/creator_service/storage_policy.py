@@ -3,7 +3,8 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from dataclasses import dataclass
+from collections.abc import Callable
+from dataclasses import dataclass, fields
 
 from creator_domain.exceptions import ServiceError, ServiceUnavailableError
 
@@ -11,6 +12,19 @@ ARTIFACT_FILESYSTEM = "artifact"
 SCRATCH_FILESYSTEM = "scratch"
 
 _MIB = 1024 * 1024
+
+_Reduced = tuple[Callable[..., BaseException], tuple[type[BaseException], dict[str, object]]]
+
+
+def _rebuild(cls: Callable[..., BaseException], values: dict[str, object]) -> BaseException:
+    """Rebuild a dataclass exception by keyword, so a subclass keeps its own fields.
+
+    The generated ``__init__`` takes keyword-friendly fields while ``BaseException.args`` holds only
+    what was passed positionally, so the default pickle path (``cls(*args)``) cannot rebuild an
+    instance created with keywords and drops a keyword mixed with positionals. Celery pickles task
+    exceptions between pool processes.
+    """
+    return cls(**values)
 
 
 @dataclass(frozen=True, slots=True)
@@ -73,6 +87,9 @@ class StorageBudgetExceeded(ServiceError):
     def detail(self) -> str:
         return str(self)
 
+    def __reduce__(self) -> _Reduced:
+        return _rebuild, (type(self), {f.name: getattr(self, f.name) for f in fields(self)})
+
 
 @dataclass(slots=True, eq=False)
 class StorageLowWatermark(ServiceUnavailableError):
@@ -87,6 +104,9 @@ class StorageLowWatermark(ServiceUnavailableError):
     @property
     def detail(self) -> str:
         return str(self)
+
+    def __reduce__(self) -> _Reduced:
+        return _rebuild, (type(self), {f.name: getattr(self, f.name) for f in fields(self)})
 
 
 @dataclass(slots=True, eq=False)
@@ -109,15 +129,6 @@ class FilesystemLowSpace(StorageLowWatermark):
             f"{label} has {self.free_bytes // _MIB} MiB free but at least "
             f"{-(-self.required_bytes // _MIB)} MiB is required before a new job can start "
             f"({-(-shortfall // _MIB)} MiB short)"
-        )
-
-    def __reduce__(self) -> tuple[type[FilesystemLowSpace], tuple[int, int, str, int]]:
-        # The generated __init__ takes keyword-friendly fields while BaseException.args stays
-        # empty, so the default pickle path (cls(*args)) cannot rebuild it; Celery pickles
-        # task exceptions between pool processes.
-        return (
-            type(self),
-            (self.incoming_bytes, self.free_bytes, self.filesystem, self.required_bytes),
         )
 
 
