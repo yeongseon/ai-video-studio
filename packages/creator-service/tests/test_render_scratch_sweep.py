@@ -20,7 +20,7 @@ def named(pid: str = "42", host: str = "local", prefix: str = ".render_tmp_") ->
 
 
 @pytest.mark.parametrize("name,age,removed", [
-    (named(), 61, True), (named(), 59, False),
+    (named(), 61, True), (named(), 59, False), (named(), 60, True), (named(), 59.9, False),
     (named(str(os.getpid())), 1800, False), (named(str(os.getpid())), 3601, True),
     (named(host="remote"), 1800, False), (named(host="remote"), 3600, True),
     (".render_tmp_42_deadbeef", 1800, False), (".render_tmp_42_deadbeef", 3600, True),
@@ -102,7 +102,7 @@ def test_bounds_stop_in_deterministic_run_order(tmp_path: Path, setting: str) ->
     assert result.removed == 1
     assert not paths[-1].exists()
     assert all(path.exists() for path in paths[:-1])
-    assert setting in result.bounds
+    assert (setting if setting == "max_removals" else f"artifact:{setting}") in result.bounds
 
 
 def test_second_sweep_is_idempotent(tmp_path: Path) -> None:
