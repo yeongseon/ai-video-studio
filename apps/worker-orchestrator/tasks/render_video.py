@@ -16,6 +16,7 @@ from creator_service.media_integrity import MediaIntegrityError
 from creator_service.render_segments import render_input_from_plan
 from creator_service.render_scratch import configured_scratch_root
 from creator_service.render_scratch_cleanup import cleanup_delivery_scratch
+from creator_service.render_scratch_monitor import RenderScratchLimitExceeded, render_budget
 from creator_service.render_service import render_service as _render_service
 from creator_service.script_service import script_service as _script_service
 from creator_service.subtitle_service import subtitle_service as _subtitle_service
@@ -40,6 +41,11 @@ _ARTIFACT_ROOT = os.getenv("ARTIFACT_ROOT", "data/artifacts")
 
 
 async def execute_render(ctx: TaskContext, render_profile: str = "shorts_default") -> TaskResult:
+    with render_budget(f"run:{ctx.run_id}:delivery:{ctx.task_id}"):
+        return await _execute_render(ctx, render_profile)
+
+
+async def _execute_render(ctx: TaskContext, render_profile: str) -> TaskResult:
     """Shared task body for integrated tests; stage transitions belong to run_task."""
     configured_scratch_root()
     request = LegacyRequest(ctx.run_id, render_profile, _ARTIFACT_ROOT)
@@ -81,6 +87,8 @@ async def execute_render(ctx: TaskContext, render_profile: str = "shorts_default
         except (TimeoutError, ConnectionError) as exc:
             raise ProviderTimeoutError(f"Provider timed out during video render for run {ctx.run_id}") from exc
         except SoftTimeLimitExceeded:
+            raise
+        except RenderScratchLimitExceeded:
             raise
         except MediaIntegrityError as exc:
             raise ProviderError(f"Provider failed video render for run {ctx.run_id}") from exc
