@@ -12,7 +12,7 @@ import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
 
-from restore_drill_process import DrillError, TIMEOUT, child_environment, docker, run
+from restore_drill_process import DrillError, TIMEOUT, child_environment, docker_environment, docker, run
 
 IMAGE_DIGEST = re.compile(r"[^@]+@sha256:([0-9a-f]{64})\Z")
 
@@ -32,7 +32,7 @@ class RuntimeFixture:
 
 def wait_for_postgres(container: str) -> None:
     for _ in range(60):
-        if subprocess.run(["docker", "exec", container, "pg_isready", "-U", "restore"], env=child_environment(), capture_output=True, check=False).returncode == 0:
+        if subprocess.run(["docker", "exec", container, "pg_isready", "-U", "restore"], env=docker_environment(), capture_output=True, check=False).returncode == 0:
             return
         time.sleep(1)
     raise DrillError("postgres did not become ready")

@@ -16,6 +16,10 @@ CHILD_ENV_ALLOWLIST: Final = frozenset({
     "PATH", "HOME", "LANG", "LC_ALL", "LC_CTYPE", "LC_COLLATE", "LC_MESSAGES",
     "LC_MONETARY", "LC_NUMERIC", "LC_TIME", "TMPDIR", "VIRTUAL_ENV",
 })
+DOCKER_ENV_ALLOWLIST: Final = frozenset({
+    "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH",
+    "DOCKER_TLS_VERIFY", "XDG_RUNTIME_DIR",
+})
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,5 +51,12 @@ def run(*command: str, cwd: Path | None = None, env: dict[str, str] | None = Non
     return result
 
 
+def docker_environment() -> dict[str, str]:
+    """Preserve daemon selection only for the Docker CLI, never app children."""
+    return child_environment({
+        name: value for name, value in os.environ.items() if name in DOCKER_ENV_ALLOWLIST
+    })
+
+
 def docker(*arguments: str) -> subprocess.CompletedProcess[str]:
-    return run("docker", *arguments)
+    return run("docker", *arguments, env=docker_environment())

@@ -42,7 +42,7 @@ from restore_drill_runtime import (
     wait_for_postgres,
     validate_release_manifest,
 )
-from restore_drill_process import ContainerNameCollisionError, child_environment
+from restore_drill_process import ContainerNameCollisionError, child_environment, docker_environment
 from restore_drill_render import timeline_render_program
 
 
@@ -276,7 +276,7 @@ def main() -> int:
                     if cleanup_error is None:
                         cleanup_error = exc
             if created_containers:
-                subprocess.run(["docker", "rm", "-f", *created_containers], env=child_environment(), capture_output=True, check=False)
+                subprocess.run(["docker", "rm", "-f", *created_containers], env=docker_environment(), capture_output=True, check=False)
             raise_cleanup_error(cleanup_error)
 
 

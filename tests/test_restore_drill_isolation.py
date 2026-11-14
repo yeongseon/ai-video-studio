@@ -38,9 +38,15 @@ def test_every_child_uses_isolated_environment_when_parent_is_poisoned(
         "REDIS_URL", "DATABASE_URL", "OPENAI_API_KEY", "CELERY_BROKER_URL",
         "CUSTOM_API_KEY", "CUSTOM_TOKEN", "CUSTOM_SECRET", "OTEL_EXPORTER_OTLP_ENDPOINT",
         "AWS_ACCESS_KEY_ID", "AZURE_STORAGE_CONNECTION_STRING", "GOOGLE_APPLICATION_CREDENTIALS",
-        "STORAGE_BACKEND", "DOCKER_HOST", "PGSERVICE", "PG_RESTORE", "PYTHONPATH",
+        "STORAGE_BACKEND", "PGSERVICE", "PG_RESTORE", "PYTHONPATH",
     )}
     for name, value in poison.items():
+        monkeypatch.setenv(name, value)
+    selectors = {name: f"synthetic-{name}" for name in (
+        "DOCKER_HOST", "DOCKER_CONTEXT", "DOCKER_CONFIG", "DOCKER_CERT_PATH",
+        "DOCKER_TLS_VERIFY", "XDG_RUNTIME_DIR",
+    )}
+    for name, value in selectors.items():
         monkeypatch.setenv(name, value)
 
     # When running every drill phase against injected external processes.
@@ -65,6 +71,11 @@ def test_every_child_uses_isolated_environment_when_parent_is_poisoned(
         assert environment is not None, command
         assert not set(poison.values()).intersection(environment.values()), command
         assert environment["REDIS_URL"] == "", command
+        for name, value in selectors.items():
+            if command[0] == "docker":
+                assert environment.get(name) == value, command
+            else:
+                assert name not in environment, command
         if child in {"migration", "render", "api", "reconciler"}:
             expected_port = "15432" if child == "migration" and index < 2 else "25432"
             assert environment["DATABASE_URL"] == f"postgresql://restore:synthetic-local-only@127.0.0.1:{expected_port}/restore"
