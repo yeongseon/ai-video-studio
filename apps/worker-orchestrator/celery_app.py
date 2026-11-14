@@ -247,7 +247,7 @@ def setup_celery_logger(logger: logging.Logger, **_kwargs: object) -> None:
 @worker_ready.connect(weak=False)
 def cleanup_render_scratch_at_start(**_kwargs: object) -> None:
     try:
-        from render_scratch_startup import sweep_at_start
+        from tasks.render_scratch_startup import sweep_at_start
 
         sweep_at_start()
     except Exception:
