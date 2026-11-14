@@ -127,6 +127,14 @@ def test_local_storage_compose_checks_are_invoked() -> None:
     assert "tests/test_local_storage_compose.py" in _test_commands(workflow)
 
 
+def test_make_check_dispatch_tests_are_invoked() -> None:
+    # Given the workflow validation jobs.
+    workflow = _workflow()
+    # When checking the Make check-target dispatch coverage.
+    # Then CI runs the fake-toolchain dispatch tests.
+    assert "tests/test_make_check_targets.py" in _test_commands(workflow)
+
+
 @pytest.mark.parametrize("scope", ["job", "step"])
 @pytest.mark.parametrize(
     "value",
