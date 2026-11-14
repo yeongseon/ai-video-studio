@@ -243,17 +243,22 @@ class _Verdict:
         return self.verdict
 
 
-_CONFIGURED_KEY = "test-admin-key-secure-16chars"
+# Mixed case on purpose: lowercasing either side before the helper is called changes what the recorder sees.
+_CONFIGURED_KEY = "Test-Admin-KEY-secure-16chars"
 # A plain comparison cannot give both answers: the helper refuses the correct key and accepts a wrong one.
 _VERDICTS = pytest.mark.parametrize(
     ("provided", "verdict"),
-    [(_CONFIGURED_KEY, False), ("wrong-key", True)],
+    [(_CONFIGURED_KEY, False), ("Wrong-KEY-Mixed-Case", True)],
     ids=["correct-key-refused-by-helper", "wrong-key-accepted-by-helper"],
 )
 
 
 class TestEveryComparisonSiteDelegatesToTheSharedHelper:
     """Reverting any of the three comparison sites to a plain == must fail a test (#1079)."""
+
+    @pytest.fixture(autouse=True)
+    def _mixed_case_admin_key(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        monkeypatch.setenv("ADMIN_API_KEY", _CONFIGURED_KEY)
 
     @_VERDICTS
     async def test_require_admin_takes_its_decision_from_the_shared_helper(
