@@ -36,17 +36,18 @@ use, or generate a new key; production still requires at least 16 characters.
 
 If you already have a `.env` that was copied from an older `.env.local.example`,
 delete any `STUDIO_WEB_BIND=0.0.0.0` line from it now. The Make guard inspects `.env`
-as text (never sources or executes it), warns on every uncommented non-loopback
-`STUDIO_WEB_BIND` assignment, and refuses a wildcard unless the shell has exactly
-`STUDIO_WEB_LAN_OK=1`. Quoted values, `export` prefixes, `=` or `:` separators,
-a UTF-8 BOM and one bracket pair around a legacy literal are recognized. Commented
+as text (never sources or executes it), warns on each recognized, uncommented
+non-loopback `STUDIO_WEB_BIND` line, and refuses a wildcard unless the shell has exactly
+`STUDIO_WEB_LAN_OK=1`. The scan is a line-based text heuristic, not a Compose dotenv
+parser: spellings that only Compose understands can escape it. Quoted values, `export`
+prefixes, `=` or `:` separators, a UTF-8 BOM and one bracket pair around a legacy literal
+are recognized. Commented
 assignments, empty values and loopback literals are silent. Invalid UTF-8 bytes are
 replaced; an unreadable `.env` (including a directory) produces one warning and the
 advisory scan is skipped. Bind validation still runs normally: its exported value
 wins over `.env`, so skipping inspection does not open an exposure path through Make.
 Unresolvable expressions such as `${H:-0.0.0.0}` warn without expansion.
-Its exported bind still takes precedence
-over `.env`. Direct Compose invocations bypass this guard and can publish Studio on
+Direct Compose invocations bypass this guard and can publish Studio on
 every interface from the legacy line, even without confirmation.
 
 ## 2. Start services

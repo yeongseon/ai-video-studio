@@ -207,7 +207,8 @@ live network or firewall verification.
 
 Direct Compose invocations bypass the Make guard and interpolate `.env` themselves:
 an operator-edited bind, including a legacy wildcard, can publish Studio without
-confirmation. Make warns on uncommented non-loopback bind assignments in `.env`
+confirmation. Make warns on recognized, uncommented non-loopback bind lines in `.env`
+(a line-based text heuristic, not a Compose dotenv parser)
 and refuses legacy wildcards without exact shell confirmation; it never loads
 the file as shell code or takes confirmation from it. It recognizes quotes, `export`,
 `=`/`:` separators, a UTF-8 BOM and one bracket pair around legacy literals only;
