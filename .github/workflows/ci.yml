@@ -74,6 +74,7 @@ jobs:
           tests/test_ci_docs_contract_inventory_hardening.py
           tests/test_local_compose_bindings.py
           tests/test_local_bind.py
+          tests/test_local_bind_legacy_env.py
           tests/test_local_docs_contract.py
           tests/test_local_storage_migration.py
           apps/api/tests/test_quickstart_docs.py

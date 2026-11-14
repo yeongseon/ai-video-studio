@@ -30,6 +30,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Non-ASCII `X-Admin-Key` headers now receive the same response as a wrong key without a 500 or traceback; both admin gates and `/health` share a constant-time byte comparison (#1057).
 - PostgreSQL project deletion returned 503 because its CHECK rejected the existing `deleting` barrier. Migration 051 admits it; schema downgrade preserves pending rows as `archived` (quiesce writers first). Real-PostgreSQL deletion/retry/cascade and enum-drift guards run in required CI (#947).
 - Audio generation only falls back to single-pass TTS before the first section provider call; provider failures retain retry mapping and later local errors propagate without another paid call (#1051).
+- Hardened the local Studio bind guard: use a version-independent local-address allowlist with exact LAN confirmation and default denial, diagnose legacy `.env` binds and block unconfirmed wildcards; Compose regression checks cover all profiles and host networking (#1037).
 - API key revocation silently bypassed — `_AsyncpgSessionAdapter` discarded the `revoked_at IS NULL` filter. Adapter removed; the resolver now runs the asyncpg query directly (#583).
 - Studio's Vite development proxy strips client `X-Admin-Key` on every proxied prefix without changing creator-key handling (#1056).
 - Local artifact downloads always returned 404 — the route read `file_path` (absolute) instead of `storage_key` (root-relative). Legacy rows now normalized via `os.path.relpath` (#584).
