@@ -6,12 +6,14 @@ import errno
 import logging
 import os
 import stat
-from collections.abc import Generator, Iterator
+from collections.abc import Callable, Generator, Iterator
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Final
+
+from typing_extensions import assert_never
 
 from creator_domain.exceptions import ServiceUnavailableError
 
@@ -55,16 +57,8 @@ def _cap_from_env() -> int:
     return DEFAULT_MAX_BYTES
 
 
-def _sizes(paths: tuple[Path, ...]) -> Generator[int, None, None]:
+def _sizes(paths: tuple[Path, ...], skipped: Callable[[OSError], None]) -> Generator[int, None, None]:
     """Yield once per entry; descriptor-relative no-follow opens fence symlink swaps."""
-    reported = False
-
-    def skipped(error: OSError) -> None:
-        nonlocal reported
-        if not reported:
-            reported = True
-            logger.warning("Render scratch walk skipped an unreadable entry (%s)", errno.errorcode.get(error.errno or 0, "OSError"))
-
     for path in paths:
         try:
             info = path.lstat()
@@ -84,6 +78,8 @@ def _sizes(paths: tuple[Path, ...]) -> Generator[int, None, None]:
                     try:
                         entry = next(iterator, None)
                     except OSError as error:
+                        if len(stack) == 1:
+                            raise
                         skipped(error)
                         entry = None
                     if entry is None:
@@ -106,9 +102,6 @@ def _sizes(paths: tuple[Path, ...]) -> Generator[int, None, None]:
                         continue
         except (FileNotFoundError, NotADirectoryError):
             continue
-        except OSError as error:
-            skipped(error)
-            continue
 
 
 @dataclass(slots=True)
@@ -120,6 +113,26 @@ class RenderScratchBudget:
     paths: list[Path] = field(default_factory=list)
     _walk: Generator[int, None, None] | None = None
     _total: int = 0
+    baseline_bytes: int = field(default=0, init=False)
+    _reported_skip: bool = field(default=False, init=False)
+
+    def add_baseline(self, path_or_bytes: Path | int) -> None:
+        """Credit a completed materialized source copy, on the delivery's owning thread."""
+        match path_or_bytes:
+            case Path():
+                size = path_or_bytes.stat().st_size
+            case int():
+                size = path_or_bytes
+            case unreachable:
+                assert_never(unreachable)
+        if size < 0:
+            raise ValueError(size)
+        self.baseline_bytes += size
+
+    def _skipped(self, error: OSError) -> None:
+        if not self._reported_skip:
+            self._reported_skip = True
+            logger.warning("Render scratch walk skipped an unreadable entry (%s)", errno.errorcode.get(error.errno or 0, "OSError"))
 
     def register(self, path: Path) -> None:
         if path not in self.paths:
@@ -129,7 +142,7 @@ class RenderScratchBudget:
         if self.cap_bytes == 0:
             return
         if self._walk is None:
-            self._walk = _sizes(tuple(self.paths))
+            self._walk = _sizes(tuple(self.paths), self._skipped)
             self._total = 0
         for _ in range(MAX_ENTRIES_PER_POLL):
             size = next(self._walk, None)
@@ -137,7 +150,7 @@ class RenderScratchBudget:
                 self.close()
                 return
             self._total += size
-            if self._total > self.cap_bytes:
+            if self._total > self.cap_bytes + self.baseline_bytes:
                 raise RenderScratchLimitExceeded(self.cap_bytes, self._total, self.label)
 
     def close(self) -> None:
