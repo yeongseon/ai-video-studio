@@ -208,6 +208,9 @@ DENIED_BINDS = (
     "192.0.2.1", "198.51.100.1", "203.0.113.1", "2001:db8::1", "198.18.0.1",
     "192.0.0.9", "240.0.0.1", "255.255.255.255", "0.1.2.3", "224.0.0.1", "ff02::1",
     "fec0::1", "::8.8.8.8", "::ffff:8.8.8.8", "8.8.8.8", "2606:4700::1",
+    "9.255.255.255", "11.0.0.0", "172.15.255.255", "172.32.0.0", "192.167.255.255", "192.169.0.0",
+    "100.63.255.255", "100.128.0.0", "169.253.255.255", "169.255.0.0",
+    "fbff:ffff:ffff:ffff:ffff:ffff:ffff:ffff", "fe00::", "fe7f:ffff:ffff:ffff:ffff:ffff:ffff:ffff",
 )
 LAN_RANGE_SAMPLES = (
     ("10.0.0.0", "10.12.34.56", "10.255.255.255"),
@@ -237,6 +240,7 @@ def test_unlisted_bind_is_refused_even_when_confirmed(tmp_path: Path, bind: str)
     # Then confirmation cannot authorize it or produce a Compose binding.
     assert result.returncode == 2, result.stdout
     assert result.stdout == ""
+    assert "allowlist" in result.stderr
 
 
 @pytest.mark.parametrize("bind", LAN_BINDS)
@@ -254,6 +258,10 @@ def test_allowlisted_lan_requires_confirmation(tmp_path: Path, bind: str, confir
     )
     # Then exactly confirmed local addresses are accepted, without blanket refusal.
     assert result.returncode == (0 if confirmation == "1" else 2), result.stderr
+    if confirmation == "1":
+        assert result.stdout.strip() != ""
+    else:
+        assert "STUDIO_WEB_LAN_OK=1" in result.stderr
 
 
 @pytest.mark.parametrize("bind", ["127.0.0.0", "127.255.255.255", "::ffff:127.255.255.255"])
