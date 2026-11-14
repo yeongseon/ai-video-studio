@@ -457,9 +457,16 @@ per sweep. A future timestamp keeps an entry fresh; mtime alone never proves
 owner death. Either of these conditions permits reclamation:
 
 - **Owner gone:** only a configured name with this host hash, a valid pid
-  (1 through 4194304), a failed liveness probe proving absence in this pid
-  namespace, and age at least `RENDER_SCRATCH_SWEEP_MIN_GRACE_SECONDS` (60).
-  Permission and other probe errors conservatively count as alive.
+  (1 through 4194304), and age at least
+  `RENDER_SCRATCH_SWEEP_MIN_GRACE_SECONDS` (60). The pid must be dead OR have
+  started more than 5 s after the entry's last change (`max(mtime, ctime)`).
+  A running owner started before it created and wrote its scratch; a later
+  live process cannot be that owner, including pid reuse after a container restart.
+  Linux process start is `/proc/<pid>/stat` field 22 divided by `SC_CLK_TCK`,
+  plus `/proc/stat` `btime`. The fixed 5 s slack covers `btime`'s 1 s resolution
+  and 10 ms ticks. Permission and other liveness-probe errors count as alive;
+  unreadable or malformed `/proc`, implausible start times and non-Linux systems
+  keep the entry under this rule when the pid is alive (the age rule still applies).
 - **Maximum age:** every recognised pattern qualifies at
   `RENDER_SCRATCH_MAX_AGE_SECONDS` (3600). `0` disables this rule entirely.
   A positive value below twice the real render task hard limit is clamped up
@@ -482,20 +489,45 @@ the age rule**: a shared artifact volume may belong to another container with
 the same pid. Ownerless legacy Timeline scratch uses age only too. Thus a crash
 right before a restart is immediately reclaimable only for configured same-host
 scratch whose owner is gone **after the grace**. Fresh legacy or sibling-host
-leftovers wait for age and a subsequent restart. Pid reuse is conservatively
-alive for owner-gone checks, but maximum age is a bound on legitimate lifetime,
+leftovers wait for age and a subsequent restart. Unknown process start times are
+conservatively alive for owner-gone checks, but maximum age is a bound on legitimate lifetime,
 not a liveness inference: an over-age entry can be removed even when its pid is
 alive. A live Worker's scratch is protected **while younger than the effective
-maximum age**. Setting age to zero preserves unknown/remote owners indefinitely.
+maximum age** (and, for the owner-gone rule, subject to the process-start limit
+below). Setting age to zero preserves unknown/remote owners indefinitely.
 After restarting the same container, its pid namespace starts again and the new
 Worker usually reuses the crashed Worker's pid. The owner-gone rule rarely helps
-in that case; the age rule is the usual reclaim path.
+without process-start identity; with a known start more than 5 s after last
+change, the next startup sweep can reclaim configured same-host scratch after
+the grace, without waiting for maximum age. A restart within the slack, a fresh
+entry or an unknown start can still require age and a subsequent restart.
+
+**Process-start limit:** the rule compares two timestamps from different
+sources. The process start is the kernel's boot-relative tick count plus
+`btime`, which is derived from the current wall clock; the entry's last change
+comes from the scratch filesystem. It therefore assumes a stable wall clock and
+a scratch filesystem whose timestamps are on the Worker's own clock, which holds
+for a local filesystem. Validate a remote, virtual or shared filesystem before
+relying on it, or disable the startup sweep where the clocks can differ. A
+forward step of the wall clock after the owner started, or a filesystem clock
+behind the Worker's, larger than the 5 s slack plus the time between the owner's
+start and its scratch's last change could make a live same-host owner look
+reused. Deleting that owner's scratch then also requires a concurrent
+scratch-owning process visible under the same hostname in the same pid namespace
+during the sweep (not necessarily another Worker main process: a surviving pool
+child or a second Worker run by a custom supervisor would qualify) and an entry
+already older than the 60 s grace. The shipped topology does not provide that
+overlap: startup precedes task execution, the render and audio workers run the
+solo pool, the image worker consumes only image tasks, and separate shipped
+containers have different hostnames. The slack is not an environment setting;
+increasing it would hide restarts only seconds after the last change and cannot
+bound an arbitrary clock difference.
 
 | Setting | Default | Scope |
 | --- | --- | --- |
 | `RENDER_SCRATCH_SWEEP_ENABLED` | `true` | Case-insensitive `1/true/yes` enables; `0/false/no` disables startup cleanup, not the timeout hook |
 | `RENDER_SCRATCH_MAX_AGE_SECONDS` | `3600` | Last-change lifetime; `0` disables age reclamation |
-| `RENDER_SCRATCH_SWEEP_MIN_GRACE_SECONDS` | `60` | Minimum age for a proven same-host dead owner |
+| `RENDER_SCRATCH_SWEEP_MIN_GRACE_SECONDS` | `60` | Minimum age for a same-host dead or reused owner pid |
 | `RENDER_SCRATCH_SWEEP_MAX_RUN_DIRECTORIES` | `1000` | Newest numeric run directories inspected per boot; nonnumeric names are excluded |
 | `RENDER_SCRATCH_SWEEP_MAX_ENTRIES` | `10000` | Independent recognised direct-child candidate budget for each root; unrelated names consume no entry slots |
 | `RENDER_SCRATCH_SWEEP_MAX_REMOVALS` | `500` | Successful entry removals |
@@ -529,8 +561,9 @@ locations. These budgets stop **between** filesystem operations: a blocked
 filesystem syscall or a recursive delete already in progress cannot be
 preempted. They are not hard realtime guarantees on a broken filesystem.
 An INFO summary reports examined/removed/skipped counts and elapsed time, with
-one INFO per removal containing only the scratch entry name and run id, never
-media payload names. No recursive size scan is performed to count freed bytes.
+one INFO per removal containing the scratch entry name, run id and a static
+`reason` (`owner_gone`, `owner_pid_reused` or `max_age`), never media payload
+names or additional pid/start-time fields. No recursive size scan is performed to count freed bytes.
 Concurrent disappearance counts as vanished, not failed deletion. A second
 sweep is idempotent absent newly eligible entries. Bounds can leave eligible
 files for another Worker start; no storage-wide deletion guarantee is claimed.
