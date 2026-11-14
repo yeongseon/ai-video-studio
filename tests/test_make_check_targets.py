@@ -2,6 +2,8 @@
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
+import shutil
 import subprocess
 from typing import Final
 
@@ -25,10 +27,11 @@ exit 0
 @dataclass(frozen=True, slots=True)
 class Checkout:
     root: Path
+    make: str
 
     def run(self, *args: str, fail_call: str = "", pytest_exit: str = "0") -> subprocess.CompletedProcess[str]:
         return subprocess.run(
-            ["/usr/bin/make", "-s", "-C", str(self.root), *args],
+            [self.make, "-s", "-C", str(self.root), *args],
             env={
                 "PATH": str(self.root / "bin"),
                 "FIXTURE_ROOT": str(self.root),
@@ -46,8 +49,20 @@ class Checkout:
         (self.root / "apps/studio-web/node_modules").mkdir()
 
 
+@pytest.fixture(scope="session")
+def make_binary() -> str:
+    path = shutil.which("make")
+    if path is None:
+        pytest.fail("GNU make 4 or newer is required on PATH to run the Make dispatch tests")
+    banner = subprocess.run([path, "--version"], capture_output=True, text=True, check=True).stdout.splitlines()[0]
+    match = re.match(r"GNU Make (\d+)\.", banner)
+    if match is None or int(match.group(1)) < 4:
+        pytest.fail(f"GNU make 4 or newer is required to run the Make dispatch tests, found: {banner}")
+    return path
+
+
 @pytest.fixture
-def checkout(tmp_path: Path) -> Checkout:
+def checkout(tmp_path: Path, make_binary: str) -> Checkout:
     (tmp_path / "Makefile").write_text((ROOT / "Makefile").read_text())
     for path in ("apps/api", "apps/worker-orchestrator", "apps/studio-web", "packages", "bin"):
         (tmp_path / path).mkdir(parents=True, exist_ok=True)
@@ -56,9 +71,9 @@ def checkout(tmp_path: Path) -> Checkout:
         command.write_text(FAKE_COMMAND)
         command.chmod(0o755)
     # Only make and fake tools are on PATH, including inside recursive make recipes.
-    (tmp_path / "bin/make").symlink_to("/usr/bin/make")
+    (tmp_path / "bin/make").symlink_to(make_binary)
     (tmp_path / "calls").write_text("")
-    return Checkout(tmp_path)
+    return Checkout(tmp_path, make_binary)
 
 
 def _suite_calls() -> list[str]:
@@ -73,6 +88,20 @@ def _suite_calls() -> list[str]:
 @pytest.mark.parametrize("target", FULL_TARGETS)
 def test_full_checks_fail_before_work_when_web_is_absent(checkout: Checkout, target: str) -> None:
     # Given an installed Python toolchain but no Studio dependencies.
+    # When selecting a full check.
+    result = checkout.run(target)
+    # Then fail with the locked recovery command before any check executes.
+    assert result.returncode != 0, result.stdout
+    assert "npm --prefix apps/studio-web ci" in result.stdout + result.stderr
+    assert checkout.calls() == []
+
+
+@pytest.mark.parametrize("tool", ("npm", "node", "npx"))
+@pytest.mark.parametrize("target", FULL_TARGETS)
+def test_full_checks_fail_when_a_node_tool_is_missing(checkout: Checkout, target: str, tool: str) -> None:
+    # Given installed Studio dependencies but one Node executable that is not on PATH.
+    checkout.install_web()
+    (checkout.root / "bin" / tool).unlink()
     # When selecting a full check.
     result = checkout.run(target)
     # Then fail with the locked recovery command before any check executes.
