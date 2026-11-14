@@ -56,6 +56,13 @@ def cleanup_delivery_scratch(
     started = time.monotonic()
     examined = 0
     warned: set[str] = set()
+    bound_logged = False
+
+    def report_bound() -> None:
+        nonlocal bound_logged
+        if not bound_logged:
+            bound_logged = True
+            logger.info("Render timeout cleanup entry bound reached", extra={"run_id": run_id})
 
     def warning(kind: str) -> None:
         if kind not in warned:
@@ -67,7 +74,7 @@ def cleanup_delivery_scratch(
         with os.scandir(parent) as entries:
             for entry in islice(entries, TIMEOUT_MAX_ENTRIES):
                 if examined >= TIMEOUT_MAX_ENTRIES or time.monotonic() - started >= 2:
-                    logger.info("Render timeout cleanup entry bound reached", extra={"run_id": run_id})
+                    report_bound()
                     return
                 examined += 1
                 configured = CONFIGURED_SCRATCH_NAME.fullmatch(entry.name)
@@ -85,7 +92,7 @@ def cleanup_delivery_scratch(
                     if stat.S_ISLNK(info.st_mode):
                         warning("symlink")
                         continue
-                    if bool(partial) != stat.S_ISREG(info.st_mode):
+                    if not (stat.S_ISREG(info.st_mode) if partial else stat.S_ISDIR(info.st_mode)):
                         continue
                     remove_scratch_entry(parent, entry.name, info)
                     logger.info("Render timeout scratch removed", extra={"scratch_name": entry.name, "run_id": run_id})
@@ -94,7 +101,7 @@ def cleanup_delivery_scratch(
                 except OSError:
                     warning("deletion_error")
         if examined >= TIMEOUT_MAX_ENTRIES:
-            logger.info("Render timeout cleanup entry bound reached", extra={"run_id": run_id})
+            report_bound()
 
     try:
         with directory_fd(artifact_root.resolve()) as root_fd:

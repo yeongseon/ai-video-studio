@@ -43,6 +43,8 @@ def test_timeout_removes_only_killed_delivery(
         (path / "payload").write_bytes(b"keep unless owned")
     partial = render / "output.tmp.42.deadbeef.mp4"
     partial.write_bytes(b"partial")
+    other_partial = render / "output.tmp.43.deadbeef.mp4"
+    other_partial.write_bytes(b"other delivery")
     published = render / "output.mp4"
     published.write_bytes(b"published")
     unrelated = render / "audio.wav"
@@ -60,6 +62,7 @@ def test_timeout_removes_only_killed_delivery(
     assert all((path / "payload").read_bytes() == b"keep unless owned" for path in kept)
     assert published.read_bytes() == b"published"
     assert unrelated.read_bytes() == b"unrelated"
+    assert other_partial.read_bytes() == b"other delivery"
     assert link.is_symlink()
     assert (victim / "payload").read_bytes() == b"victim"
 
