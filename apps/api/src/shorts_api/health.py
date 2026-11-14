@@ -1,4 +1,3 @@
-import hmac
 import mimetypes
 import os
 from importlib import import_module
@@ -13,7 +12,7 @@ from starlette import status
 from starlette.responses import Response
 
 from shorts_api.auth import CurrentUser, get_current_user
-from shorts_api.lifecycle import REDIS_URL, configured_admin_api_key, shutdown_state
+from shorts_api.lifecycle import REDIS_URL, admin_key_matches, configured_admin_api_key, shutdown_state
 
 model_health = ModelHealthService()
 
@@ -75,7 +74,7 @@ def _is_admin_request(request: Request) -> bool:
     if not admin_key:
         return False
     provided = request.headers.get("X-Admin-Key", "")
-    return hmac.compare_digest(provided, admin_key)
+    return admin_key_matches(provided, admin_key)
 
 async def health(request: Request) -> dict[str, object]:
     environment = os.getenv("ENVIRONMENT", "development").lower()

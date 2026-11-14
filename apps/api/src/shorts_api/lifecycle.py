@@ -1,5 +1,6 @@
 import asyncio
 import contextlib
+import hmac
 import logging
 import os
 import resource
@@ -148,6 +149,15 @@ def configured_admin_api_key() -> str:
     """Return no credential for publicly shipped examples, even without startup validation."""
     key = os.environ.get("ADMIN_API_KEY", "")
     return "" if _is_known_example_admin_key(key) else key
+
+
+def admin_key_matches(provided: str | None, expected: str) -> bool:
+    """Compare exact decoded text in constant time without rejecting Unicode or surrogates."""
+    if not provided or not expected:
+        return False
+    return hmac.compare_digest(
+        provided.encode("utf-8", "surrogatepass"), expected.encode("utf-8", "surrogatepass")
+    )
 
 
 def validate_admin_api_key(
