@@ -97,6 +97,8 @@ def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str
             logger.debug("Render scratch termination grace expired")
         raise
     finally:
+        # Linux keeps a PID pinned while it is still a live process group id, so after the
+        # direct child was reaped this signal can only reach leftover members of that group.
         with suppress(ProcessLookupError, PermissionError):
             os.killpg(proc.pid, signal.SIGKILL)
         proc.kill()

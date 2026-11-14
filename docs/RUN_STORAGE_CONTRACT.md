@@ -290,7 +290,10 @@ can take one poll interval plus additional polls for very large trees: each poll
 consumes at most 100,000 entries from a resumable iterative scan. A running pass
 compares its accumulated total on every poll; once exhausted, the next poll
 starts a new pass. Files deleted after being counted stay counted for that pass,
-so churn can over-approximate current usage. Growth after a file was visited is
+so churn can over-approximate current usage. Sizes are apparent file sizes: sparse
+files and hard links count at full size, which can only over-count. An entry that
+cannot be read (permission denied, a symlink swapped in, no free descriptors) is
+skipped with one warning per walk and never fails the render. Growth after a file was visited is
 observed on a subsequent pass. Detection latency and the up-to-two-second TERM
 grace allow further writes. A byte overshoot guarantee would require a write-rate
 bound, which this monitor does not provide. Filesystem syscalls are cooperative,
