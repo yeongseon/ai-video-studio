@@ -52,7 +52,7 @@ class StorageUsage:
     max_reserved_bytes: int
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class StorageBudgetExceeded(ServiceError):
     """Mutable exception state permits Starlette 1.10 traceback cleanup (#3205)."""
 
@@ -74,7 +74,7 @@ class StorageBudgetExceeded(ServiceError):
         return str(self)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class StorageLowWatermark(ServiceUnavailableError):
     """Mutable exception state permits Starlette 1.10 traceback cleanup (#3205)."""
 
@@ -89,7 +89,7 @@ class StorageLowWatermark(ServiceUnavailableError):
         return str(self)
 
 
-@dataclass(slots=True)
+@dataclass(slots=True, eq=False)
 class FilesystemLowSpace(StorageLowWatermark):
     """A job was refused because a filesystem it writes to is below its free-space watermark.
 

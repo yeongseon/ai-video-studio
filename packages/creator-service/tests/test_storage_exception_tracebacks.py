@@ -27,3 +27,18 @@ def test_handled_storage_exception_allows_traceback_cleanup(
 
         # Then the standard exception protocol succeeds without masking the error.
         assert handled.__traceback__ is None
+
+
+@pytest.mark.parametrize("make", [
+    lambda: StorageBudgetExceeded(1, 10, 90, 10, 100),
+    lambda: StorageLowWatermark(10, 0),
+    lambda: FilesystemLowSpace(0, 0, "scratch", 100),
+], ids=["budget", "watermark", "filesystem"])
+def test_storage_exception_keeps_identity_hash_when_made_mutable(make) -> None:
+    # Given two equal-looking instances of a mutable (non-frozen) exception dataclass.
+    first, second = make(), make()
+    # When they are used as set members or dict keys, as exceptions commonly are.
+    members = {first, second}
+    # Then they stay hashable and compare by identity like any other exception.
+    assert len(members) == 2
+    assert first != second
