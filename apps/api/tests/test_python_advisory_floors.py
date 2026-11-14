@@ -18,6 +18,7 @@ ADVISORY_FLOORS: Final = {
     "idna": "3.15",
     "mako": "1.4.2",
     "multidict": "6.9.1",
+    "opentelemetry-api": "1.45.2",
     "pygments": "2.20.0",
     "python-multipart": "0.0.31",
     "requests": "2.33.0",
