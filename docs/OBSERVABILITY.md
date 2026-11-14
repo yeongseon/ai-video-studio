@@ -133,16 +133,21 @@ Structured logging is configured in `creator_service/logging_config.py`:
 - JSON logging is configured unconditionally at application import, in development
   as well as production.
 - Log text preserves exact route shapes under `/api/creator` and `/api/admin`
-  (ASCII letter/digit/underscore/hyphen segments), `/release/identity`,
+  (route-shaped paths whose segments are filtered as described below), `/release/identity`,
   `/release/worker-identity`, and `/docs/oauth2-redirect`. Single-segment paths
   such as `/health`, `/healthz`, `/docs`, `/redoc`, and `/openapi.json` also remain
   readable. A route is independent only at a left boundary not preceded by a
-  word character, `.`, `:`, `@`, or `-`; relative file/authority prefixes cannot
-  turn a private path suffix into a preserved route.
+  word character, `.`, `:`, `@`, or `-`: a relative file or authority prefix that
+  touches the route (`uploads/api/admin/...`, `user:pass@host/api/creator/...`) is
+  hidden together with it. Other separators in front of a route (`//`, `\`, `~`, `+`)
+  are not part of that prefix, so text before them is not hidden by this rule.
   Within a route, preserve a segment only if it is `[0-9]{1,20}`, or
   `[a-z][a-z_-]{0,23}` without a `[0-9a-f]{12,}` run or a case-insensitive
   credential prefix anywhere (`eyJ`, `hf_`, `r8_`, `sk-`, `sk_`, `gsk`, `ghp`,
-  `xoxb`, `AKIA`, `AIza`, `pplx-`). The explicit frozen framework exception set
+  `xoxb`, `AKIA`, `AIza`, `pplx-`); because a prefix is matched anywhere in a
+  segment, an ordinary word that contains one (`task-list`, `disk_usage`) is
+  redacted too, and a new route whose static segment is redacted must be renamed or
+  reviewed into the exception set. The explicit frozen framework exception set
   is `{"openapi.json", "oauth2-redirect"}`. The first unsafe segment and its
   entire remaining tail, including a trailing slash, become one `<redacted>`;
   non-route-shaped multi-segment paths are hidden whole. This is a conservative
