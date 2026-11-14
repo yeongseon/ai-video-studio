@@ -8,23 +8,93 @@ dev:
 	@echo "- Worker: celery -A celery_app.celery_app worker --workdir apps/worker-orchestrator --loglevel=info"
 	@echo "- Web: npm --prefix apps/studio-web run dev"
 
-lint:
+# Full checks: lint, test, build; check runs all three in order, failing fast.
+# Targeted iteration only: lint-python, test-python, lint-web, test-web, build-web.
+# Ordered CI-required families; each Python family gets its own pytest process.
+TEST_SUITES := api worker creator-domain creator-provider creator-service studio
+PYTHON_INSTALL := python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt -e packages/creator-domain -e packages/creator-service -e packages/creator-provider
+WEB_INSTALL := npm --prefix apps/studio-web ci
+
+.PHONY: lint test build check lint-python test-python lint-web test-web build-web \
+	_check-web _check-python _check-lint-python _check-test-python \
+	$(addprefix _test-,$(TEST_SUITES))
+
+_check-web:
+	@command -v npm >/dev/null && command -v node >/dev/null && command -v npx >/dev/null && \
+		test -d apps/studio-web/node_modules || \
+		{ echo "Studio toolchain missing: activate Node/npm, then run $(WEB_INSTALL)" >&2; exit 1; }
+
+_check-python:
+	@command -v python3 >/dev/null || \
+		{ echo "python3 missing: activate Python 3.12+, then run $(PYTHON_INSTALL)" >&2; exit 1; }
+
+_check-lint-python: _check-python
+	@for tool in ruff basedpyright; do \
+		command -v $$tool >/dev/null || \
+		{ echo "$$tool missing: activate the Backend environment; run $(PYTHON_INSTALL); install basedpyright as in CI" >&2; exit 1; }; \
+	done
+
+_check-test-python: _check-python
+	@python3 -c 'import pytest' 2>/dev/null || \
+		{ echo "pytest missing: activate the Backend environment; run $(PYTHON_INSTALL)" >&2; exit 1; }
+
+define LINT_PYTHON
 	ruff check apps packages
 	python3 -m compileall apps packages
-	@if [ -d apps/studio-web/node_modules ]; then npm --prefix apps/studio-web run lint; else echo "Skipping studio-web lint (run make install first)"; fi
+	basedpyright apps packages
+endef
+
+define LINT_WEB
+	npm --prefix apps/studio-web run lint
+	cd apps/studio-web && npx --no-install tsc --noEmit
+endef
+
+lint: _check-web _check-lint-python
+	$(LINT_PYTHON)
+	$(LINT_WEB)
+
+lint-python: _check-lint-python
+	$(LINT_PYTHON)
+
+lint-web: _check-web
+	$(LINT_WEB)
 
 format:
 	ruff format apps packages
 	@if [ -d apps/studio-web/node_modules ]; then npm --prefix apps/studio-web run format; else echo "Skipping studio-web format (run make install first)"; fi
 
-test:
-	cd apps/api && python3 -m pytest tests/ -v
-	cd apps/worker-orchestrator && python3 -m pytest tests/ -v
-	@if [ -d apps/studio-web/node_modules ]; then npm --prefix apps/studio-web run test; else echo "Skipping studio-web tests (run make install first)"; fi
+test: _check-web _check-test-python
+	@set -e; for suite in $(TEST_SUITES); do $(MAKE) _test-$$suite; done
 
-build:
+test-python: _check-test-python
+	@set -e; for suite in $(filter-out studio,$(TEST_SUITES)); do $(MAKE) _test-$$suite; done
+
+test-web: _check-web
+	npm --prefix apps/studio-web run test
+
+_test-api:
+	cd apps/api && python3 -m pytest tests/ -v
+
+_test-worker:
+	cd apps/worker-orchestrator && python3 -m pytest tests/ -v
+
+_test-creator-domain _test-creator-provider _test-creator-service:
+	python3 -m pytest packages/$(patsubst _test-%,%,$@)/tests/ -v
+
+_test-studio:
+	npm --prefix apps/studio-web run test
+
+build: _check-web _check-python
 	python3 -m compileall apps packages
-	@if [ -d apps/studio-web/node_modules ]; then npm --prefix apps/studio-web run build; else echo "Skipping studio-web build (run make install first)"; fi
+	npm --prefix apps/studio-web run build
+
+build-web: _check-web
+	npm --prefix apps/studio-web run build
+
+check: _check-web _check-lint-python _check-test-python
+	$(MAKE) lint
+	$(MAKE) test
+	$(MAKE) build
 
 docker-up:
 	docker compose up -d

@@ -46,6 +46,41 @@ npx tsc --noEmit   # Type check
 npm test -- --run  # Run tests
 ```
 
+### Quick versus full checks
+
+Run checks from the repository root with the Backend environment activated and
+the local packages installed as above:
+
+| Full target | Required work |
+| --- | --- |
+| `make lint` | Python ruff, compileall and basedpyright; Studio ESLint and TypeScript typecheck |
+| `make test` | API, Worker, creator-domain, creator-provider, creator-service, then Studio Vitest |
+| `make build` | Python compileall and the Studio production build |
+| `make check` | Full lint, test, then build, sequentially even with parallel make |
+
+Full targets fail rather than silently omit a family. Missing Studio dependencies
+or Node/npm tools produce an error pointing to `npm --prefix apps/studio-web ci`.
+Missing Python tools produce Backend installation guidance; install the runtime
+and development requirements above (including pytest and ruff), and install
+basedpyright as CI does (`python3 -m pip install basedpyright==1.29.2`). These
+preflight failures happen before any check or suite runs.
+
+The ordered family inventory is `TEST_SUITES` in the Makefile. Each Python family
+uses a separate pytest invocation; the full test target **fails fast** on the first
+failed family, without running later families. Existing suite-specific prerequisites
+(for example FFmpeg or a disposable database for applicable tests) still apply.
+Local checks are not a replacement for applicable CI checks on the final PR SHA,
+including coverage and runtime gates.
+
+For quick, **targeted** iteration, explicitly choose `make lint-python` or
+`make test-python` (all five Python families, no frontend dependency required), or
+`make lint-web`, `make test-web`, or `make build-web` (Studio only, no Python
+toolchain required). These narrow targets are not a full-check pass. To run fewer
+Python tests, invoke pytest with the desired file paths, separately per area.
+
+`make install` retains its existing `npm install` behavior; CI uses `npm ci`.
+Install/toolchain pin alignment is tracked separately in #1000.
+
 ## Code Guidelines
 
 ### General
