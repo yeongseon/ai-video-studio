@@ -22,7 +22,8 @@ def _rebuild(cls: Callable[..., BaseException], values: dict[str, object]) -> Ba
     The generated ``__init__`` takes keyword-friendly fields while ``BaseException.args`` holds only
     what was passed positionally, so the default pickle path (``cls(*args)``) cannot rebuild an
     instance created with keywords and drops a keyword mixed with positionals. Celery pickles task
-    exceptions between pool processes.
+    exceptions between pool processes. Every dataclass field must be accepted by the generated
+    ``__init__`` (``init=True``), which holds for all exceptions in this module.
     """
     return cls(**values)
 
