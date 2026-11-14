@@ -12,6 +12,7 @@ def test_future_timestamp_counts_as_zero_age(tmp_path: Path, future: str) -> Non
     # Given an entry whose last-change timestamp lies ahead of the sweep clock.
     entry = tmp_path / "1/render" / named()
     entry.mkdir(parents=True)
+    os.utime(entry, (1, 1))
     created = entry.stat().st_ctime
     now = created - 10 if future == "ctime" else created + 100
     if future == "mtime":
@@ -23,6 +24,39 @@ def test_future_timestamp_counts_as_zero_age(tmp_path: Path, future: str) -> Non
     # Then future time never becomes positive age or qualifies owner death.
     assert result.removed == 0
     assert entry.exists()
+
+
+def test_directory_swap_to_symlink_is_error_and_sweep_continues(tmp_path: Path, monkeypatch) -> None:
+    # Given an inspected directory swapped for a link just before deletion.
+    import creator_service.render_scratch_sweeper as module
+    render = tmp_path / "artifacts/1/render"
+    swapped = render / ".render_tmp_42_aaaaaaaa"
+    later = render / "timeline-zzzzzzzz"
+    swapped.mkdir(parents=True)
+    later.mkdir()
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    payload = victim / "keep"
+    payload.write_bytes(b"victim")
+    original = module.remove_scratch_entry
+    now = later.stat().st_ctime + 7200
+
+    def swap(parent: int, name: str, info: os.stat_result) -> None:
+        if name == swapped.name:
+            swapped.rmdir()
+            swapped.symlink_to(victim, target_is_directory=True)
+        original(parent, name, info)
+
+    monkeypatch.setattr(module, "remove_scratch_entry", swap)
+    # When the real descriptor-relative deletion receives stale directory metadata.
+    result = sweep_render_scratch(tmp_path / "artifacts", SweepPolicy(), SweepRuntime(now=lambda: now))
+    # Then the victim survives, the race is an error, and the next entry is removed.
+    assert victim.is_dir()
+    assert payload.read_bytes() == b"victim"
+    assert swapped.is_symlink()
+    assert result.skipped == {"artifact:deletion_error": 1}
+    assert result.removed == 1
+    assert not later.exists()
 
 
 def test_repeated_directory_bounds_are_reported_and_logged_once(tmp_path: Path, monkeypatch, caplog) -> None:
