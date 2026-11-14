@@ -9,6 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 ### Security
 
 - Upgrade the HTTP client stack to aiohttp 3.14.5, anyio 4.16.0, certifi 2026.10.23, idna 3.20 and multidict 6.9.1 past published advisories, with required yarl 1.25.1 and typing-extensions 4.16.0 dependencies (#1023 group 3).
+- Upgrade Pillow 11.3.0 to 13.0.0 and CairoSVG 2.9.0 to 2.9.1 past published media-library advisories (#1023 group 2).
 
 ### Added
 
@@ -32,6 +33,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Studio's Vite development proxy strips client `X-Admin-Key` on every proxied prefix without changing creator-key handling (#1056).
 - Local artifact downloads always returned 404 — the route read `file_path` (absolute) instead of `storage_key` (root-relative). Legacy rows now normalized via `os.path.relpath` (#584).
 - nginx CSRF check rejected default compose port — `$host` doesn't include the port, switched to `$http_host` (#586).
+- Where Celery timeouts are enforced, render hard timeouts reclaim attributable scratch and partial MP4s; a shipped Worker-start sweep reclaims recognised dead-owner or over-age scratch in numeric run directories and the configured scratch root with bounded candidate selection and independent root budgets while preserving published outputs and younger live-owner scratch (#1030).
 
 ## [0.4.0] - 2026-07-23
 
