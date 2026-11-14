@@ -51,6 +51,10 @@ class ValidationError(ServiceError):
         super().__init__(detail)
 
 
+class ChunkManifestValidationError(ValidationError):
+    """The long-form chunk contract violates a timing or policy invariant."""
+
+
 class ProviderConfigError(ValidationError):
     """A provider credential is missing, invalid, or not configured.
 
@@ -59,7 +63,9 @@ class ProviderConfigError(ValidationError):
     the auth/config root cause instead of collapsing it into generic VALIDATION.
     """
 
-    def __init__(self, detail: str = "Provider is not configured or its credential is invalid") -> None:
+    def __init__(
+        self, detail: str = "Provider is not configured or its credential is invalid"
+    ) -> None:
         super().__init__(detail)
 
 
