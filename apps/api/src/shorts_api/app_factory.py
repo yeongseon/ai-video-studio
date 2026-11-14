@@ -48,6 +48,10 @@ from shorts_api.routes.release_identity import router as release_identity_router
 setup_json_logging(service_name="api", level="INFO")
 logger = logging.getLogger(__name__)
 validate_production_config()
+_ACCESS_PATH_ESCAPES = {
+    code: f"\\x{code:02x}" if code < 128 else f"\\u{code:04x}"
+    for code in (*range(32), 127, 0x2028, 0x2029)
+}
 
 
 runs_router = APIRouter()
@@ -93,7 +97,7 @@ def create_app() -> FastAPI:
             logger.info(
                 "%s %s %d %.1fms",
                 request.method,
-                request.url.path,
+                request.scope["path"].translate(_ACCESS_PATH_ESCAPES),
                 status_code,
                 elapsed_ms,
                 extra={
