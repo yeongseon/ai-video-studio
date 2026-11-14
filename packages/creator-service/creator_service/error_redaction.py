@@ -45,10 +45,11 @@ _LOG_TOKEN_PREFIX = re.compile(
 )
 _ASSIGNMENT = re.compile(
     r"(?<![\w.-])(?:"
-    r"(?P<quote>['\"])(?P<quoted_name>[\w. -]++)(?P=quote)|(?P<name>[\w.-]++)"
+    r"[bBrRuU]{0,2}(?P<quote>['\"])(?P<quoted_name>[\w. -]++)(?P=quote)|(?P<name>[\w.-]++)"
     r")[ \t]*+[=:][ \t]*+"
 )
 _UNQUOTED_VALUE = re.compile(r"[^\s,;&'\"\[\]{}()]+")
+_QUOTED_VALUE = re.compile(r"(?P<prefix>[bBrRuU]{0,2})(?P<quote>['\"])")
 _LOG_CREDENTIAL_PATTERNS: Final = (
     _LOG_CREDENTIAL_URI, _URL, _BEARER, _LOG_TOKEN_PREFIX, _LONG_HEX,
 )
@@ -163,7 +164,7 @@ def is_sensitive_log_key(name: str) -> bool:
 
 
 def _redact_named_values(text: str) -> str:
-    """Scan assignments once; quoted values end at their matching quote or input end."""
+    """Scan disjoint values, skipping escaped characters without regex backtracking."""
     parts: list[str] = []
     cursor = 0
     # Possessive name/spacing runs prevent retries within a failed identifier.
@@ -171,15 +172,24 @@ def _redact_named_values(text: str) -> str:
     # inside ordinary message strings. The cursor skips already-redacted values.
     for match in _ASSIGNMENT.finditer(text):
         start = match.end()
-        if match.start() < cursor or not is_sensitive_log_key(match["name"] or match["quoted_name"]):
+        name = match["name"] or match["quoted_name"]
+        if match.start() < cursor or not is_sensitive_log_key(name):
             continue
         if start == len(text):
             continue
-        if text[start] in "'\"":
-            start += 1
-            end = text.find(text[start - 1], start)
-            if end < 0:
-                end = len(text)
+        quoted = _QUOTED_VALUE.match(text, start)
+        if quoted:
+            end = quoted.end()
+            while end < len(text) and text[end] != quoted["quote"]:
+                end += 2 if text[end] == "\\" else 1
+            end = min(end, len(text))
+            if quoted["prefix"]:
+                end += end < len(text)
+            else:
+                start = quoted.end()
+        elif name.lower().endswith("authorization"):
+            line_end = _LINE_BREAK.search(text, start)
+            end = line_end.start() if line_end else len(text)
         else:
             value = _UNQUOTED_VALUE.match(text, start)
             if value is None:
