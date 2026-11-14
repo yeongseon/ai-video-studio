@@ -59,10 +59,15 @@ No worker pool is changed by this policy.
 | `SoftTimeLimitExceeded` | Common runner attempts guarded `FAILED` transition and re-raises; it does not convert to a provider timeout |
 | Other unhandled | Task fails, stored in DLQ |
 
-`generate_audio` propagates a `SoftTimeLimitExceeded` reaching its per-section
-handler before generic fallback, without starting a second, single-pass provider
-call. Ordinary section failures retain the legacy single-pass fallback;
-the single-pass provider timeout/rate-limit retry policy remains unchanged.
+`generate_audio` starts its single-pass fallback only for preparation failures
+that happen BEFORE the first per-section provider call (quality-profile
+resolution, section planning). Once a section provider call has started,
+provider exceptions are mapped exactly like the single-pass path
+(`ProviderTimeoutError`, `RateLimitError`, `ProviderError`) and any later local
+failure (paragraph artifact, concatenation, sidecar) propagates unchanged, so a
+paid section is never followed by a second, paid single-pass call.
+`SoftTimeLimitExceeded` always propagates. The single-pass provider
+timeout/rate-limit retry policy remains unchanged.
 
 ### Backoff Calculation
 
