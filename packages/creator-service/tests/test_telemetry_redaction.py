@@ -6,6 +6,7 @@ from io import StringIO
 from types import SimpleNamespace
 
 import pytest
+from opentelemetry.trace import get_current_span
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
@@ -25,6 +26,7 @@ def pipeline(request, monkeypatch):
     logs = InMemoryLogRecordExporter()
     providers = SimpleNamespace()
     sdk["trace"] = SimpleNamespace(
+        get_current_span=get_current_span,
         set_tracer_provider=lambda provider: setattr(providers, "traces", provider),
         get_tracer=lambda name: providers.traces.get_tracer(name),
     )
@@ -177,3 +179,21 @@ def test_initialization_is_idempotent_when_called_twice(pipeline):
     pipeline.providers.logs.force_flush()
     pipeline.providers.traces.force_flush()
     assert len(pipeline.logs.get_finished_logs()) == len(pipeline.spans.get_finished_spans()) == 1
+
+
+def test_exported_log_attributes_never_carry_the_private_correlation_pair(pipeline):
+    # Given an active span and a record from a named logger handled by every root handler.
+    tracer = pipeline.providers.traces.get_tracer("probe")
+    record = logging.LogRecord("creator.named", logging.INFO, __file__, 1, "inside span", (), None)
+    with tracer.start_as_current_span("work"):
+        for handler in logging.getLogger().handlers:
+            handler.handle(record)
+    pipeline.providers.logs.force_flush()
+    # When the SDK exports the record.
+    exported, = pipeline.logs.get_finished_logs()
+    # Then the private provenance stays in process while the JSON stream keeps the real ids.
+    assert "_otel_correlation" not in exported.log_record.attributes
+    assert sum(isinstance(item, telemetry.TraceContextFilter) for item in pipeline.handler.filters) == 1
+    emitted = json.loads(pipeline.stream.getvalue())
+    assert emitted["trace_id"] != "<redacted>"
+    assert len(emitted["trace_id"]) == 32

@@ -115,8 +115,8 @@ Trace correlation fields, when available, look like:
   "level": "INFO",
   "logger": "shorts_api.routes.creator_runs_core",
   "message": "Run created",
-  "trace_id": "abc123def456",
-  "span_id": "789abc",
+  "trace_id": "0123456789abcdef0123456789abcdef",
+  "span_id": "0123456789abcdef",
   "run_id": 42,
   "project_id": 7,
   "workspace_id": 1
@@ -215,8 +215,23 @@ Structured logging is configured in `creator_service/logging_config.py`:
   instrumentation using these providers receives the same boundary, but separately
   installed providers/exporters/handlers or direct output are not intercepted.
   Metrics are unchanged and are not redacted. No new configuration is required.
-- Trace context uses `TraceContextFilter`; its placement and correlation coverage
-  are tracked in [#1059](https://github.com/yeongseon/ai-video-studio/issues/1059).
+- `TraceContextFilter` runs on the root handlers and adds the correlation fields
+  only when telemetry is enabled and a valid span is active; it covers direct-root
+  records and propagated application and Uvicorn records. Logging setup filters each
+  installed handler; telemetry setup also filters existing root handlers and the SDK
+  log handler, idempotently. A handler added to the root logger later by other code
+  gets no filter of its own and sees the fields only when a filtered handler handled
+  the same record first.
+- JSON exempts only top-level `trace_id` and `span_id` from hex redaction when
+  both match the filter's private provenance pair and are nonzero lowercase hex
+  strings of exactly 32 and 16 characters, respectively. These SDK correlation
+  identifiers enable trace joins; the private provenance is never emitted, in
+  JSON or as an exported OTLP log attribute (the redacting log processor drops it).
+  Active-span values override user-supplied correlation fields. Without valid
+  provenance, user fields follow ordinary redaction; the provenance is an
+  in-process convention that only code controlling record attributes can forge.
+  The filter never raises into the logging call site. Messages, exception text,
+  nested extras and every other field retain the existing redaction rules.
 
 ### Correlation Fields
 
