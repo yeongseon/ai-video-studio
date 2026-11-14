@@ -257,11 +257,13 @@ delivery's** allocated `.render_tmp_*`, `.render_plan_*`, `timeline-*`,
 `audio-concat-*` and `sfx_*` directories plus its temporary MP4 (and the legacy
 system-temp concat file). Published outputs, retained BGM/mixed/normalized audio,
 styled subtitles, media inputs outside scratch and other deliveries are excluded.
-Materialized Timeline inputs inside scratch count: a Timeline copies its source media
-into `timeline-*`, and uploads allow up to 500 MiB per video, so a Timeline built from
-several large videos can exceed the 2 GiB default on its own. Size the setting above the
-combined size of the largest project's sources plus the render's own scratch, or set it to
-`0`; the actionable error names the setting. Symlinks are never followed.
+Materialized Timeline source copies inside `timeline-*` stay counted in the walk,
+but their completed copy sizes are credited to a delivery-local baseline. The cap
+bounds growth beyond those source copies, so several large source videos alone do
+not consume the render's allowance. Only source copies receive credit, once per
+copy: narration/TTS output, segments, concat lists and the temporary MP4 count in
+full. The threshold is configured cap plus baseline (equality passes); the error
+retains the configured cap and raw observed total. Symlinks are never followed.
 The scratch allocator registers exact paths into a delivery-local context; nested
 render calls reuse it, while concurrent deliveries have separate budgets.
 
@@ -275,9 +277,12 @@ large to parse fall back to the default with one warning naming the setting.
 
 The shared FFmpeg runner polls in its waiting thread every **0.5 seconds**
 (never more than 1 second); it also checks at process completion. If observed
-bytes are **greater than** the cap (equality passes), it sends SIGTERM to the
+bytes are **greater than** cap plus source baseline, it sends SIGTERM to the
 whole process group, allows up to **2 seconds** for the direct child to exit,
-then sends SIGKILL to the group, reaps its direct child and closes/drains pipes.
+then sends SIGKILL to the group, waits at most **10 seconds** to reap its direct
+child and closes/drains pipes. If reaping times out, it logs one error containing
+only the pid and program name, leaves the worker unblocked and preserves the
+original exception, if any.
 Existing caller cleanup removes scratch and the unpublished temporary MP4 before
 the typed `RenderScratchLimitExceeded` escapes the delivery. Existing published
 outputs remain byte-identical because rename occurs only after success.
@@ -296,8 +301,11 @@ compares its accumulated total on every poll; once exhausted, the next poll
 starts a new pass. Files deleted after being counted stay counted for that pass,
 so churn can over-approximate current usage. Sizes are apparent file sizes: sparse
 files and hard links count at full size, which can only over-count. An entry that
-cannot be read (permission denied, a symlink swapped in, no free descriptors) is
-skipped with one warning per walk and never fails the render. Growth after a file was visited is
+cannot be read below a registered root (permission denied, a symlink swapped in,
+no free descriptors) is skipped with one warning per delivery. Read errors on
+the registered root itself (lstat, open, scandir or iteration) fail the render;
+FileNotFoundError/NotADirectoryError for a vanished root remain tolerated.
+Growth after a file was visited is
 observed on a subsequent pass. Detection latency and the up-to-two-second TERM
 grace allow further writes. A byte overshoot guarantee would require a write-rate
 bound, which this monitor does not provide. Filesystem syscalls are cooperative,
@@ -306,12 +314,18 @@ make realistic overshoot insignificant, not to reserve disk capacity.
 
 The limit measures scratch, **not final output size**, and runs on the solo pool
 because enforcement lives in the runner rather than Celery timeout hooks. Every
-member of a terminated group receives SIGKILL; no group member remains running
-when the runner exits. Only the direct child belongs to the runner for reaping.
+member of a terminated group receives SIGKILL. A child in uninterruptible sleep
+(for example a hung network mount) may remain unreaped after the bounded wait;
+SIGKILL takes effect when the kernel operation returns. Only the direct child
+belongs to the runner for reaping.
 Descendants may remain zombies until PID 1 or a nearest subreaper reaps them;
 zombies cannot write and hold no scratch/disk. Containers whose PID 1 does not
 reap orphans should use an init (for example Docker `init: true`). FFmpeg itself
-normally has no children. No production subreaper/supervisor is installed.
+normally has no children. Descendants that leave the process group (`setsid`)
+or detach their stdio are not covered; FFmpeg does neither. Group signalling
+relies on an unreaped direct child pinning the pid: ignoring SIGCHLD in the worker
+would auto-reap children and void that argument (Celery does not ignore SIGCHLD).
+No production subreaper/supervisor is installed.
 This does not replace crash reclamation, free-space admission or the separate
 prefork hard-kill process-control work.
 
