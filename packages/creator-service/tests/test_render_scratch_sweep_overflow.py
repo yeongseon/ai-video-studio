@@ -39,7 +39,7 @@ def test_sorted_directory_overflow_keeps_sweeping_other_locations(tmp_path: Path
     first.mkdir()
     beyond.mkdir()
     for index in range(9999):
-        (render / f"published-{index:05}").touch()
+        (render / f".render_tmp_43_{index:08}").touch()
     older = root / "1/render/.render_tmp_42_deadbeef"
     older.mkdir(parents=True)
     scratch = tmp_path / "scratch"
@@ -81,7 +81,7 @@ def test_entry_budgets_are_independent_when_either_root_is_full(tmp_path: Path, 
     render.mkdir(parents=True)
     scratch.mkdir()
     parents = {"scratch": scratch, "artifact": render}
-    (parents[crowded] / "!published").write_bytes(b"keep")
+    (parents[crowded] / ".render_plan_42_deadbeef").write_bytes(b"keep")
     entries = [parent / named() for parent in (scratch, render)]
     for entry in entries:
         entry.mkdir()

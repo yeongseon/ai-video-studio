@@ -7,6 +7,7 @@ import heapq
 import logging
 import os
 import stat
+import bisect
 from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -99,15 +100,22 @@ def sweep_render_scratch(
     def clean(parent: int, run_id: str | None, root: str) -> None:
         nonlocal examined, removed
         with os.scandir(parent) as entries:
-            names = []
+            names: list[str] = []
             for entry in entries:
                 if runtime.monotonic() - started >= policy.budget_seconds:
                     bound("budget_seconds")
                     break
-                names.append(entry.name)
-        if len(names) > MAX_ENTRIES_PER_DIRECTORY:
-            bound(f"{root}:directory_entries")
-        for name in sorted(names)[:MAX_ENTRIES_PER_DIRECTORY]:
+                name = entry.name
+                if not any(pattern.fullmatch(name) for pattern in SCRATCH_NAME_PATTERNS):
+                    skip("unrecognised")
+                    continue
+                if len(names) >= MAX_ENTRIES_PER_DIRECTORY:
+                    bound(f"{root}:directory_entries")
+                    if name >= names[-1]:
+                        continue
+                    names.pop()
+                bisect.insort(names, name)
+        for name in names:
             if bounded():
                 return
             if root_examined[root] >= policy.max_entries:
@@ -115,9 +123,6 @@ def sweep_render_scratch(
                 return
             examined += 1
             root_examined[root] += 1
-            if not any(pattern.fullmatch(name) for pattern in SCRATCH_NAME_PATTERNS):
-                skip("unrecognised")
-                continue
             try:
                 info = os.stat(name, dir_fd=parent, follow_symlinks=False)
                 if stat.S_ISLNK(info.st_mode):
@@ -162,17 +167,21 @@ def sweep_render_scratch(
             return
         with directory_fd(artifact_root.resolve()) as root_fd:
             with os.scandir(root_fd) as entries:
-                names = []
+                newest: list[tuple[int, str]] = []
                 for entry in entries:
                     if runtime.monotonic() - started >= policy.budget_seconds:
                         bound("budget_seconds")
                         break
-                    names.append(entry.name)
-            numeric = [name for name in names if name.isascii() and name.isdecimal() and len(name) <= 20]
-            if len(numeric) > policy.max_run_directories:
-                bound("artifact:max_run_directories")
-            names = heapq.nlargest(policy.max_run_directories, numeric, key=lambda name: (int(name), name))
-            for name in names:
+                    name = entry.name
+                    if not (name.isascii() and name.isdecimal() and len(name) <= 20):
+                        continue
+                    candidate = (int(name), name)
+                    if len(newest) < policy.max_run_directories:
+                        heapq.heappush(newest, candidate)
+                    else:
+                        bound("artifact:max_run_directories")
+                        heapq.heappushpop(newest, candidate)
+            for _, name in sorted(newest, reverse=True):
                 if bounded():
                     break
                 if root_examined["artifact"] >= policy.max_entries:

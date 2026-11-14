@@ -31,8 +31,8 @@ def test_repeated_directory_bounds_are_reported_and_logged_once(tmp_path: Path, 
     for run in (1, 2):
         render = tmp_path / str(run) / "render"
         render.mkdir(parents=True)
-        (render / "a").touch()
-        (render / "b").touch()
+        (render / "timeline-aaaaaaaa").touch()
+        (render / "timeline-bbbbbbbb").touch()
     monkeypatch.setattr(module, "MAX_ENTRIES_PER_DIRECTORY", 1)
     # When both per-directory bounds are hit in one sweep.
     with caplog.at_level("INFO"):
