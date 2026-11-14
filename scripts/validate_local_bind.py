@@ -7,12 +7,20 @@
 """Parse operator bind input; inspect legacy .env text without loading or executing it."""
 from __future__ import annotations
 
-from ipaddress import IPv4Address, IPv6Address, ip_address
+from ipaddress import IPv4Address, IPv6Address, ip_address, ip_network
 import os
 from pathlib import Path
 import re
 import shlex
 import sys
+from typing import Final
+
+LOOPBACK_NETWORKS: Final = (ip_network("127.0.0.0/8"), ip_network("::1/128"))
+WILDCARD_NETWORKS: Final = (ip_network("0.0.0.0/32"), ip_network("::/128"))
+LAN_NETWORKS: Final = tuple(map(ip_network, (
+    "10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "100.64.0.0/10",
+    "169.254.0.0/16", "fe80::/10", "fc00::/7",
+))) + WILDCARD_NETWORKS
 
 
 def literal_address(raw: str) -> IPv4Address | IPv6Address | None:
@@ -44,11 +52,11 @@ def legacy_env_is_safe(confirmed: bool) -> bool:
         except ValueError:
             values = []
         address = literal_address(values[0]) if len(values) == 1 else None
-        if address is not None and address.is_loopback:
+        if address is not None and any(address in network for network in LOOPBACK_NETWORKS):
             continue
         print("WARNING: .env contains non-loopback STUDIO_WEB_BIND; remove this line: "
               "direct Compose bypasses the Make guard and can expose the shared-key proxy", file=sys.stderr)
-        if address is not None and address.is_unspecified and not confirmed:
+        if address is not None and any(address in network for network in WILDCARD_NETWORKS) and not confirmed:
             print("Legacy .env wildcard STUDIO_WEB_BIND requires STUDIO_WEB_LAN_OK=1 in the shell", file=sys.stderr)
             safe = False
     return safe
@@ -63,10 +71,11 @@ def main() -> int:
     if address is None:
         print("STUDIO_WEB_BIND must be a nonempty literal IPv4/IPv6 address", file=sys.stderr)
         return 2
-    if address.is_global:
-        print("STUDIO_WEB_BIND global addresses are forbidden; use loopback or a trusted LAN", file=sys.stderr)
+    loopback = any(address in network for network in LOOPBACK_NETWORKS)
+    if not loopback and not any(address in network for network in LAN_NETWORKS):
+        print("STUDIO_WEB_BIND outside local allowlist; global addresses are forbidden", file=sys.stderr)
         return 2
-    if not address.is_loopback and not confirmed:
+    if not loopback and not confirmed:
         print("STUDIO_WEB_BIND non-loopback address requires STUDIO_WEB_LAN_OK=1", file=sys.stderr)
         return 2
     print(f"[{address}]" if address.version == 6 else str(address))

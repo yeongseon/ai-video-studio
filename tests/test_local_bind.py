@@ -201,3 +201,70 @@ def test_confirmation_requires_exact_one(bind: str, confirmation: str) -> None:
     assert result.returncode == 2
     assert "STUDIO_WEB_LAN_OK=1" in result.stderr
     assert result.stdout == ""
+
+
+DENIED_BINDS = (
+    "2002:808:808::1", "2002:7f00:1::", "2001:0:4136:e378::1", "64:ff9b::808:808",
+    "192.0.2.1", "198.51.100.1", "203.0.113.1", "2001:db8::1", "198.18.0.1",
+    "192.0.0.9", "240.0.0.1", "255.255.255.255", "0.1.2.3", "224.0.0.1", "ff02::1",
+    "fec0::1", "::8.8.8.8", "::ffff:8.8.8.8", "8.8.8.8", "2606:4700::1",
+)
+LAN_RANGE_SAMPLES = (
+    ("10.0.0.0", "10.12.34.56", "10.255.255.255"),
+    ("172.16.0.0", "172.17.0.1", "172.31.255.255"),
+    ("192.168.0.0", "192.168.1.10", "192.168.255.255"),
+    ("100.64.0.0", "100.100.100.100", "100.127.255.255"),
+    ("169.254.0.0", "169.254.1.2", "169.254.255.255"),
+    ("fe80::", "fe80::1", "febf:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
+    ("fc00::", "fd00::10", "fdff:ffff:ffff:ffff:ffff:ffff:ffff:ffff"),
+)
+LAN_BINDS = (
+    *(bind for samples in LAN_RANGE_SAMPLES for bind in samples),
+    *(f"::ffff:{bind}" for samples in LAN_RANGE_SAMPLES[:5] for bind in samples),
+    "0.0.0.0", "::", "::ffff:0.0.0.0",
+)
+
+
+@pytest.mark.parametrize("bind", DENIED_BINDS)
+def test_unlisted_bind_is_refused_even_when_confirmed(tmp_path: Path, bind: str) -> None:
+    # Given an address outside the explicit local exposure allowlist.
+    env = {**os.environ, "STUDIO_WEB_BIND": bind, "STUDIO_WEB_LAN_OK": "1"}
+    # When invoking the actual validator from an isolated directory.
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/validate_local_bind.py")], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    # Then confirmation cannot authorize it or produce a Compose binding.
+    assert result.returncode == 2, result.stdout
+    assert result.stdout == ""
+
+
+@pytest.mark.parametrize("bind", LAN_BINDS)
+@pytest.mark.parametrize("confirmation", [None, "1"])
+def test_allowlisted_lan_requires_confirmation(tmp_path: Path, bind: str, confirmation: str | None) -> None:
+    # Given first, interior and last addresses of every allowed range, including mapped IPv4.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("STUDIO_WEB_")}
+    env["STUDIO_WEB_BIND"] = bind
+    if confirmation is not None:
+        env["STUDIO_WEB_LAN_OK"] = confirmation
+    # When validating the explicit selection.
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/validate_local_bind.py")], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    # Then exactly confirmed local addresses are accepted, without blanket refusal.
+    assert result.returncode == (0 if confirmation == "1" else 2), result.stderr
+
+
+@pytest.mark.parametrize("bind", ["127.0.0.0", "127.255.255.255", "::ffff:127.255.255.255"])
+def test_loopback_endpoints_need_no_confirmation(tmp_path: Path, bind: str) -> None:
+    # Given loopback range endpoints without exposure confirmation.
+    env = {key: value for key, value in os.environ.items() if not key.startswith("STUDIO_WEB_")}
+    env["STUDIO_WEB_BIND"] = bind
+    # When invoking the validator.
+    result = subprocess.run(
+        [sys.executable, str(ROOT / "scripts/validate_local_bind.py")], cwd=tmp_path, env=env,
+        capture_output=True, text=True, timeout=10, check=False,
+    )
+    # Then the complete loopback range remains usable.
+    assert result.returncode == 0, result.stderr
