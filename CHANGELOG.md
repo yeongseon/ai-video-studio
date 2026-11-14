@@ -41,6 +41,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Declare creator-service's direct Pillow, Celery, Redis, billiard, typing-extensions and OpenTelemetry dependencies, with an AST import contract and optional S3/Azure SDK extras that leave shipped images unchanged (#1042).
 - nginx CSRF check rejected default compose port — `$host` doesn't include the port, switched to `$http_host` (#586).
 - Where Celery timeouts are enforced, render hard timeouts reclaim attributable scratch and partial MP4s; a shipped Worker-start sweep reclaims recognised dead-owner or over-age scratch in numeric run directories and the configured scratch root with bounded candidate selection and independent root budgets while preserving published outputs and younger live-owner scratch (#1030).
+- Credit materialized Timeline source copies against render scratch growth, bound final child reaping to 10 seconds, avoid signalling reaped children, fail closed on unreadable scratch roots and deduplicate subtree warnings per delivery; document detached-descendant and SIGCHLD limits (#1095).
 
 ## [0.4.0] - 2026-07-23
 
