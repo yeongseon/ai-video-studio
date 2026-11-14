@@ -194,3 +194,16 @@ def test_ci_declares_disposable_checkout_when_running_acceptance() -> None:
     assert 'CUTOVER_ACCEPTANCE_DISPOSABLE: "1"' in step
     assert f"run: {SCRIPT}" in step
     assert "tests/test_local_acceptance_env.py tests/test_local_dockerignore.py" in workflow
+
+
+def test_git_ignores_interrupted_acceptance_env_files() -> None:
+    # Given an interrupted publication filename containing synthetic credentials.
+    path = ".env-cutover-synthetic"
+    # When Git applies the repository's ignore rules.
+    result = subprocess.run(
+        ["git", "check-ignore", "--no-index", path], cwd=ROOT, env={"GIT_MASTER": "1"},
+        capture_output=True, text=True, check=False,
+    )
+    # Then staging all files cannot accidentally include the leftover secret.
+    assert result.returncode == 0
+    assert result.stdout.strip() == path

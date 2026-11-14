@@ -19,6 +19,7 @@ coverage/
 # Environment
 .env
 /.env-storage-*
+/.env-cutover-*
 
 # IDE
 .idea/
