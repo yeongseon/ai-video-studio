@@ -52,9 +52,16 @@ def _worker_env(broker_url: str, broker_dir: Path) -> dict[str, str]:
     }
 
 
+def _interpreter_command(command: list[str]) -> list[str]:
+    """The shipped Celery command, run with the test interpreter instead of whichever ``celery`` PATH finds first."""
+    program, *arguments = command
+    assert program == "celery", f"expected a celery command, got {command}"
+    return [sys.executable, "-m", program, *arguments]
+
+
 @contextmanager
 def _worker(command: list[str], env: dict[str, str]) -> Iterator[subprocess.Popen[str]]:
-    process_command = [*command, "--include", "tests.worker_topology_tasks"]
+    process_command = [*_interpreter_command(command), "--include", "tests.worker_topology_tasks"]
     process = subprocess.Popen(
         process_command, cwd=WORKER, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, start_new_session=True,
