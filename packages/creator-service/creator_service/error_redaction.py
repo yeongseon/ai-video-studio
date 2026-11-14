@@ -15,7 +15,13 @@ _WINDOWS_PATH = re.compile(r"[A-Za-z]:\\[\\\w.\- ]+")
 _URL = re.compile(r"\bhttps?://[^\s'\"]+")
 _CREDENTIAL_URI = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s/'\"<>]*@[^\s;'\"<>]+")
 _BEARER = re.compile(r"\bBearer[ \t]+[A-Za-z0-9._~+/-]+=*", re.IGNORECASE)
-_TOKEN_BODY: Final = r"(?:(?:sk|gsk|ghp|xoxb)[-_]|hf_|r8_|AKIA|AIza)[A-Za-z0-9_\-]{6,}"
+_TOKEN_SK_PREFIX: Final = r"sk[-_]"
+_TOKEN_STEMS: Final = r"gsk|ghp|xoxb"
+_TOKEN_OTHER_PREFIXES: Final = r"hf_|r8_|AKIA|AIza"
+_TOKEN_BODY: Final = (
+    rf"(?:{_TOKEN_SK_PREFIX}|(?:{_TOKEN_STEMS})[-_]|{_TOKEN_OTHER_PREFIXES})"
+    r"[A-Za-z0-9_\-]{6,}"
+)
 _TOKEN_PREFIX = re.compile(r"\b" + _TOKEN_BODY)
 _LONG_HEX = re.compile(r"\b[0-9a-fA-F]{20,}\b")
 _REDACTED: Final = "<redacted>"
@@ -60,23 +66,52 @@ _LOG_CREDENTIAL_PATTERNS: Final = (
 )
 # Consume the entire path once, including preserved routes: never restart inside a
 # route at /workspaces or another suffix. Legacy artifact routes remain filesystem paths.
-_LOG_PATH = re.compile(r"/[\w.\-]+/[^\s'\"<>]*|\bworkspaces/[^\s'\"<>]+")
+_LOG_PATH = re.compile(
+    r"(?<![\w.:@\-])/[\w.\-]+/[^\s'\"<>]*"
+    r"|(?<![\w.:@\-])[\w.:@\-]+/[\w.\-]+/[^\s'\"<>]*"
+    r"|(?<![\w.:@\-])[\w.:@\-]*?\bworkspaces/[^\s'\"<>]+"
+)
+LOG_ROUTE_PREFIX: Final = r"/(?:api/(?:creator|admin)|release)(?:/|$)"
 _LOG_ROUTE = re.compile(
-    r"/api/(?:creator|admin)(?:/[A-Za-z0-9_-]+)*/?"
+    rf"(?={LOG_ROUTE_PREFIX})/api/(?:creator|admin)(?:/[A-Za-z0-9_-]+)*/?"
     r"|/release/(?:identity|worker-identity)|/docs/oauth2-redirect"
 )
-_LOG_ROUTE_CREDENTIAL = re.compile(r"(?:^|/)(?:eyJ|hf_|r8_|sk-)|[0-9a-fA-F]{20,}")
+# Only these static framework words bypass the conservative segment heuristic.
+FRAMEWORK_ROUTE_WORDS: Final = frozenset({"openapi.json", "oauth2-redirect"})
+_LOG_ROUTE_CREDENTIAL = re.compile(
+    rf"eyJ|{_TOKEN_SK_PREFIX}|{_TOKEN_STEMS}|{_TOKEN_OTHER_PREFIXES}|pplx-",
+    re.IGNORECASE,
+)
+_LOG_ROUTE_WORD = re.compile(r"[a-z][a-z_-]{0,23}")
+_LOG_ROUTE_HEX = re.compile(r"[0-9a-f]{12,}")
+_LOG_ROUTE_NUMBER = re.compile(r"[0-9]{1,20}")
+_LOG_PATH_OR_TOKEN = re.compile(
+    rf"(?P<path>{_LOG_PATH.pattern})|{_LOG_TOKEN_PREFIX.pattern}|{_LONG_HEX.pattern}"
+)
+
+
+def is_safe_log_route_segment(segment: str) -> bool:
+    """Classify route words with the same heuristic used by the route drift guard."""
+    return bool(
+        segment in FRAMEWORK_ROUTE_WORDS
+        or _LOG_ROUTE_NUMBER.fullmatch(segment)
+        or (
+            _LOG_ROUTE_WORD.fullmatch(segment)
+            and not _LOG_ROUTE_HEX.search(segment)
+            and not _LOG_ROUTE_CREDENTIAL.search(segment)
+        )
+    )
 
 
 def _redact_log_path(match: re.Match[str]) -> str:
     path = match.group()
-    if (
-        _LOG_ROUTE.fullmatch(path)
-        and not _LOG_ROUTE_CREDENTIAL.search(path)
-        and not carries_credential(path)
-    ):
-        return path
-    return _REDACTED
+    if not match["path"] or not _LOG_ROUTE.fullmatch(path):
+        return _REDACTED
+    segments = path.strip("/").split("/")
+    for index, segment in enumerate(segments):
+        if not is_safe_log_route_segment(segment):
+            return "/" + "/".join(segments[:index]) + "/" + _REDACTED
+    return path
 
 
 def redact_error_message(text: str) -> str:
@@ -123,9 +158,7 @@ def redact_log_text(text: str, trusted_lines: frozenset[str] = frozenset()) -> s
                 for pattern in (_LOG_CREDENTIAL_URI, _URL, _BEARER, _WINDOWS_PATH):
                     safe = pattern.sub(_REDACTED, safe)
                 safe = _redact_named_values(safe)
-                safe = _LOG_PATH.sub(_redact_log_path, safe)
-                safe = _LOG_TOKEN_PREFIX.sub(_REDACTED, safe)
-                safe = _LONG_HEX.sub(_REDACTED, safe)
+                safe = _LOG_PATH_OR_TOKEN.sub(_redact_log_path, safe)
                 safe = safe[:_MAX_STRING]
         line_size = len(safe.encode("utf-8", errors="replace")) + 1
         if size + line_size > _MAX_LOG_BYTES - 64:

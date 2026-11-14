@@ -137,7 +137,7 @@ def test_route_like_path_is_hidden_when_shape_is_unsafe(path: str, private_tail:
 
 
 @pytest.mark.parametrize("route", [
-    "/api/creator", "/api/admin", "/api/creator/projects/slug_42-a/",
+    "/api/creator", "/api/admin", "/api/creator/projects/42/",
     "/release/identity", "/health", "/docs", "/redoc", "/openapi.json",
 ])
 def test_safe_route_survives_when_shape_matches_exactly(route: str) -> None:
