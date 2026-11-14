@@ -38,15 +38,13 @@ Admin authentication is enforced at **two layers**:
 This ensures that even if a new admin sub-route is added without the proper
 dependency, the middleware still blocks unauthenticated access.
 
-The Studio nginx proxy (the Docker image) never injects an admin key and strips
+Studio never injects an admin key and strips
 client `X-Admin-Key` from **every**
 location proxying to the API: general API, all three upload locations, `/health`,
 `/healthz`, `/docs`, and `/openapi.json`. The creator `X-API-Key` policy is
 unchanged. Even a forged `X-Confirm-Action: yes` cannot authenticate an admin
 operation through that proxy. Operators must use the loopback API directly or an SSH
 tunnel to it for admin requests. This does not enable public/shared Studio access.
-The Vite development proxy does not strip this header yet; this is tracked in
-[#1056](https://github.com/yeongseon/ai-video-studio/issues/1056).
 
 ---
 

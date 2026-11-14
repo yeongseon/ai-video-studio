@@ -222,8 +222,8 @@ class TestTimingSafeComparison:
         import inspect
 
         source = inspect.getsource(admin.require_admin)
-        assert "hmac.compare_digest" in source, (
-            "require_admin must use hmac.compare_digest for timing-safe comparison"
+        assert "admin_key_matches" in source, (
+            "require_admin must delegate to the shared timing-safe byte comparison"
         )
 
 
