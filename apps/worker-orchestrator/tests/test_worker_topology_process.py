@@ -12,7 +12,7 @@ import time
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Iterator
+from typing import Iterator, NoReturn
 
 import pytest
 import yaml
@@ -235,6 +235,54 @@ def test_default_worker_starts_against_redis_using_shipped_command(tmp_path: Pat
     finally:
         redis.terminate()
         redis.wait(timeout=5)
+
+
+def test_worker_ignores_another_celery_first_on_path(
+    filesystem_broker: tuple[str, Path], tmp_path: Path,
+) -> None:
+    # Given another interpreter's celery installation first on PATH, here a stand-in that records its use.
+    broker_url, broker_dir = filesystem_broker
+    decoy = tmp_path / "bin" / "celery"
+    decoy.parent.mkdir()
+    decoy.write_text('#!/bin/sh\necho decoy celery ran >&2\ntouch "$(dirname "$0")/decoy-used"\nexit 3\n', encoding="utf-8")
+    decoy.chmod(0o755)
+    env = {**_worker_env(broker_url, broker_dir), "PATH": f"{decoy.parent}{os.pathsep}{os.environ['PATH']}"}
+
+    # When the exact default worker command is started for the tests.
+    with _worker(_command("docker-compose.yml", "worker"), env) as worker:
+        assert worker.poll() is None
+
+    # Then the test interpreter's Celery ran and the stand-in never did.
+    assert not (decoy.parent / "decoy-used").exists()
+
+
+class _Launched(Exception):
+    pass
+
+
+@pytest.mark.parametrize(("compose", "service"), [
+    ("docker-compose.yml", "worker"),
+    ("docker-compose.scaled-workers.yml", "worker-image"),
+], ids=["solo", "prefork-image"])
+def test_worker_command_is_the_shipped_one_run_with_the_test_interpreter(
+    compose: str, service: str, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Given a shipped Compose worker command and a launcher that records what it is asked to start.
+    shipped = _command(compose, service)
+    launched: list[list[str]] = []
+
+    def record(command: list[str], **_options: object) -> NoReturn:
+        launched.append(command)
+        raise _Launched
+
+    monkeypatch.setattr(subprocess, "Popen", record)
+
+    # When the helper starts the worker.
+    with pytest.raises(_Launched), _worker(shipped, {}):
+        pass
+
+    # Then only the interpreter differs: Celery gets exactly the shipped arguments and the test tasks module.
+    assert launched == [[sys.executable, "-m", "celery", *shipped[1:], "--include", "tests.worker_topology_tasks"]]
 
 
 def test_synthetic_terminal_state_is_published_after_cleanup() -> None:
