@@ -42,11 +42,23 @@ class Port(BaseModel):
 class Service(BaseModel):
     model_config = ConfigDict(frozen=True)
     ports: tuple[Port, ...] = ()
+    network_mode: str | None = None
 
 
 class ComposeConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
     services: dict[str, Service] = Field(default_factory=dict)
+
+
+def assert_private_services(config: ComposeConfig, studio_bind: str = "127.0.0.1") -> None:
+    """Check every socket, allowing only the selected Studio interface."""
+    for name, service in config.services.items():
+        assert service.network_mode != "host", name
+        for port in service.ports:
+            if name == "studio-web":
+                assert port.host_ip == studio_bind, (name, port)
+            else:
+                assert ip_address(port.host_ip).is_loopback, (name, port)
 
 
 @pytest.fixture(scope="module")
@@ -83,13 +95,13 @@ def merged_config(
     env = {"PATH": os.environ.get("PATH", "/usr/bin:/bin"), "COMPOSE_PROJECT_NAME": "local-bindings-contract"}
     if bind is not None:
         env["STUDIO_WEB_BIND"] = bind
-    command = [compose, "compose", *(arg for name in files for arg in ("-f", name)), "config", "--format", "json"]
+    command = [compose, "compose", "--profile", "*", *(arg for name in files for arg in ("-f", name)), "config", "--format", "json"]
     result = subprocess.run(command, cwd=project, env=env, capture_output=True, text=True, check=False, timeout=30)
     assert result.returncode == 0, result.stderr
     return ComposeConfig.model_validate_json(result.stdout)
 
 
-@pytest.mark.parametrize("bind", [None, "192.168.1.10"])
+@pytest.mark.parametrize("bind", [None, "192.168.1.10", "[fd00::10]", "[::1]"])
 def test_local_merge_publishes_only_selected_studio_binding(
     compose: str, tmp_path: Path, bind: str | None,
 ) -> None:
@@ -108,7 +120,7 @@ def test_local_merge_publishes_only_selected_studio_binding(
     studio = config.services["studio-web"].ports
     assert len(studio) == 1, studio
     assert (studio[0].host_ip, studio[0].published, studio[0].target) == (
-        bind or "127.0.0.1", "5174", 8080,
+        (bind or "127.0.0.1").strip("[]"), "5174", 8080,
     )
     for name in ("api", "postgres", "redis"):
         assert config.services[name].ports == base_config.services[name].ports
@@ -117,6 +129,41 @@ def test_local_merge_publishes_only_selected_studio_binding(
         if name != "studio-web":
             for port in service.ports:
                 assert ip_address(port.host_ip).is_loopback, (name, port)
+    assert_private_services(base_config)
+    assert_private_services(config, (bind or "127.0.0.1").strip("[]"))
+
+
+@pytest.mark.parametrize("files", [(BASE_FILE,), LOCAL_FILES], ids=["base", "local"])
+def test_all_profiled_services_are_checked(compose: str, tmp_path: Path, files: tuple[str, ...]) -> None:
+    # Given the real configurations, including optional monitoring and GPU services.
+    config = merged_config(compose, tmp_path / "profiles", files, SYNTHETIC_ENV)
+    # When checking the merged service inventory.
+    assert {"flower", "ollama", "stable-diffusion", "tts-qwen3", "stt-whisper", "tts-cosyvoice"} <= config.services.keys()
+    # Then every service uses the same private-ingress checker.
+    assert_private_services(config)
+
+
+@pytest.mark.parametrize("files", [(BASE_FILE,), LOCAL_FILES], ids=["base", "local"])
+@pytest.mark.parametrize(
+    ("name", "mutation"),
+    [
+        ("flower", Service(ports=(Port(host_ip="0.0.0.0", published="5555", target=5555),))),
+        ("worker", Service(network_mode="host")),
+        ("ollama", Service(ports=(Port(host_ip="::", published="11434", target=11434),))),
+    ],
+    ids=["flower-wildcard", "host-network", "gpu-ipv6-wildcard"],
+)
+def test_checker_rejects_ingress_mutations(
+    compose: str, tmp_path: Path, files: tuple[str, ...], name: str, mutation: Service,
+) -> None:
+    # Given an in-memory copy of the real merge with one unsafe service.
+    config = merged_config(compose, tmp_path / "mutation", files, SYNTHETIC_ENV)
+    assert name in config.services
+    mutated = config.model_copy(deep=True)
+    mutated.services[name] = mutation
+    # When checking the mutated inventory, then it must fail for that service.
+    with pytest.raises(AssertionError, match=name):
+        assert_private_services(mutated)
 
 
 def test_shipped_local_example_keeps_a_direct_compose_run_private(compose: str, tmp_path: Path) -> None:
