@@ -4,6 +4,7 @@ import json
 import logging
 
 import pytest
+from creator_service.error_redaction import FRAMEWORK_ROUTE_WORDS
 from creator_service.logging_config import JsonFormatter
 
 
@@ -48,3 +49,10 @@ def test_slug_tail_is_hidden_when_authorised_safe_fixture_is_reclassified() -> N
     # Then
     assert result["message"] == "/api/creator/projects/<redacted>"
     assert "slug_42-a" not in result["message"]
+
+
+def test_framework_route_words_stay_the_two_known_static_segments() -> None:
+    # Given the frozen exception set of the opaque-segment rule.
+    # When comparing it with the two live framework segments that violate the rule.
+    # Then widening the set cannot pass without a conscious change of this test.
+    assert FRAMEWORK_ROUTE_WORDS == frozenset({"openapi.json", "oauth2-redirect"})

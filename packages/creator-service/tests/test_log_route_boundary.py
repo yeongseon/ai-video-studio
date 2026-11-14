@@ -21,3 +21,16 @@ def test_route_survives_when_left_boundary_is_legitimate(template: str) -> None:
     result = redact_log_text(text)
     # Then
     assert result == text
+
+
+@pytest.mark.parametrize("text", [
+    "upload sk-abcdefgh-workspaces/Q3_layoffs_board_deck.pdf failed",
+    "upload hf_abcdefgh-workspaces/private_name failed",
+    "upload ghp_abcdefgh-workspaces/private_name failed",
+])
+def test_token_joined_to_a_workspace_suffix_hides_the_whole_run(text: str) -> None:
+    # Given a provider token directly joined to a single-segment workspace-relative path.
+    # When the shared redactor scans the line.
+    result = redact_log_text(text)
+    # Then neither the token nor the private workspace name survives.
+    assert result == "upload <redacted> failed"

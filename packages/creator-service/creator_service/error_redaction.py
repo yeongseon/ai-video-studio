@@ -68,7 +68,8 @@ _LOG_CREDENTIAL_PATTERNS: Final = (
 # route at /workspaces or another suffix. Legacy artifact routes remain filesystem paths.
 _LOG_PATH = re.compile(
     r"(?<![\w.:@\-])/[\w.\-]+/[^\s'\"<>]*"
-    r"|(?<![\w.:@\-])[\w.:@\-]+/[\w.\-]+/[^\s'\"<>]*|\bworkspaces/[^\s'\"<>]+"
+    r"|(?<![\w.:@\-])[\w.:@\-]+/[\w.\-]+/[^\s'\"<>]*"
+    r"|(?<![\w.:@\-])[\w.:@\-]*?\bworkspaces/[^\s'\"<>]+"
 )
 LOG_ROUTE_PREFIX: Final = r"/(?:api/(?:creator|admin)|release)(?:/|$)"
 _LOG_ROUTE = re.compile(
