@@ -15,6 +15,7 @@ ADVISORY_FLOORS: Final = {
     "anyio": "4.14.2",
     "certifi": "2026.10.18",
     "idna": "3.15",
+    "mako": "1.4.2",
     "multidict": "6.9.1",
     "opentelemetry-api": "1.45.2",
     "python-multipart": "0.0.31",
