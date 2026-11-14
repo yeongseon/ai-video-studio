@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
+# allow: SIZE_OK - One ordered runtime acceptance scenario; keep its assertions together.
 set -euo pipefail
 umask 077
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+if { [ -e .env ] || [ -L .env ]; } && [ "${CUTOVER_ACCEPTANCE_DISPOSABLE:-}" != 1 ]; then
+  printf '%s\n' 'Refusing to replace existing .env. Run from a fresh clone or git worktree, or move/rename the real .env first. CUTOVER_ACCEPTANCE_DISPOSABLE=1 means this checkout is disposable: its .env will be replaced.' >&2
+  exit 1
+fi
 export COMPOSE_PROJECT_NAME="cutover-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMPT:-1}"
 STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cutover-acceptance.XXXXXX")"
-ENV_BACKUP="$STATE_DIR/env.backup"
-if [ -f .env ]; then cp .env "$ENV_BACKUP"; fi
+ENV_TEMP=""
+ENV_CREATED=0
+ENV_PUBLISHING=0
+ENV_INTERRUPTED=0
 
 fail() { printf 'ACCEPTANCE FAIL: %s\n' "$*" >&2; exit 1; }
 code() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
@@ -115,14 +122,38 @@ run_redis_lifecycle() {
   fi
 }
 cleanup() {
-  docker compose down --volumes --remove-orphans || true
-  if [ -f "$ENV_BACKUP" ]; then cp "$ENV_BACKUP" .env; else rm -f .env; fi
+  if [ "$ENV_CREATED" = 1 ]; then
+    docker compose down --volumes --remove-orphans || true
+    rm -f .env
+  fi
+  if [ -n "$ENV_TEMP" ]; then rm -f "$ENV_TEMP"; fi
   rm -rf "$STATE_DIR"
 }
 trap cleanup EXIT
+trap 'if [ "$ENV_PUBLISHING" = 1 ]; then ENV_INTERRUPTED=1; else exit 130; fi' INT
+trap 'if [ "$ENV_PUBLISHING" = 1 ]; then ENV_INTERRUPTED=1; else exit 143; fi' TERM
 
-cp .env.example .env
-printf '\nARTIFACT_ROOT=/tmp/cutover-artifacts\n' >> .env
+ENV_TEMP="$(mktemp ./.env-cutover-XXXXXX)"
+cat .env.example > "$ENV_TEMP"
+printf '\nARTIFACT_ROOT=/tmp/cutover-artifacts\n' >> "$ENV_TEMP"
+ENV_PUBLISHING=1
+if [ "${CUTOVER_ACCEPTANCE_DISPOSABLE:-}" = 1 ]; then
+  if [ -e .env ] || [ -L .env ]; then
+    printf 'WARNING: CUTOVER_ACCEPTANCE_DISPOSABLE=1: replacing existing .env in checkout %s\n' "$ROOT" >&2
+  fi
+  if mv -T "$ENV_TEMP" .env; then ENV_CREATED=1; else exit 1; fi
+else
+  if ln -T -- "$ENV_TEMP" .env; then
+    ENV_CREATED=1
+  elif [ -e .env ] || [ -L .env ]; then
+    fail 'Refusing: .env appeared during publication. Run from a fresh clone or git worktree, or move/rename the real .env first. CUTOVER_ACCEPTANCE_DISPOSABLE=1 means this checkout is disposable: its .env will be replaced.'
+  else
+    fail 'Refusing: could not publish .env with a hard link (the checkout filesystem may not support hard links). Use a checkout on a local filesystem, or set CUTOVER_ACCEPTANCE_DISPOSABLE=1 only when this checkout is disposable: its .env will be replaced.'
+  fi
+fi
+ENV_PUBLISHING=0
+[ "$ENV_INTERRUPTED" = 0 ] || exit 1
+rm -f "$ENV_TEMP"
 docker compose up -d postgres redis
 docker compose run --rm api alembic upgrade 037
 LEGACY_USER_ID="$(psql_scalar "INSERT INTO users (email,auth_provider,auth_subject) VALUES ('legacy-upgrade@example.com','api_key','legacy-upgrade') RETURNING id")"
@@ -158,14 +189,20 @@ FOREIGN_WORKSPACE_ID="$(python3 -c 'import json,sys; print(json.load(sys.stdin)[
 
 python3 - "$API_KEY" <<'PY'
 from pathlib import Path
+import os
 import sys
+from tempfile import NamedTemporaryFile
 
 path = Path(".env")
 lines = path.read_text(encoding="utf-8").splitlines()
-path.write_text(
-    "\n".join(f"API_KEY={sys.argv[1]}" if line.startswith("API_KEY=") else line for line in lines) + "\n",
-    encoding="utf-8",
-)
+with NamedTemporaryFile(mode="w", encoding="utf-8", dir=path.parent, prefix=".env-cutover-", delete=False) as handle:
+    temporary = Path(handle.name)
+    try:
+        handle.write("\n".join(f"API_KEY={sys.argv[1]}" if line.startswith("API_KEY=") else line for line in lines) + "\n")
+        handle.flush()
+        os.replace(temporary, path)
+    finally:
+        temporary.unlink(missing_ok=True)
 PY
 
 docker compose up -d api worker beat studio-web

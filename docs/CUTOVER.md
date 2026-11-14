@@ -115,6 +115,29 @@ remote LLM, image, TTS, and STT providers and downloading its first MP4. See the
 
 Pass each layer independently. A lower layer never implies a higher one.
 
+The automated `scripts/cutover_runtime_acceptance.sh` harness is separate from
+this operator procedure. Run it only in a fresh clone or `git worktree` with no
+`.env`, or move/rename the real `.env` first: it refuses an existing `.env`
+before touching it. CI's `docker` job sets `CUTOVER_ACCEPTANCE_DISPOSABLE=1`,
+meaning **this checkout is disposable: its `.env` will be replaced**. Never set
+that opt-in on a working deployment. Replacement prints a loud WARNING to stderr
+naming the checkout directory; no warning is printed if `.env` was absent.
+Without the opt-in, `ln -T --` publishes the complete private temporary file without
+overwriting: an entry of any kind (file, directory or symlink) appearing at `.env`
+after the guard causes atomic refusal, and the hard link needs a checkout filesystem
+that supports hard links. Only the
+explicit opt-in uses `mv -T`. The later API-key rewrite uses `os.replace` on the
+harness's own file. INT/TERM handling records publication success before exiting;
+cleanup removes the temporary name in either case and `.env` only after successful
+publication, with Compose project volume teardown only for a published environment.
+Compose services use a relative `env_file: .env`; `--env-file` alone cannot
+isolate them. The root `.dockerignore` excludes `.env*` secrets (including
+interrupted `.env-storage-*` and `.env-cutover-*` copies) at every depth. It retains
+only `.env.example` and `.env.*.example` files, not their directory contents.
+All `*.example` files must stay synthetic, never contain real credentials.
+An uncatchable termination may leave disposable harness files; keep that checkout
+private and remove them before reuse. These checks do not replace deployment smoke.
+
 ### Liveness
 
 ```bash
