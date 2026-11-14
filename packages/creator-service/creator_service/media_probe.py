@@ -70,7 +70,7 @@ def _run_ffprobe_path(probe_path: Path) -> _ProbeDocument:
     ]
     try:
         proc = subprocess.run(
-            cmd, capture_output=True, text=True, timeout=_PROBE_TIMEOUT_SECONDS,
+            cmd, capture_output=True, text=True, errors="replace", timeout=_PROBE_TIMEOUT_SECONDS,
         )
     except (subprocess.TimeoutExpired, OSError) as error:
         raise MediaUploadRejected("Failed to probe media file") from error
