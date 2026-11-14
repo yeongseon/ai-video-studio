@@ -46,6 +46,7 @@ def test_real_ffmpeg_pass_over_a_source_tag_that_is_not_utf8_succeeds(tmp_path: 
         [b"ffmpeg", b"-y", b"-nostdin", b"-v", b"error", b"-f", b"lavfi", b"-i", b"color=c=black:s=64x64:d=0.2",
          b"-metadata", b"title=" + NOT_UTF8, os.fsencode(source)],
         check=True,
+        timeout=60,
     )
     # When the runner executes a pass over it with FFmpeg's default log level, which echoes the input metadata.
     result = _run_ffmpeg(["ffmpeg", "-y", "-nostdin", "-i", str(source), "-f", "null", "-"], timeout=60)
