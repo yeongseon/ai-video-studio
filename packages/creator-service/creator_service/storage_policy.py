@@ -3,29 +3,16 @@ from __future__ import annotations
 import os
 import shutil
 import tempfile
-from collections.abc import Callable
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 
 from creator_domain.exceptions import ServiceError, ServiceUnavailableError
+
+from .exception_pickling import Reduced, field_values, rebuild_exception
 
 ARTIFACT_FILESYSTEM = "artifact"
 SCRATCH_FILESYSTEM = "scratch"
 
 _MIB = 1024 * 1024
-
-_Reduced = tuple[Callable[..., BaseException], tuple[type[BaseException], dict[str, object]]]
-
-
-def _rebuild(cls: Callable[..., BaseException], values: dict[str, object]) -> BaseException:
-    """Rebuild a dataclass exception by keyword, so a subclass keeps its own fields.
-
-    The generated ``__init__`` takes keyword-friendly fields while ``BaseException.args`` holds only
-    what was passed positionally, so the default pickle path (``cls(*args)``) cannot rebuild an
-    instance created with keywords and drops a keyword mixed with positionals. Celery pickles task
-    exceptions between pool processes. Every dataclass field must be accepted by the generated
-    ``__init__`` (``init=True``), which holds for all exceptions in this module.
-    """
-    return cls(**values)
 
 
 @dataclass(frozen=True, slots=True)
@@ -88,8 +75,8 @@ class StorageBudgetExceeded(ServiceError):
     def detail(self) -> str:
         return str(self)
 
-    def __reduce__(self) -> _Reduced:
-        return _rebuild, (type(self), {f.name: getattr(self, f.name) for f in fields(self)})
+    def __reduce__(self) -> Reduced:
+        return rebuild_exception, (type(self), field_values(self))
 
 
 @dataclass(slots=True, eq=False)
@@ -106,8 +93,8 @@ class StorageLowWatermark(ServiceUnavailableError):
     def detail(self) -> str:
         return str(self)
 
-    def __reduce__(self) -> _Reduced:
-        return _rebuild, (type(self), {f.name: getattr(self, f.name) for f in fields(self)})
+    def __reduce__(self) -> Reduced:
+        return rebuild_exception, (type(self), field_values(self))
 
 
 @dataclass(slots=True, eq=False)
