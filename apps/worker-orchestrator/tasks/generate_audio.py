@@ -158,6 +158,17 @@ def _invalidate_word_timing_sidecar(audio_path: str) -> None:
     Path(f"{audio_path}.words.jsonl").unlink(missing_ok=True)
 
 
+def _map_audio_provider_error(exc: Exception, run_id: int) -> ProviderError:
+    if isinstance(exc, (TimeoutError, ConnectionError)):
+        return ProviderTimeoutError(
+            f"Provider timed out during audio generation for run {run_id}"
+        )
+    message = str(exc).lower()
+    if "429" in message or "rate limit" in message or "too many requests" in message:
+        return RateLimitError(f"Provider rate limited audio generation for run {run_id}")
+    return ProviderError(f"Provider failed audio generation for run {run_id}")
+
+
 @celery_app.task(
     bind=True,
     base=production_task(
@@ -245,6 +256,7 @@ def generate_audio(
             # --- Per-section TTS with beat-aware rate variation ---
             per_section_generated = False
             if entry.provider_type == "edge_tts" and draft.structured_script:
+                section_provider_started = False
                 try:
                     from creator_service.recipe_profile import resolve_quality_profile
 
@@ -284,8 +296,14 @@ def generate_audio(
                             delivery_cost,
                         ):
                             raise ProviderError("Provider attempt exceeds approved spend")
+                        section_provider_started = True
                         ctx.mark_provider_started()
-                        await provider.generate(section_text, voice=voice, params=section_params)
+                        try:
+                            await provider.generate(section_text, voice=voice, params=section_params)
+                        except (ProviderError, SoftTimeLimitExceeded):
+                            raise
+                        except Exception as exc:
+                            raise _map_audio_provider_error(exc, run_id) from exc
                         section_audio_paths.append(section_path)
                         section_spoken_texts.append(section_text)
                         section_ids.append(section.section_id or f"section_{idx}")
@@ -334,9 +352,11 @@ def generate_audio(
                 except ProviderError:
                     raise
                 except Exception as sec_exc:
+                    if section_provider_started:
+                        raise
                     _invalidate_word_timing_sidecar(audio_path)
                     logger.warning(
-                        "Per-section TTS failed for run %d, falling back to single-pass: %s",
+                        "Per-section TTS preparation failed for run %d, falling back to single-pass: %s",
                         run_id,
                         sec_exc,
                     )
@@ -368,25 +388,10 @@ def generate_audio(
                     await provider.generate(script_text, voice=voice, params=params)
                 except ProviderError:
                     raise
-                except (TimeoutError, ConnectionError) as exc:
-                    raise ProviderTimeoutError(
-                        f"Provider timed out during audio generation for run {run_id}"
-                    ) from exc
                 except SoftTimeLimitExceeded:
                     raise
                 except Exception as exc:
-                    message = str(exc).lower()
-                    if (
-                        "429" in message
-                        or "rate limit" in message
-                        or "too many requests" in message
-                    ):
-                        raise RateLimitError(
-                            f"Provider rate limited audio generation for run {run_id}"
-                        ) from exc
-                    raise ProviderError(
-                        f"Provider failed audio generation for run {run_id}"
-                    ) from exc
+                    raise _map_audio_provider_error(exc, run_id) from exc
         except BaseException:
             if delivery_dir.is_dir() and not delivery_dir.is_symlink():
                 try:

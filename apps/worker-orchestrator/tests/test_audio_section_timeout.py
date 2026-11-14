@@ -12,6 +12,7 @@ from creator_domain.models.script_draft import ScriptSection
 from creator_service.audio_service import AudioService, InMemoryAudioStorage
 from creator_service.script_service import InMemoryScriptStorage, ScriptService
 from creator_provider.tts.edge_tts_provider import EdgeTTSProvider
+from creator_provider.exceptions import ProviderError
 from tasks import generate_audio as audio
 from worker_loop import run_in_worker_loop
 
@@ -133,32 +134,33 @@ def test_edge_sdk_timeout_reaches_audio_task_without_fallback(
 @pytest.mark.parametrize("error", [
     RuntimeError("section unavailable"),
 ])
-def test_ordinary_section_error_keeps_legacy_single_pass_fallback(
-    audio_case: AudioCase, error: Exception,
+def test_ordinary_section_error_fails_without_single_pass_fallback(
+    audio_case: AudioCase, error: Exception, monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    # Given a section error followed by a successful single-pass provider result.
+    # Given a section error followed by a viable but forbidden single-pass result.
     case = audio_case
     case.provider.generate.side_effect = [error, None]
-    output = case.root / str(case.runner.run_id) / "audio" / "audio.mp3"
-    output.parent.mkdir(parents=True)
-    output.write_bytes(b"offline audio" * 100)
-    # When the real task executes normally.
+    authorization = AsyncMock(return_value=True)
+    monkeypatch.setattr(audio, "authorize_owned_provider_attempt", authorization)
+    # When the real task executes the failed section.
     result = audio.generate_audio.apply(
         args=(case.runner.run_id,), kwargs={"tts_model": "edge-tts"},
-        task_id="audio-fallback", throw=True,
+        task_id="audio-fallback", throw=False,
     )
-    # Then the legacy fallback succeeds and finalizes both task and run.
-    assert result.state == "SUCCESS"
-    assert case.provider.generate.await_count == 2
-    section_call, fallback_call = case.provider.generate.await_args_list
+    # Then the delivery fails visibly without authorizing or calling full-script TTS.
+    assert result.state == "FAILURE"
+    assert type(result.result) is ProviderError
+    case.provider.generate.assert_awaited_once()
+    section_call = case.provider.generate.await_args
     assert section_call.args == ("Opening.",)
-    assert fallback_call.args == ("Opening. Ending.",)
     assert Path(section_call.kwargs["params"]["output_path"]).name == "section_0.mp3"
-    assert Path(fallback_call.kwargs["params"]["output_path"]).name == "audio.mp3"
+    assert authorization.await_count == 1
+    assert authorization.await_args.args[1].endswith(":section:0")
+    assert not Path(section_call.kwargs["params"]["output_path"]).parent.exists()
     tracked = run_in_worker_loop(case.runner.tracking.list_run_tasks(case.runner.run_id))
-    assert [task.status for task in tracked] == ["success"]
+    assert [task.status for task in tracked] == ["failed"]
     saved = run_in_worker_loop(case.runner.runs.storage.get_run(case.runner.run_id))
-    assert (saved["current_stage"], saved["status"]) == ("SUBTITLE_GENERATING", "running")
+    assert (saved["current_stage"], saved["status"]) == ("FAILED", "failed")
 
 
 @pytest.mark.parametrize("stage,status", [
