@@ -30,6 +30,7 @@ FULL_GATE_PATHS = (
 ALL_GATES = dict.fromkeys(GATES, True)
 ORACLE_FULL_GATE_PATHS = (
     "tests/test_restore_drill.py",
+    "tests/test_restore_drill_isolation.py",
     "tests/test_restore_database_negative.py",
     "tests/test_restore_secret_fingerprint.py",
     "tests/test_restore_verify.py",
