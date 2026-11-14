@@ -29,6 +29,7 @@ from creator_domain.exceptions import (
     VersionConflictError,
 )
 from .storage_policy import ARTIFACT_FILESYSTEM, FilesystemLowSpace, StorageBudgetExceeded
+from .render_scratch_monitor import RenderScratchLimitExceeded
 from creator_domain.provider_errors import (
     ProviderAuthError,
     ProviderError,
@@ -51,6 +52,7 @@ class ErrorCategory(enum.Enum):
     STORAGE_BUDGET = "STORAGE_BUDGET"
     ARTIFACT_STORAGE_LOW = "ARTIFACT_STORAGE_LOW"
     SCRATCH_STORAGE_LOW = "SCRATCH_STORAGE_LOW"
+    RENDER_SCRATCH_LIMIT = "RENDER_SCRATCH_LIMIT"
 
 
 @dataclass(frozen=True)
@@ -112,6 +114,12 @@ _RECOVERY: dict[ErrorCategory, tuple[str, ...]] = {
         "Free up temporary disk space on the server, then retry",
         "If it keeps happening, ask the server operator to review the temporary-storage free-space limit",
     ),
+    ErrorCategory.RENDER_SCRATCH_LIMIT: (
+        "The render was stopped after its polled scratch limit was exceeded; existing outputs were preserved",
+        "Check unusually large inputs or a runaway filter graph before retrying",
+        "Ask the server operator to raise RENDER_SCRATCH_MAX_BYTES or set it to 0 to disable the limit",
+        "Detection and process-group termination have latency; this is not a byte-level overshoot bound",
+    ),
 }
 
 _RETRYABLE: frozenset[ErrorCategory] = frozenset(
@@ -120,6 +128,7 @@ _RETRYABLE: frozenset[ErrorCategory] = frozenset(
         ErrorCategory.UNAVAILABLE,
         ErrorCategory.ARTIFACT_STORAGE_LOW,
         ErrorCategory.SCRATCH_STORAGE_LOW,
+        ErrorCategory.RENDER_SCRATCH_LIMIT,
     }
 )
 
@@ -127,6 +136,8 @@ _RETRYABLE: frozenset[ErrorCategory] = frozenset(
 def _category_for(exc: ServiceError) -> ErrorCategory:
     # Order matters: VersionConflictError is a ConflictError subclass, and
     # ProviderConfigError is a ValidationError subclass — check the narrow types first.
+    if isinstance(exc, RenderScratchLimitExceeded):
+        return ErrorCategory.RENDER_SCRATCH_LIMIT
     if isinstance(exc, VersionConflictError):
         return ErrorCategory.VERSION_CONFLICT
     if isinstance(exc, StorageBudgetExceeded):
@@ -200,6 +211,7 @@ _PROVIDER_MESSAGE: dict[ErrorCategory, str] = {
     ErrorCategory.INTERNAL: "The operation failed unexpectedly",
     ErrorCategory.ARTIFACT_STORAGE_LOW: "Artifact storage is below its free-space limit",
     ErrorCategory.SCRATCH_STORAGE_LOW: "Temporary storage is below its free-space limit",
+    ErrorCategory.RENDER_SCRATCH_LIMIT: "Render scratch exceeded its configured limit",
 }
 
 
