@@ -149,9 +149,25 @@ Structured logging is configured in `creator_service/logging_config.py`:
 - Custom `--log-config` handlers are not preserved or covered. Passing an already
   imported app object to `uvicorn.run(app)` / `Config(app=obj)` reapplies Uvicorn's
   logging configuration after application setup and is outside this guarantee.
-- OpenTelemetry exporters are not covered by stream-handler redaction: the OTel
-  log handler and span exception events skip this boundary (see
-  [#1058](https://github.com/yeongseon/ai-video-studio/issues/1058)).
+- With `OTEL_ENABLED=true`, the application-configured LoggerProvider redacts SDK
+  records before either the Console or OTLP exporting processor receives them.
+  This covers the formatted body (`msg`/`args`), derived exception message and
+  complete chained stacktrace, cached exception text when exported as an attribute,
+  and string extras (including credential-labelled keys). Nested log values share
+  a bounded traversal budget; credential detection reuses `error_redaction.py`.
+  The original Python LogRecord and JSON stream formatter are unchanged, regardless
+  of root handler order (normally the stream handler precedes the OTel handler).
+- The application-configured span exporter redacts all string attributes on
+  `exception` events, including messages, chained stacktraces and string sequences,
+  plus span status descriptions, for both Console and OTLP. This also covers worker
+  `trace_task` spans. Redaction failures produce a fixed `<redacted>` placeholder
+  rather than raw text and do not fail a logging call or request.
+- This is not a general telemetry data-loss-prevention guarantee. Ordinary span
+  attributes/names, resource and instrumentation metadata, links and non-exception
+  events are outside this boundary; never put secrets there. Third-party
+  instrumentation using these providers receives the same boundary, but separately
+  installed providers/exporters/handlers or direct output are not intercepted.
+  Metrics are unchanged and are not redacted. No new configuration is required.
 - Trace context uses `TraceContextFilter`; its placement and correlation coverage
   are tracked in [#1059](https://github.com/yeongseon/ai-video-studio/issues/1059).
 
