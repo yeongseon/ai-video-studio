@@ -3,6 +3,7 @@
 import asyncio
 
 import pytest
+from creator_service.production_checks import ProductionConfigError
 from shorts_api.lifecycle import validate_admin_api_key
 
 
@@ -38,6 +39,32 @@ def test_validate_passes_in_development_when_missing():
 
 def test_validate_passes_in_development_when_short():
     validate_admin_api_key(environment="development", admin_key="short", _is_test_runtime=False)
+
+
+@pytest.mark.parametrize("environment", ["development", "production", "staging", "custom"])
+@pytest.mark.parametrize("key", ["local-admin-key-change-me", "<a-strong-random-string>"])
+def test_validate_rejects_public_example_in_every_environment(environment: str, key: str) -> None:
+    # Given a publicly shipped value, even long enough for the production minimum.
+    # When startup validates it, then the operator receives actionable configuration feedback.
+    with pytest.raises(ProductionConfigError) as error:
+        validate_admin_api_key(environment=environment, admin_key=key)
+    message = str(error.value)
+    for fragment in ("ADMIN_API_KEY", "publicly known example", "openssl rand -hex 32"):
+        assert fragment in message
+    if environment == "production":
+        assert "generate a new key (production requires one)" in message
+        assert "unset" not in message
+    else:
+        assert "unset it (admin API disabled)" in message
+
+
+def test_validate_rejects_public_example_from_environment(monkeypatch: pytest.MonkeyPatch) -> None:
+    # Given the normal environment-driven startup path.
+    monkeypatch.setenv("ENVIRONMENT", "development")
+    monkeypatch.setenv("ADMIN_API_KEY", "local-admin-key-change-me")
+    # When / Then
+    with pytest.raises(ProductionConfigError, match="ADMIN_API_KEY"):
+        validate_admin_api_key()
 
 
 def test_validate_skipped_when_test_runtime_true():

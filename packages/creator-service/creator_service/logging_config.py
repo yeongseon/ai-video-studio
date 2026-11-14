@@ -13,6 +13,7 @@ from creator_service.error_redaction import (
     is_sensitive_log_key,
     redact_log_text,
 )
+from creator_service.uvicorn_logging import UvicornAccessFilter
 
 _REDACTED = "<redacted>"
 _UNREPRESENTABLE = "<unrepresentable>"
@@ -198,11 +199,7 @@ class JsonFormatter(logging.Formatter):
     """
 
     def __init__(self, service_name: str) -> None:
-        """Initialize JSON formatter.
-
-        Args:
-            service_name: Name of the service using this logger
-        """
+        """Initialize the formatter for the named service."""
         super().__init__()
         self.service_name = service_name
 
@@ -271,25 +268,24 @@ class JsonFormatter(logging.Formatter):
 
 
 def setup_json_logging(service_name: str, level: str = "INFO") -> None:
-    """Configure root logger with JSON formatting.
-    
-    Args:
-        service_name: Name of the service
-        level: Logging level (DEBUG, INFO, WARNING, ERROR, CRITICAL)
-    """
-    # Remove existing handlers
+    """Route application and server records through one redacting root handler."""
     root_logger = logging.getLogger()
-    for handler in root_logger.handlers[:]:
-        root_logger.removeHandler(handler)
-
-    # Create console handler with JSON formatter
     handler = logging.StreamHandler()
-    formatter = JsonFormatter(service_name=service_name)
-    handler.setFormatter(formatter)
-
-    # Configure root logger
-    root_logger.addHandler(handler)
+    handler.setFormatter(JsonFormatter(service_name=service_name))
+    root_logger.handlers = [handler]
     root_logger.setLevel(getattr(logging, level))
+
+    # Requires app import AFTER Uvicorn Config.__init__ (import-string CLI startup).
+    # uvicorn.run(app_object) / Config(app=obj) after import reapplies dictConfig.
+    # Keep configured levels and deliberately silenced loggers (--no-access-log).
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access", "uvicorn.asgi"):
+        server_logger = logging.getLogger(name)
+        if server_logger.handlers:
+            server_logger.handlers.clear()
+            server_logger.propagate = True
+    access_logger = logging.getLogger("uvicorn.access")
+    if not any(isinstance(item, UvicornAccessFilter) for item in access_logger.filters):
+        access_logger.addFilter(UvicornAccessFilter())
 
     # Suppress noisy loggers
     logging.getLogger("urllib3").setLevel(logging.WARNING)
