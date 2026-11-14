@@ -44,6 +44,12 @@ def _ignored(path: str, rules: str) -> bool:
     "apps/studio-web/node_modules/x", "node_modules/x", "packages/x/__pycache__/x.pyc",
     "packages/x/x.pyc", ".pytest_cache/x", ".mypy_cache/x", ".ruff_cache/x",
     ".coverage", "coverage/index.html", "htmlcov/index.html", ".omc/state/x", ".vscode/settings.json",
+    ".env-cutover-abc123", ".env.example/secret", "nested/.env.production.example/secret",
+    ".envsecrets.example", "tls.pem", "nested/tls.pem", "tls.key", "nested/tls.key",
+    ".netrc", "nested/.netrc", "secrets/token", "nested/secrets/token",
+    ".aws/credentials", "nested/.aws/credentials", ".ssh/id_rsa", "nested/.ssh/id_rsa",
+    "operator.env", "nested/operator.env", ".npmrc", "nested/.npmrc",
+    "apps/api/data/artifacts/video.mp4", "apps/worker-orchestrator/data/audio.wav",
 ])
 def test_excludes_secrets_and_non_build_content_when_context_is_root(path: str) -> None:
     # Given the root context rules (absence means no filtering).
@@ -54,7 +60,7 @@ def test_excludes_secrets_and_non_build_content_when_context_is_root(path: str) 
 
 
 @pytest.mark.parametrize("path", [
-    ".env.example", ".env.local.example", "apps/api/.env.test.example", "constraints.txt",
+    ".env.example", ".env.local.example", ".env.production.example", "apps/api/.env.test.example", "constraints.txt",
     "apps/api/src/shorts_api/main.py", "packages/creator-service/pyproject.toml",
 ])
 def test_keeps_examples_and_build_inputs_when_filtering_context(path: str) -> None:
@@ -75,6 +81,22 @@ def test_keeps_examples_and_build_inputs_when_filtering_context(path: str) -> No
 def test_matcher_when_applying_supported_docker_semantics(rules: str, path: str, expected: bool) -> None:
     # Given / When / Then: distinguish root globs, recursive globs and ordered exceptions.
     assert _ignored(path, rules) == expected
+
+
+@pytest.mark.parametrize("pattern", [
+    "**/*.pem", "**/*.key", "**/.netrc", "**/secrets/", "**/.aws/", "**/.ssh/",
+    "**/*.env", "**/.npmrc", "apps/api/data/artifacts/", "apps/worker-orchestrator/data/",
+])
+def test_credential_patterns_have_no_tracked_matches(pattern: str) -> None:
+    # Given the complete tracked inventory rather than a developer's working tree.
+    tracked = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=ROOT, env={"GIT_MASTER": "1"},
+        capture_output=True, text=True, check=True,
+    ).stdout.split("\0")
+    # When each new credential/media rule is evaluated independently.
+    matches = [path for path in filter(None, tracked) if _ignored(path, pattern)]
+    # Then no tracked build or runtime input is removed by that rule.
+    assert matches == [], (pattern, matches)
 
 
 def test_copy_sources_and_descendants_survive_when_using_root_context() -> None:

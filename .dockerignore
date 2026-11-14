@@ -1,8 +1,21 @@
 # Secrets at any depth, including interrupted storage/env publication copies.
 **/.env*
-!**/.env*.example
+**/*.pem
+**/*.key
+**/.netrc
+**/secrets/
+**/.aws/
+**/.ssh/
+**/.npmrc
+**/*.env
+!**/.env.example
+!**/.env.*.example
+**/.env.example/**
+**/.env.*.example/**
 
 data/
+apps/api/data/artifacts/
+apps/worker-orchestrator/data/
 .git
 .venv/
 **/node_modules
