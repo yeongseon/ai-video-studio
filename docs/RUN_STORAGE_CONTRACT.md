@@ -257,7 +257,11 @@ delivery's** allocated `.render_tmp_*`, `.render_plan_*`, `timeline-*`,
 `audio-concat-*` and `sfx_*` directories plus its temporary MP4 (and the legacy
 system-temp concat file). Published outputs, retained BGM/mixed/normalized audio,
 styled subtitles, media inputs outside scratch and other deliveries are excluded.
-Materialized Timeline inputs inside scratch count. Symlinks are never followed.
+Materialized Timeline inputs inside scratch count: a Timeline copies its source media
+into `timeline-*`, and uploads allow up to 500 MiB per video, so a Timeline built from
+several large videos can exceed the 2 GiB default on its own. Size the setting above the
+combined size of the largest project's sources plus the render's own scratch, or set it to
+`0`; the actionable error names the setting. Symlinks are never followed.
 The scratch allocator registers exact paths into a delivery-local context; nested
 render calls reuse it, while concurrent deliveries have separate budgets.
 
