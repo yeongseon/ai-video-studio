@@ -43,7 +43,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Where Celery timeouts are enforced, render hard timeouts reclaim attributable scratch and partial MP4s; a shipped Worker-start sweep reclaims recognised dead-owner or over-age scratch in numeric run directories and the configured scratch root with bounded candidate selection and independent root budgets while preserving published outputs and younger live-owner scratch (#1030).
 - Inject trace context on root handlers for propagated application and Uvicorn logs, preserving validated filter-provenanced trace/span identifiers in JSON while retaining ordinary secret redaction (#1059).
 - Credit materialized Timeline source copies against render scratch growth, bound final child reaping to 10 seconds, avoid signalling reaped children, fail closed on unreadable scratch roots and deduplicate subtree warnings per delivery; document detached-descendant and SIGCHLD limits (#1095).
-- A hard-timed-out task's output cleanup now runs even when recording its durable failure raises, and a failure of either step is logged instead of escaping Celery's timeout handler (#1071).
+- A hard-timed-out task's output cleanup now runs even when recording its durable failure raises, and a failure of either step is logged by the timeout handler itself (#1071).
 
 ## [0.4.0] - 2026-07-23
 
