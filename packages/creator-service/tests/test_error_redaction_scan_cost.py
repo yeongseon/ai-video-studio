@@ -29,7 +29,7 @@ def test_scanner_avoids_predicate_when_assignment_names_have_no_sensitive_vocabu
 @pytest.mark.parametrize("fragment", ["'a ", "token:'", "a-", "a=", "password='"])
 def test_scanner_finishes_when_adversarial_input_bypasses_public_caps(fragment: str) -> None:
     # Given approximately one MiB delivered directly to the assignment scanner.
-    text = fragment * (1_048_576 // len(fragment))
+    text = "token_count=5;" + fragment * (1_048_576 // len(fragment))
     # When
     start = perf_counter()
     result = redaction._redact_named_values(text)
@@ -39,19 +39,21 @@ def test_scanner_finishes_when_adversarial_input_bypasses_public_caps(fragment: 
     assert len(result) <= len(text) * 2
 
 
-@pytest.mark.parametrize("redact, text", [
-    (redaction.redact_error_message, "a=" * 4096),
-    (redaction.redact_log_text, "\n".join(["a=" * 1023] * 400)),
-    (redaction.carries_credential, "a=" * 1024),
+@pytest.mark.parametrize("redact, text, expected", [
+    (redaction.redact_error_message, "a=" * 4096, "a=" * 512),
+    (redaction.redact_log_text, "a=" * 1023, "a=" * 512),
+    (redaction.redact_log_text, "\n".join(["a=" * 1023] * 400),
+     "\n".join(["a=" * 512] * 63 + ["<output truncated>"])),
+    (redaction.carries_credential, "a=" * 1024, False),
 ])
-def test_public_scan_finishes_when_equals_dense_input_is_under_cap(redact, text: str) -> None:
+def test_public_scan_finishes_when_equals_dense_input_is_under_cap(redact, text: str, expected) -> None:
     # Given / When
     start = perf_counter()
     result = redact(text)
     elapsed = perf_counter() - start
     # Then
     assert elapsed < 2.0
-    assert result is not None
+    assert result == expected
 
 
 def test_prefilter_has_no_false_negatives_when_predicate_vocabulary_is_composed() -> None:
