@@ -120,11 +120,19 @@ this operator procedure. Run it only in a fresh clone or `git worktree` with no
 `.env`, or move/rename the real `.env` first: it refuses an existing `.env`
 before touching it. CI's `docker` job sets `CUTOVER_ACCEPTANCE_DISPOSABLE=1`,
 meaning **this checkout is disposable: its `.env` will be replaced**. Never set
-that opt-in on a working deployment. The harness atomically creates and rewrites
-its own `.env`, removes it on exit, and tears down its Compose project volumes.
+that opt-in on a working deployment. Replacement prints a loud WARNING to stderr
+naming the checkout directory; no warning is printed if `.env` was absent.
+Without the opt-in, `ln --` publishes the complete private temporary file without
+overwriting: an `.env` appearing after the guard causes atomic refusal. Only the
+explicit opt-in uses `mv -T`. The later API-key rewrite uses `os.replace` on the
+harness's own file. INT/TERM handling records publication success before exiting;
+cleanup removes the temporary name in either case and `.env` only after successful
+publication, with Compose project volume teardown only for a published environment.
 Compose services use a relative `env_file: .env`; `--env-file` alone cannot
 isolate them. The root `.dockerignore` excludes `.env*` secrets (including
-interrupted `.env-storage-*` copies) at every depth, retaining `*.example` files.
+interrupted `.env-storage-*` and `.env-cutover-*` copies) at every depth. It retains
+only `.env.example` and `.env.*.example` files, not their directory contents.
+All `*.example` files must stay synthetic, never contain real credentials.
 An uncatchable termination may leave disposable harness files; keep that checkout
 private and remove them before reuse. These checks do not replace deployment smoke.
 
