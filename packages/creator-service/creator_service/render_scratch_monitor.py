@@ -11,9 +11,7 @@ from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final
-
-from typing_extensions import assert_never
+from typing import Final, assert_never
 
 from creator_domain.exceptions import ServiceUnavailableError
 
@@ -145,7 +143,11 @@ class RenderScratchBudget:
             self._walk = _sizes(tuple(self.paths), self._skipped)
             self._total = 0
         for _ in range(MAX_ENTRIES_PER_POLL):
-            size = next(self._walk, None)
+            try:
+                size = next(self._walk, None)
+            except OSError:
+                self.close()
+                raise
             if size is None:
                 self.close()
                 return
