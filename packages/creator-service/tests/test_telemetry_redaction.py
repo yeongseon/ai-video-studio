@@ -6,6 +6,7 @@ from io import StringIO
 from types import SimpleNamespace
 
 import pytest
+from opentelemetry.trace import get_current_span
 from opentelemetry.sdk._logs.export import InMemoryLogRecordExporter
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
@@ -25,6 +26,7 @@ def pipeline(request, monkeypatch):
     logs = InMemoryLogRecordExporter()
     providers = SimpleNamespace()
     sdk["trace"] = SimpleNamespace(
+        get_current_span=get_current_span,
         set_tracer_provider=lambda provider: setattr(providers, "traces", provider),
         get_tracer=lambda name: providers.traces.get_tracer(name),
     )

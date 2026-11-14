@@ -48,7 +48,15 @@ class TraceContextFilter(logging.Filter):
         enriched = add_trace_context_to_log({})
         for key, value in enriched.items():
             setattr(record, key, value)
+        if enriched:
+            record._otel_correlation = (enriched["trace_id"], enriched["span_id"])
         return True
+
+
+def attach_trace_context_filter(handler: logging.Handler) -> None:
+    """Enrich propagated records once per handler, including repeated setup."""
+    if not any(isinstance(existing, TraceContextFilter) for existing in handler.filters):
+        handler.addFilter(TraceContextFilter())
 
 
 def _is_enabled() -> bool:
@@ -157,14 +165,14 @@ def init_telemetry(service_name: str) -> None:
     reinitializing the SDK if called multiple times within the same process.
     """
     logger = logging.getLogger(__name__)
+    root_logger = logging.getLogger()
+    for handler in root_logger.handlers:
+        attach_trace_context_filter(handler)
 
     if _STATE.initialized:
         return
 
     _STATE.initialized = True
-    root_logger = logging.getLogger()
-    if not any(isinstance(existing, TraceContextFilter) for existing in root_logger.filters):
-        root_logger.addFilter(TraceContextFilter())
 
     if not _is_enabled():
         _STATE.enabled = False
@@ -269,9 +277,10 @@ def _init_otel_providers(otel: dict, service_name: str, logger: logging.Logger, 
     if logging_handler_type is not None and not any(
         isinstance(handler, logging_handler_type) for handler in root_logger.handlers
     ):
-        root_logger.addHandler(
-            logging_handler_type(level=logging.NOTSET, logger_provider=logger_provider)
-        )
+        handler = logging_handler_type(level=logging.NOTSET, logger_provider=logger_provider)
+        if isinstance(handler, logging.Handler):
+            attach_trace_context_filter(handler)
+        root_logger.addHandler(handler)
 
 
 
