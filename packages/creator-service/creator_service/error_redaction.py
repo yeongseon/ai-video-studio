@@ -32,6 +32,11 @@ _LOG_SECRETS: Final = frozenset({
     "authorization", "bearer", "cookie", "apikey",
 })
 _LOG_KEY_PREFIXES: Final = frozenset({"api", "private", "access", "secret", "signing", "session"})
+_LOG_EXACT_KEYS: Final = frozenset({"key", "apikey", "x-api-key"})
+_SENSITIVE_NAME_HINT = re.compile(
+    "|".join(re.escape(word) for word in sorted(_LOG_SECRETS | _LOG_EXACT_KEYS | {"key"})),
+    re.IGNORECASE,
+)
 _MAX_LOG_LINES: Final = 400
 _MAX_LOG_BYTES: Final = 65536
 _MAX_LOG_LINE: Final = 2048
@@ -154,7 +159,7 @@ def is_sensitive_log_key(name: str) -> bool:
     lower = name.lower()
     if lower == "token_count":
         return False
-    if lower in {"key", "apikey", "x-api-key"}:
+    if lower in _LOG_EXACT_KEYS:
         return True
     segments = _LOG_SEGMENTS.split(_CAMEL_BOUNDARY.sub("_", name).lower())
     return any(segment in _LOG_SECRETS for segment in segments) or any(
@@ -165,6 +170,8 @@ def is_sensitive_log_key(name: str) -> bool:
 
 def _redact_named_values(text: str) -> str:
     """Scan disjoint values, skipping escaped characters without regex backtracking."""
+    if not _SENSITIVE_NAME_HINT.search(text):
+        return text
     parts: list[str] = []
     cursor = 0
     # Possessive name/spacing runs prevent retries within a failed identifier.
@@ -173,7 +180,11 @@ def _redact_named_values(text: str) -> str:
     for match in _ASSIGNMENT.finditer(text):
         start = match.end()
         name = match["name"] or match["quoted_name"]
-        if match.start() < cursor or not is_sensitive_log_key(name):
+        if (
+            match.start() < cursor
+            or not _SENSITIVE_NAME_HINT.search(name)
+            or not is_sensitive_log_key(name)
+        ):
             continue
         if start == len(text):
             continue
