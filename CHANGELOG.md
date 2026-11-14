@@ -45,6 +45,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Credit materialized Timeline source copies against render scratch growth, bound final child reaping to 10 seconds, avoid signalling reaped children, fail closed on unreadable scratch roots and deduplicate subtree warnings per delivery; document detached-descendant and SIGCHLD limits (#1095).
 - A hard-timed-out task's output cleanup now runs even when recording its durable failure raises, and a failure of either step is logged by the timeout handler itself (#1071).
 - Storage budget and low-watermark exceptions rebuild from their fields when unpickled, including instances created with keyword arguments and subclasses with extra fields, so a result or worker boundary carries the typed 413/503 error instead of failing to unpickle it (#1087).
+- Worker-start scratch reclamation detects reused same-host owner pids by process start time after the grace, conservatively retaining unknown identities and preserving legacy age-only rules (#1070).
 - Legacy Timeline scratch names now carry the delivery pid so enforced Celery hard timeouts reclaim only that delivery's directory; older ownerless names remain age-only (#1060).
 
 ## [0.4.0] - 2026-07-23
