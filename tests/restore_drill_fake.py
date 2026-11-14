@@ -38,6 +38,10 @@ class DrillSandbox:
         self.calls: list[tuple[tuple[str, ...], Mapping[str, str] | None]] = []
         self.existing = ""
         self.failed_start = ""
+        self.created_then_failed = ""
+        self.start_failure: Exception | KeyboardInterrupt | None = None
+        self.cleanup_failure: Exception | None = None
+        self.containers: dict[str, tuple[str, set[str]]] = {}
         self.media: Path | None = None
 
     def popen(self, command: Sequence[str], **options: Unpack[ProcessOptions]) -> FakeProcess:
@@ -52,10 +56,31 @@ class DrillSandbox:
         if args[0] == "docker":
             if args[1] == "ps":
                 name = args[args.index("--filter") + 1].removeprefix("name=^/").removesuffix("$")
-                output = name if name.startswith(self.existing) and self.existing else ""
+                if "-aq" in args:
+                    if self.cleanup_failure is not None:
+                        raise self.cleanup_failure
+                    label = args[-1].removeprefix("label=")
+                    container = self.containers.get(name)
+                    output = container[0] if container and label in container[1] else ""
+                else:
+                    output = name if name.startswith(self.existing) and self.existing else ""
             elif args[1] == "run" and "--name" in args:
                 name = args[args.index("--name") + 1]
                 code = int(bool(self.failed_start and name.startswith(self.failed_start)))
+                labels = {args[index + 1] for index, value in enumerate(args) if value == "--label"}
+                if code:
+                    self.containers[name] = (name, set())
+                else:
+                    self.containers[name] = (f"id-{name}", labels)
+                if self.created_then_failed and name.startswith(self.created_then_failed):
+                    if self.start_failure is not None:
+                        raise self.start_failure
+                    code = 1
+            elif args[1] == "rm":
+                self.containers = {
+                    name: container for name, container in self.containers.items()
+                    if name not in args[3:] and container[0] not in args[3:]
+                }
             elif args[1] == "run" and "-v" in args:
                 self.media = Path(args[args.index("-v") + 1].split(":")[0])
                 (self.media / args[-1].split("/")[-1]).write_bytes(b"synthetic media")

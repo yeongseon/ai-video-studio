@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 import sys
 from pathlib import Path
 
@@ -130,3 +131,63 @@ def test_happy_path_removes_both_containers_it_created(sandbox: DrillSandbox) ->
     removed = [name for call in sandbox.docker_calls("rm") for name in call[3:]]
     assert removed == created
     assert len(created) == 2
+
+
+@pytest.mark.parametrize("failed_start", ["restore-source-", "restore-target-"])
+@pytest.mark.parametrize("failure", ["exit", "timeout", "interrupt"])
+def test_cleanup_removes_labelled_container_when_run_creates_then_fails(
+    sandbox: DrillSandbox, failed_start: str, failure: str
+) -> None:
+    # Given docker created a container before reporting failure or interruption.
+    sandbox.created_then_failed = failed_start
+    error: type[DrillError] | type[subprocess.TimeoutExpired] | type[KeyboardInterrupt] = DrillError
+    if failure == "timeout":
+        sandbox.start_failure = subprocess.TimeoutExpired("docker run", 120)
+        error = subprocess.TimeoutExpired
+    elif failure == "interrupt":
+        sandbox.start_failure = KeyboardInterrupt()
+        error = KeyboardInterrupt
+
+    # When
+    with pytest.raises(error):
+        restore_drill.main()
+
+    # Then only the exact name carrying this run's nonce proves failed-start ownership.
+    assert sandbox.containers == {}
+    started = [call for call in sandbox.docker_calls("run") if "--name" in call]
+    labels = [call[call.index("--label") + 1] for call in started]
+    assert len(set(labels)) == 1
+    nonce = labels[0].removeprefix("restore-drill.run=")
+    assert len(bytes.fromhex(nonce)) == 16
+    failed_name = started[-1][started[-1].index("--name") + 1]
+    queries = [call for call in sandbox.docker_calls("ps") if "-aq" in call]
+    assert ("docker", "ps", "-aq", "--filter", f"name=^/{failed_name}$", "--filter", f"label={labels[0]}") in queries
+    removed = [name for call in sandbox.docker_calls("rm") for name in call[3:]]
+    assert f"id-{failed_name}" in removed
+
+
+def test_cleanup_preserves_foreign_container_when_start_loses_creation_race(
+    sandbox: DrillSandbox,
+) -> None:
+    # Given another actor creates an unlabelled container after preflight.
+    sandbox.failed_start = "restore-target-"
+
+    # When
+    with pytest.raises(DrillError, match="synthetic start failure"):
+        restore_drill.main()
+
+    # Then the foreign container survives while this run's source is removed.
+    assert len(sandbox.containers) == 1
+    name, (_, labels) = next(iter(sandbox.containers.items()))
+    assert name.startswith("restore-target-")
+    assert labels == set()
+
+
+def test_cleanup_query_failure_preserves_original_start_error(sandbox: DrillSandbox) -> None:
+    # Given an owned failed start followed by an unavailable cleanup query.
+    sandbox.created_then_failed = "restore-source-"
+    sandbox.cleanup_failure = OSError("synthetic cleanup unavailable")
+
+    # When / Then the start error remains the primary failure.
+    with pytest.raises(DrillError, match="synthetic start failure"):
+        restore_drill.main()

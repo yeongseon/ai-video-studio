@@ -15,6 +15,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import shutil
 import subprocess
 import sys
@@ -42,7 +43,7 @@ from restore_drill_runtime import (
     wait_for_postgres,
     validate_release_manifest,
 )
-from restore_drill_process import ContainerNameCollisionError, child_environment, docker_environment
+from restore_drill_process import ContainerNameCollisionError, child_environment, cleanup_containers
 from restore_drill_render import timeline_render_program
 
 
@@ -176,8 +177,8 @@ def main() -> int:
     if shutil.which("docker") is None:
         print("SKIP: docker is required", file=sys.stderr)
         return 77
-    suffix = hashlib.sha256(str(time.time_ns()).encode()).hexdigest()[:10]
-    source, target = f"restore-source-{suffix}", f"restore-target-{suffix}"
+    nonce = secrets.token_hex(16)
+    source, target = f"restore-source-{nonce[:10]}", f"restore-target-{nonce[:10]}"
     for container in (source, target):
         if docker("ps", "-a", "--filter", f"name=^/{container}$", "--format", "{{.Names}}").stdout.strip():
             raise ContainerNameCollisionError(f"container already exists: {container}")
@@ -193,7 +194,7 @@ def main() -> int:
         try:
             create_media(media)
             for container in (source, target):
-                docker("run", "-d", "--name", container, "-p", "127.0.0.1::5432", "-e", "POSTGRES_USER=restore", "-e", f"POSTGRES_PASSWORD={PASSWORD}", "-e", "POSTGRES_DB=restore", POSTGRES_IMAGE)
+                docker("run", "-d", "--name", container, "--label", f"restore-drill.run={nonce}", "-p", "127.0.0.1::5432", "-e", "POSTGRES_USER=restore", "-e", f"POSTGRES_PASSWORD={PASSWORD}", "-e", "POSTGRES_DB=restore", POSTGRES_IMAGE)
                 created_containers.append(container)
                 wait_for_postgres(container)
             source_url = mapped_postgres_url(source, PASSWORD)
@@ -275,8 +276,7 @@ def main() -> int:
                 except ChildShutdownError as exc:
                     if cleanup_error is None:
                         cleanup_error = exc
-            if created_containers:
-                subprocess.run(["docker", "rm", "-f", *created_containers], env=docker_environment(), capture_output=True, check=False)
+            cleanup_containers((source, target), created_containers, nonce)
             raise_cleanup_error(cleanup_error)
 
 

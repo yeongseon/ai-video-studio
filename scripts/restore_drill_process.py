@@ -60,3 +60,23 @@ def docker_environment() -> dict[str, str]:
 
 def docker(*arguments: str) -> subprocess.CompletedProcess[str]:
     return run("docker", *arguments, env=docker_environment())
+
+
+def cleanup_containers(planned: tuple[str, str], created: list[str], nonce: str) -> None:
+    """Recover failed starts only with exact-name and per-run label ownership proof."""
+    owned = list(created)
+    for name in planned:
+        if name in created:
+            continue
+        try:
+            owned.extend(docker(
+                "ps", "-aq", "--filter", f"name=^/{name}$",
+                "--filter", f"label=restore-drill.run={nonce}",
+            ).stdout.split())
+        except (DrillError, OSError, subprocess.TimeoutExpired) as error:
+            print(f"restore drill cleanup query failed for {name}: {error}", file=os.sys.stderr)
+    if owned:
+        try:
+            subprocess.run(["docker", "rm", "-f", *owned], env=docker_environment(), capture_output=True, check=False)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            print(f"restore drill container cleanup failed: {error}", file=os.sys.stderr)
