@@ -1,14 +1,18 @@
 import { resolve } from "node:path";
 
 import { defineConfig, loadEnv } from "vite";
+import type { ProxyOptions } from "vite";
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, process.cwd(), "");
   const apiTarget = env.API_TARGET ?? "http://localhost:8000";
   const apiKey = env.VITE_API_KEY ?? "";
 
-  const proxyConfig = {
+  const proxyConfig: ProxyOptions = {
     target: apiTarget,
+    configure: (proxy) => {
+      proxy.on("proxyReq", (proxyReq) => proxyReq.removeHeader("x-admin-key"));
+    },
     ...(apiKey && {
       headers: { "X-API-Key": apiKey },
     }),
