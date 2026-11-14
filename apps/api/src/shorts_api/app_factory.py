@@ -70,6 +70,8 @@ def create_app() -> FastAPI:
     app = FastAPI(
         title="AI Video Studio API",
         lifespan=lifespan,
+        # Preserve missing-Content-Type JSON parsing across FastAPI 0.132.0 (#1023 group 1).
+        strict_content_type=False,
         docs_url=None if production_hardened else "/docs",
         redoc_url=None if production_hardened else "/redoc",
         openapi_url=None if production_hardened else "/openapi.json",

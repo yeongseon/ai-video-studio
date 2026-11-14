@@ -53,6 +53,16 @@ def generation_case(request: pytest.FixtureRequest, runner_case: RunnerCase, mon
         requires_gpu=False, provider_type="edge_tts" if extra_args == ("edge-tts",) else "offline",
         default_params={}, endpoint="offline",
     )
+    if extra_args == ("edge-tts",):
+        async def generate_section(_text: str, *, voice: str, params: dict[str, str]) -> None:
+            assert voice == "default"
+            Path(params["output_path"]).write_bytes(b"synthetic section audio")
+
+        provider.generate.side_effect = generate_section
+        monkeypatch.setattr(
+            "creator_service.ffmpeg_service.FFmpegService.concatenate_audio",
+            lambda _self, _paths, output: Path(output).write_bytes(b"synthetic full audio"),
+        )
     registry = SimpleNamespace(resolve=Mock(return_value=entry), get_provider=Mock(return_value=provider))
     scripts, audio, plans = ScriptService(), AudioService(), VisualPlanService()
     run_id = runner_case.run_id

@@ -12,17 +12,9 @@ import urllib.request
 from dataclasses import dataclass, replace
 from pathlib import Path
 
+from restore_drill_process import DrillError, TIMEOUT, child_environment, docker_environment, docker, run, worker_state_environment
 
-TIMEOUT = 120
 IMAGE_DIGEST = re.compile(r"[^@]+@sha256:([0-9a-f]{64})\Z")
-
-
-@dataclass(frozen=True, slots=True)
-class DrillError(RuntimeError):
-    message: str
-
-    def __str__(self) -> str:
-        return self.message
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,20 +30,9 @@ class RuntimeFixture:
     port: int = 0
 
 
-def run(*command: str, cwd: Path | None = None, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
-    result = subprocess.run(command, cwd=cwd, env=env, capture_output=True, text=True, check=False, timeout=TIMEOUT)
-    if result.returncode != 0:
-        raise DrillError(f"command failed: {' '.join(command)}\n{result.stderr}")
-    return result
-
-
-def docker(*arguments: str) -> subprocess.CompletedProcess[str]:
-    return run("docker", *arguments)
-
-
 def wait_for_postgres(container: str) -> None:
     for _ in range(60):
-        if subprocess.run(["docker", "exec", container, "pg_isready", "-U", "restore"], capture_output=True, check=False).returncode == 0:
+        if subprocess.run(["docker", "exec", container, "pg_isready", "-U", "restore"], env=docker_environment(), capture_output=True, check=False).returncode == 0:
             return
         time.sleep(1)
     raise DrillError("postgres did not become ready")
@@ -191,9 +172,8 @@ def register_rendered_artifact(
     return {"checksum": checksum, "size_bytes": size_bytes}
 
 
-def run_reconciler(database_url: str) -> dict[str, int | list[str]]:
-    environment = {
-        **os.environ,
+def run_reconciler(database_url: str, root: Path) -> dict[str, int | list[str]]:
+    environment = child_environment({**worker_state_environment(root),
         "DATABASE_URL": database_url,
         "PYTHONPATH": os.pathsep.join(
             str(Path(__file__).parents[1] / path)
@@ -204,7 +184,7 @@ def run_reconciler(database_url: str) -> dict[str, int | list[str]]:
                 "apps/worker-orchestrator",
             )
         ),
-    }
+    })
     completed = run(
         os.sys.executable,
         "-c",
@@ -246,14 +226,14 @@ def launch_provider_guard(root: Path) -> tuple[subprocess.Popen[bytes], int]:
         "'log_message':lambda *args:None});"
         f"HTTPServer(('127.0.0.1',{port}),handler).serve_forever()"
     )
-    return subprocess.Popen([os.sys.executable, "-c", program]), port
+    return subprocess.Popen([os.sys.executable, "-c", program], env=child_environment()), port
 
 
 def launch_api(database_url: str, artifact_root: Path, fixture: RuntimeFixture, root: Path, guard_port: int) -> tuple[subprocess.Popen[bytes], RuntimeFixture]:
     port = _free_port()
     repository = Path(__file__).parents[1]
-    env = {
-        **os.environ, "DATABASE_URL": database_url, "ARTIFACT_ROOT": str(artifact_root),
+    env = child_environment({**worker_state_environment(root),
+        "DATABASE_URL": database_url, "ARTIFACT_ROOT": str(artifact_root),
         "STORAGE_BACKEND": "local", "ENVIRONMENT": "development", "REDIS_URL": "",
         "PYTHONPATH": os.pathsep.join(
             str(repository / path)
@@ -272,7 +252,7 @@ def launch_api(database_url: str, artifact_root: Path, fixture: RuntimeFixture, 
         "TTS_QWEN3_BASE_URL": f"http://127.0.0.1:{guard_port}",
         "STT_WHISPER_BASE_URL": f"http://127.0.0.1:{guard_port}",
         "TTS_COSYVOICE_BASE_URL": f"http://127.0.0.1:{guard_port}",
-    }
+    })
     log = (root / "api.log").open("wb")
     process = subprocess.Popen(
         [os.sys.executable, "-m", "uvicorn", "shorts_api.main:app", "--host", "127.0.0.1", "--port", str(port)],
