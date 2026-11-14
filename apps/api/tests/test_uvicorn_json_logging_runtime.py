@@ -22,6 +22,12 @@ def access_log_enabled(request: pytest.FixtureRequest) -> bool:
 @pytest.fixture(scope="module")
 def server_output(tmp_path_factory: pytest.TempPathFactory, access_log_enabled: bool) -> str:
     """Use production composition and lifespan; only the failing route is test-only."""
+    return run_server(tmp_path_factory, access_log_enabled)
+
+
+def run_server(
+    tmp_path_factory: pytest.TempPathFactory, access_log_enabled: bool, otel_enabled: bool = False,
+) -> str:
     directory = tmp_path_factory.mktemp("uvicorn-json")
     (directory / "logging_probe.py").write_text(dedent('''\
         from shorts_api.app_factory import create_app
@@ -44,7 +50,7 @@ def server_output(tmp_path_factory: pytest.TempPathFactory, access_log_enabled: 
             str(Path(__file__).resolve().parents[3] / "packages/creator-provider"),
             str(Path(__file__).resolve().parents[3] / "apps/worker-orchestrator"),
         ]),
-        "ENVIRONMENT": "development", "REDIS_URL": "", "OTEL_ENABLED": "false",
+        "ENVIRONMENT": "development", "REDIS_URL": "", "OTEL_ENABLED": str(otel_enabled).lower(),
         "ENABLE_PROCESS_RESOURCE_GUARD": "false", "PYTHONDONTWRITEBYTECODE": "1",
     }
     # Given a reserved loopback socket, inherited rather than closed/rebound.
@@ -133,3 +139,36 @@ def test_uvicorn_access_omits_entire_query_when_request_has_credentials(
     assert all("?" not in message for message in access)
     assert sum('"GET /healthz HTTP/1.1" 200' in message for message in access) == 1
     assert sum('"GET /logging-probe HTTP/1.1" 500' in message for message in access) == 1
+
+
+def test_otel_exporters_redact_when_real_server_handles_chained_exception(
+    tmp_path_factory: pytest.TempPathFactory,
+) -> None:
+    # Given / When one extra production server run with console telemetry enabled.
+    output = run_server(tmp_path_factory, True, True)
+    decoder = json.JSONDecoder()
+    records = []
+    remaining = output.lstrip()
+    while remaining:
+        record, end = decoder.raw_decode(remaining)
+        records.append(record)
+        remaining = remaining[end:].lstrip()
+    # Then both exporters really ran, including both application and Uvicorn log records.
+    spans = [record for record in records if record.get("name") == "GET /logging-probe"]
+    assert len(spans) == 1
+    assert any(event["name"] == "exception" for event in spans[0]["events"])
+    logs = [record for record in records if "body" in record]
+    assert any("Unhandled exception" in record["body"] for record in logs)
+    assert any("Exception in ASGI application" in record["body"] for record in logs)
+    assert "sk-EXAMPLE" not in output
+    assert "user:pass@" not in output
+    assert "RuntimeError" in output and "ValueError" in output and "<redacted>" in output
+    stream = [record for record in records if "logger" in record]
+    assert stream
+    assert all({"timestamp", "level", "service", "logger", "message"} <= record.keys()
+               and record["service"] == "api" for record in stream)
+    errors = [record for record in stream if record["logger"] == "uvicorn.error"
+              and "exc_info" in record]
+    assert len(errors) == 1
+    assert "RuntimeError: outer" in errors[0]["exc_info"]
+    assert "ValueError: token=<redacted>" in errors[0]["exc_info"]
