@@ -13,6 +13,7 @@ from PIL import Image
 from creator_service import ffmpeg_service
 from creator_service.artifact_storage_integration import store_artifact_file
 from creator_service.recipe_profile import resolve_quality_profile
+from creator_service.render_scratch import LEGACY_SCRATCH_NAME
 
 from tests.render_output_parity_support import render_through_production_adapters
 from tasks.render_video import execute_render
@@ -99,7 +100,7 @@ def test_legacy_and_timeline_layout_and_published_output_parity(
         for directory in directories:
             assert directory.parent == expected
             if not moved:
-                pattern = r"\.render_tmp_\d+_[0-9a-f]{8}" if directory.name.startswith(".render_tmp_") else r"timeline-[a-z0-9_]{8}"
+                pattern = r"\.render_tmp_\d+_[0-9a-f]{8}" if directory.name.startswith(".render_tmp_") else LEGACY_SCRATCH_NAME
                 assert re.fullmatch(pattern, directory.name)
         if target.suffix == ".mp4":
             assert target.parent in [root / str(run) / "render" for root in roots for run in (1, 2)]
