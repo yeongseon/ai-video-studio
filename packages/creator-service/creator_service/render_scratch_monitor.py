@@ -11,7 +11,7 @@ from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Final, assert_never
+from typing import Final
 
 from creator_domain.exceptions import ServiceUnavailableError
 
@@ -114,15 +114,10 @@ class RenderScratchBudget:
     baseline_bytes: int = field(default=0, init=False)
     _reported_skip: bool = field(default=False, init=False)
 
-    def add_baseline(self, path_or_bytes: Path | int) -> None:
-        """Credit a completed materialized source copy, on the delivery's owning thread."""
-        match path_or_bytes:
-            case Path():
-                size = path_or_bytes.stat().st_size
-            case int():
-                size = path_or_bytes
-            case unreachable:
-                assert_never(unreachable)
+    def add_baseline(self, size: int) -> None:
+        """Credit the bytes of a completed materialized source copy, on the delivery's owning thread."""
+        if type(size) is not int:
+            raise TypeError(type(size).__name__)
         if size < 0:
             raise ValueError(size)
         self.baseline_bytes += size

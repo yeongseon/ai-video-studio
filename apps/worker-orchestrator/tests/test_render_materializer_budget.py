@@ -7,7 +7,7 @@ from creator_domain.models import MediaAsset, RenderPlan
 from creator_service.ffmpeg_service import _run_ffmpeg
 from creator_service.object_storage import LocalStorageBackend
 from creator_service.render_scratch import render_scratch
-from creator_service.render_scratch_monitor import RenderScratchLimitExceeded, render_budget
+from creator_service.render_scratch_monitor import RenderScratchBudget, RenderScratchLimitExceeded, render_budget
 from tasks.render_materializer import materialize_plan
 
 
@@ -47,16 +47,13 @@ def test_source_copy_credit_preserves_only_the_configured_growth_budget(
         assert budget.baseline_bytes == 2048
 
 
-def test_non_source_scratch_still_fails_after_materialization(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_credit_does_not_exempt_generated_scratch(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Given credited source bytes alongside the same quantity of generated scratch.
     monkeypatch.setenv("RENDER_SCRATCH_MAX_BYTES", "1024")
     with render_budget("non-source") as budget:
         budget.register(tmp_path)
-        source = tmp_path / "source"
-        source.write_bytes(b"s" * 2048)
-        budget.add_baseline(source)
+        (tmp_path / "source").write_bytes(b"s" * 2048)
+        budget.add_baseline(2048)
         (tmp_path / "segment.ts").write_bytes(b"g" * 2048)
         # When checked, then credit does not exempt generated media.
         with pytest.raises(RenderScratchLimitExceeded) as raised:
@@ -64,12 +61,23 @@ def test_non_source_scratch_still_fails_after_materialization(
         assert raised.value.observed_bytes == 4096
 
 
-def test_negative_credit_cannot_reduce_the_baseline(tmp_path: Path) -> None:
+def test_negative_credit_cannot_reduce_the_baseline() -> None:
     # Given a delivery with a valid source credit.
-    from creator_service.render_scratch_monitor import RenderScratchBudget
     budget = RenderScratchBudget(10, "negative")
     budget.add_baseline(20)
     # When a negative credit is supplied, then the baseline remains nonnegative and unchanged.
     with pytest.raises(ValueError):
         budget.add_baseline(-21)
+    assert budget.baseline_bytes == 20
+
+
+@pytest.mark.parametrize("credit", [True, 1.5, Path("source")], ids=["bool", "float", "path"])
+def test_credit_accepts_only_a_byte_count(credit: object) -> None:
+    # Given a delivery with a valid source credit.
+    budget = RenderScratchBudget(10, "type")
+    budget.add_baseline(20)
+    # When anything but a plain int is supplied (a Path would be followed through symlinks, a bool is not a size).
+    with pytest.raises(TypeError):
+        budget.add_baseline(credit)
+    # Then the baseline is unchanged.
     assert budget.baseline_bytes == 20

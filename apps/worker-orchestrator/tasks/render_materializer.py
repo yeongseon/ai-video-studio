@@ -40,7 +40,7 @@ def materialize_plan(
             path.write_bytes(data)
             budget = current_budget.get()
             if budget is not None:
-                budget.add_baseline(path.stat().st_size)
+                budget.add_baseline(len(data))
             sources[key] = str(path)
     return plan.model_copy(update={
         "segments": [segment.model_copy(update={"source": sources[segment.source]})
