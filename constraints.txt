@@ -30,6 +30,7 @@ billiard==4.2.4
     # via
     #   celery
     #   creator-provider
+    #   creator-service
 boto3==1.42.73
     # via -r apps/api/requirements-dev.txt
 botocore==1.42.73
@@ -44,6 +45,7 @@ celery==5.6.3
     # via
     #   -r apps/api/requirements.txt
     #   -r apps/worker-orchestrator/requirements.txt
+    #   creator-service
 certifi==2026.10.23
     # via
     #   edge-tts
@@ -132,6 +134,7 @@ multidict==6.9.1
     #   yarl
 opentelemetry-api==1.40.0
     # via
+    #   creator-service
     #   opentelemetry-exporter-otlp-proto-grpc
     #   opentelemetry-sdk
     #   opentelemetry-semantic-conventions
@@ -144,7 +147,9 @@ opentelemetry-proto==1.40.0
     #   opentelemetry-exporter-otlp-proto-common
     #   opentelemetry-exporter-otlp-proto-grpc
 opentelemetry-sdk==1.40.0
-    # via opentelemetry-exporter-otlp-proto-grpc
+    # via
+    #   creator-service
+    #   opentelemetry-exporter-otlp-proto-grpc
 opentelemetry-semantic-conventions==0.61b0
     # via opentelemetry-sdk
 packaging==26.0
@@ -152,7 +157,9 @@ packaging==26.0
     #   kombu
     #   pytest
 pillow==13.0.0
-    # via cairosvg
+    # via
+    #   cairosvg
+    #   creator-service
 playwright==1.58.0
     # via -r constraints.in
 pluggy==1.6.0
@@ -211,6 +218,7 @@ redis==6.4.0
     #   -r apps/api/requirements.txt
     #   -r apps/worker-orchestrator/requirements.txt
     #   creator-provider
+    #   creator-service
 requests==2.32.5
     # via azure-core
 ruff==0.11.13
@@ -241,6 +249,7 @@ typing-extensions==4.16.0
     #   anyio
     #   azure-core
     #   azure-storage-blob
+    #   creator-service
     #   edge-tts
     #   fastapi
     #   grpcio

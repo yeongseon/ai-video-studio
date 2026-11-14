@@ -430,9 +430,19 @@ proxy. Confirm no cloud URL/SAS/key appears in browser responses or logs. These
 checks require real credentials and are not performed by CI or this change.
 
 Production cloud enablement remains conditional: shipped API/worker images do
-not currently install boto3/azure-storage-blob. Cloud configuration therefore
-returns generic 502 until SDK provisioning in #895/#898 lands. Offline test
-dependencies do not change shipped runtime images.
+not install the cloud SDKs, and the repository's Compose configurations do not
+provision them. S3/Azure is therefore not a supported shipped-image configuration;
+cloud previews return generic 502 without SDK provisioning. `creator-service`
+declares the lazy imports as optional extras: `s3` contains `boto3` and `botocore`,
+and `azure` contains `azure-storage-blob` and `azure-core`. For an operator-managed
+Python environment or custom image, install the chosen extra from the repository
+root with `uv pip install -c constraints.txt './packages/creator-service[s3]'`
+(replace `[s3]` with `[azure]` for Azure Blob), alongside the application's normal
+requirements and workspace packages. Provision the SDKs in every API/worker
+process that accesses cloud storage, then complete the manual acceptance above.
+This packaging option does not deliver production cloud enablement in #895/#898.
+`apps/api/requirements-dev.txt` continues to provide SDKs for offline CI tests;
+neither those dependencies nor the extras add SDKs to the shipped runtime images.
 
 For external preview access during development, use the documented loopback
 HTTP server pattern (see `AGENTS.md`). External tunneling requires explicit
