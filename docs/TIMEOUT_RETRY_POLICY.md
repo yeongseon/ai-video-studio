@@ -76,14 +76,18 @@ file-ownership regression coverage.
 ## Retry Strategy
 
 ### Exponential Backoff
-Tasks use `retry_backoff=30` (or `retry_backoff=True`), meaning:
-- 1st retry: ~30s delay
-- 2nd retry: ~60s delay
-- 3rd retry: ~120s delay
-- 4th retry: ~240s delay
-- 5th retry: ~480s delay
+Each task sets `retry_backoff` to a factor in seconds. The delay before retry
+*n* (counting from 0) is `factor * 2**n`, capped at Celery's default
+`retry_backoff_max` of 600 s. Every task sets `retry_jitter=True`, so the actual
+delay is a random value between 0 and that figure (full jitter, which prevents a
+thundering herd).
 
-With jitter applied to prevent thundering herd.
+- `retry_backoff=30` (`generate_script`, `generate_visual_plan`,
+  `generate_scene_image`, `generate_audio`, `generate_subtitles`; five retries):
+  up to about 30 s, 60 s, 120 s, 240 s and 480 s.
+- `retry_backoff=True` (`generate_paragraph_audio`,
+  `generate_paragraph_subtitles`, `render_video`; three retries): `True` is a
+  factor of 1, so up to about 1 s, 2 s and 4 s.
 
 ### Retryable Exceptions
 Tasks retry on:
