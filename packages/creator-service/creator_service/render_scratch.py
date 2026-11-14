@@ -15,6 +15,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Final, Protocol
+from .render_scratch_monitor import register_scratch
 
 _CONFIGURATION_ERRNOS: Final = frozenset({
     errno.ENAMETOOLONG, errno.EACCES, errno.EPERM, errno.ENOTDIR, errno.ELOOP, errno.EINVAL,
@@ -151,13 +152,13 @@ def create_render_scratch(output: Path, prefix: str) -> Path:
                 else:
                     cleanup_render_scratch(directory, logger)
                 raise RenderScratchConfigurationError("allocated directory must be a real worker-owned 0700 directory")
-            return directory
+            return register_scratch(directory)
         parent.mkdir(parents=True, exist_ok=True)
         if prefix == "timeline-":
-            return Path(tempfile.mkdtemp(prefix=prefix, dir=parent))
+            return register_scratch(Path(tempfile.mkdtemp(prefix=prefix, dir=parent)))
         directory = parent / f"{prefix}{os.getpid()}_{os.urandom(4).hex()}"
         directory.mkdir(mode=0o700)
-        return directory
+        return register_scratch(directory)
     except OSError as exc:
         if root is not None:
             _classify_configuration_error(exc)
@@ -201,6 +202,7 @@ def audio_concat_list(output: Path) -> Iterator[tuple[Path, ConcatWriter]]:
     else:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as stream:
             path = Path(stream.name)
+            register_scratch(path)
             try:
                 yield path, stream
             finally:
@@ -209,5 +211,5 @@ def audio_concat_list(output: Path) -> Iterator[tuple[Path, ConcatWriter]]:
 
 def create_sfx_scratch(output: Path) -> Path:
     if configured_scratch_root() is None:
-        return Path(tempfile.mkdtemp(prefix="sfx_"))
+        return register_scratch(Path(tempfile.mkdtemp(prefix="sfx_")))
     return create_render_scratch(output, "sfx_")

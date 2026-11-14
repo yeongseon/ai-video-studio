@@ -3,6 +3,8 @@ import math
 import os
 import signal
 import subprocess
+import time
+from contextlib import suppress
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,6 +12,7 @@ from .render_profile import RenderProfile
 from .media_integrity import MediaExpectation, validate_media
 from .render_frame_budget import allocate_frames
 from .render_scratch import audio_concat_list, create_render_scratch
+from .render_scratch_monitor import POLL_SECONDS, RenderScratchLimitExceeded, current_budget, register_scratch, render_budget
 
 logger = logging.getLogger(__name__)
 
@@ -69,17 +72,41 @@ def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str
         text=True,
         start_new_session=True,
     )
+    budget = current_budget.get()
+    deadline = time.monotonic() + timeout
     try:
-        stdout, stderr = proc.communicate(timeout=timeout)
-    except subprocess.TimeoutExpired:
-        # Kill the entire process group to clean up any children
+        while True:
+            if budget is not None:
+                budget.check()
+            remaining = deadline - time.monotonic()
+            try:
+                stdout, stderr = proc.communicate(timeout=min(POLL_SECONDS, remaining) if budget is not None else remaining)
+            except subprocess.TimeoutExpired:
+                if budget is None or time.monotonic() >= deadline:
+                    raise subprocess.TimeoutExpired(cmd, timeout) from None
+                continue
+            if budget is not None:
+                budget.check()
+            break
+    except RenderScratchLimitExceeded:
+        with suppress(ProcessLookupError):
+            os.killpg(proc.pid, signal.SIGTERM)
         try:
-            os.killpg(proc.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
-        proc.kill()  # fallback
-        proc.wait()
+            proc.wait(timeout=2)
+        except subprocess.TimeoutExpired:
+            logger.debug("Render scratch termination grace expired")
         raise
+    finally:
+        with suppress(ProcessLookupError, PermissionError):
+            os.killpg(proc.pid, signal.SIGKILL)
+        proc.kill()
+        proc.wait()
+        with suppress(subprocess.TimeoutExpired):
+            proc.communicate(timeout=1)
+        if proc.stdout is not None:
+            proc.stdout.close()
+        if proc.stderr is not None:
+            proc.stderr.close()
     return subprocess.CompletedProcess(
         args=cmd, returncode=proc.returncode, stdout=stdout, stderr=stderr
     )
@@ -290,6 +317,7 @@ class FFmpegService:
                 f"(rc={result.returncode}): {result.stderr[-200:]}"
             )
 
+    @render_budget("render")
     def render(self, input_data: RenderInput, output_path: Path) -> Path:
         """Execute FFmpeg render using two-pass concat demuxer approach.
 
@@ -342,7 +370,7 @@ class FFmpegService:
                     f.write(f"file '{seg.name}'\nduration {budget / self.profile.fps:.12f}\n")
 
             unique_suffix = f".tmp.{os.getpid()}.{os.urandom(4).hex()}.mp4"
-            tmp_output = output_path.with_suffix(unique_suffix)
+            tmp_output = register_scratch(output_path.with_suffix(unique_suffix))
 
             need_subs = self.profile.burn_subtitles and input_data.subtitle_path is not None
 
