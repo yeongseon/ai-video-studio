@@ -12,6 +12,13 @@ def test_ready_sweeps_once_through_signal(tmp_path: Path, monkeypatch: pytest.Mo
     path = tmp_path / "1/render/.render_tmp_42_deadbeef"
     path.mkdir(parents=True)
     monkeypatch.setenv("ARTIFACT_ROOT", str(tmp_path))
+    settings = {
+        "MAX_AGE_SECONDS": 4000, "SWEEP_MIN_GRACE_SECONDS": 70,
+        "SWEEP_MAX_ENTRIES": 12000, "SWEEP_MAX_REMOVALS": 600,
+        "SWEEP_MAX_RUN_DIRECTORIES": 1200, "SWEEP_BUDGET_SECONDS": 25,
+    }
+    for key, value in settings.items():
+        monkeypatch.setenv(f"RENDER_SCRATCH_{key}", str(value))
     module = importlib.import_module("creator_service.render_scratch_sweeper")
     original = module.sweep_render_scratch
     calls = []
@@ -25,6 +32,13 @@ def test_ready_sweeps_once_through_signal(tmp_path: Path, monkeypatch: pytest.Mo
     responses = worker_ready.send(sender=None)
     # Then exactly one receiver invokes the sweep and removes stale scratch.
     assert len(calls) == 1
+    from tasks.render_video import render_video
+    assert calls[0].minimum_max_age_seconds == 2 * render_video.time_limit
+    assert (
+        calls[0].max_age_seconds, calls[0].min_grace_seconds,
+        calls[0].max_entries, calls[0].max_removals,
+        calls[0].max_run_directories, calls[0].budget_seconds,
+    ) == tuple(settings.values())
     assert not path.exists()
     assert (celery_app.cleanup_render_scratch_at_start, None) in responses
 
@@ -63,3 +77,4 @@ def test_default_age_covers_real_task_hard_limit() -> None:
     from creator_service.render_scratch_sweeper import SweepPolicy
     from tasks.render_video import render_video
     assert SweepPolicy().max_age_seconds >= 2 * render_video.time_limit
+    assert SweepPolicy().minimum_max_age_seconds == 2 * 660
