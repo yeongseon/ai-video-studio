@@ -9,9 +9,10 @@ from pathlib import Path
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parents[1] / "scripts"))
+sys.path.insert(0, str(Path(__file__).parent))
 import restore_drill
 from restore_drill_runtime import DrillError
-from tests.restore_drill_fake import DrillSandbox
+from restore_drill_fake import DrillSandbox
 
 
 @pytest.fixture
