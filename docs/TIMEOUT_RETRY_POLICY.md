@@ -43,7 +43,10 @@ perform cleanup (save partial results, update status to FAILED).
 
 ### Hard Time Limit (`time_limit`)
 Kills the worker process if the task exceeds this. Always set 60s above the
-soft limit to allow cleanup time.
+soft limit to allow cleanup time. Where the pool delivers it (`prefork`), the
+parent first records the durable `TIMEOUT` failure and then runs the task's
+output cleanup; a failure in either step is logged by the handler itself and
+does not skip the other step.
 
 ### Pool support in the shipped topology
 
