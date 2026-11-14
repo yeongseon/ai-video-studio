@@ -122,7 +122,7 @@ def test_post_provider_failure_propagates_unchanged(
             # Only exceptions outside the existing metadata-tolerance list escape this seam.
             if isinstance(error, (OSError, subprocess.SubprocessError)):
                 monkeypatch.setattr(
-                    audio, "_invalidate_word_timing_sidecar", Mock(side_effect=[error, None]),
+                    audio, "_invalidate_word_timing_sidecar", Mock(side_effect=[error, None, None]),
                 )
             else:
                 monkeypatch.setattr(audio, "_merge_word_timing_sidecars", Mock(side_effect=error))
