@@ -475,7 +475,7 @@ class AzureBlobStorageBackend:
 
         # Development fallback: unsigned URL allowed via explicit env variable
         logger.warning(
-            "Generating unsigned Azure Blob URL for key=%s (STORAGE_ALLOW_UNSIGNED_URLS=true). ",
+            "Generating unsigned Azure Blob URL for object_name=%s (STORAGE_ALLOW_UNSIGNED_URLS=true). ",
             blob_name,
         )
         return f"{blob_client.url}?se={max(1, expires_in)}"
