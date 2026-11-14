@@ -6,6 +6,7 @@ import hashlib
 import errno
 import logging
 import os
+import re
 import shutil
 import socket
 import stat
@@ -19,6 +20,19 @@ _CONFIGURATION_ERRNOS: Final = frozenset({
     errno.ENAMETOOLONG, errno.EACCES, errno.EPERM, errno.ENOTDIR, errno.ELOOP, errno.EINVAL,
 })
 logger = logging.getLogger(__name__)
+
+CONFIGURED_SCRATCH_NAME: Final = re.compile(
+    r"\A(?:\.render_tmp_|\.render_plan_|timeline-|sfx_|audio-concat-)"
+    r"(?P<host>[0-9a-f]{12})_(?P<run>[0-9a-f]{12})_(?P<pid>[0-9]+)_[a-z0-9_]{8}\Z"
+)
+LEGACY_SCRATCH_NAME: Final = re.compile(
+    r"\A(?:\.render_tmp_|\.render_plan_)(?P<pid>[0-9]+)_[0-9a-f]{8}\Z"
+)
+LEGACY_TIMELINE_NAME: Final = re.compile(r"\Atimeline-[a-z0-9_]{8}\Z")
+PARTIAL_MP4_NAME: Final = re.compile(r"\Aoutput\.tmp\.(?P<pid>[0-9]+)\.[0-9a-f]{8}\.mp4\Z")
+SCRATCH_NAME_PATTERNS: Final = (
+    CONFIGURED_SCRATCH_NAME, LEGACY_SCRATCH_NAME, LEGACY_TIMELINE_NAME, PARTIAL_MP4_NAME,
+)
 
 
 class ConcatWriter(Protocol):

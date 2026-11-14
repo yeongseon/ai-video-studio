@@ -23,6 +23,13 @@ class ArtifactPathOutsideRootError(OSError):
     """Raised when a recorded file is not strictly inside the artifact root."""
 
 
+def unlink_direct_child(parent_fd: int, name: str) -> None:
+    """Unlink a plain direct-child name relative to an already confined descriptor."""
+    if name in ("", ".", "..") or "/" in name:
+        raise ValueError("unsafe path component")
+    os.unlink(name, dir_fd=parent_fd)
+
+
 def unlink_beneath(root: Path, parts: Sequence[str]) -> bool:
     """Unlink ``root/parts`` without following any symlink below ``root``.
 
@@ -49,7 +56,7 @@ def unlink_beneath(root: Path, parts: Sequence[str]) -> bool:
         parent_fd = descriptors[-1]
         if stat.S_ISDIR(os.stat(parts[-1], dir_fd=parent_fd, follow_symlinks=False).st_mode):
             raise IsADirectoryError
-        os.unlink(parts[-1], dir_fd=parent_fd)
+        unlink_direct_child(parent_fd, parts[-1])
         return True
     except FileNotFoundError:
         return False
