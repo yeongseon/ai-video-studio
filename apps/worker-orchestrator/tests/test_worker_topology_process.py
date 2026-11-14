@@ -292,6 +292,14 @@ def test_worker_command_is_the_shipped_one_run_with_the_test_interpreter(
     assert launched == [[sys.executable, "-m", "celery", *shipped[1:], "--include", "tests.worker_topology_tasks"]]
 
 
+def test_a_shipped_command_that_is_not_celery_is_refused() -> None:
+    # Given a worker command that no longer starts with celery, for example a shell wrapper.
+    command = ["sh", "-c", "celery -A celery_app.celery_app worker"]
+    # When the helper adapts it for the tests, then it fails loudly instead of running something else.
+    with pytest.raises(AssertionError, match="expected a celery command"):
+        _interpreter_command(command)
+
+
 def test_synthetic_terminal_state_is_published_after_cleanup() -> None:
     # Given the legacy synthetic helper retained for fast local signal checks.
     source = (WORKER / "tests" / "worker_topology_tasks.py").read_text(encoding="utf-8")
