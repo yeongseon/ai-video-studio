@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ## [Unreleased]
 
+### Security
+
+- Upgrade the HTTP client stack to aiohttp 3.14.5, anyio 4.16.0, certifi 2026.10.23, idna 3.20 and multidict 6.9.1 past published advisories, with required yarl 1.25.1 and typing-extensions 4.16.0 dependencies (#1023 group 3).
+
 ### Added
 
 - Celery Beat scheduler service (`beat`) in `docker-compose.yml` (+ dev and scaled-workers overlays) so scheduled tasks actually run (#585).
