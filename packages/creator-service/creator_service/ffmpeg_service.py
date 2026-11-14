@@ -93,7 +93,6 @@ def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str
     budget = current_budget.get()
     deadline = time.monotonic() + timeout
     # Group signals are only safe while the unreaped child still pins its pid as the group id.
-    reaped = False
     try:
         while True:
             if budget is not None:
@@ -105,20 +104,22 @@ def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str
                 if budget is None or time.monotonic() >= deadline:
                     raise subprocess.TimeoutExpired(cmd, timeout) from None
                 continue
-            reaped = True
             if budget is not None:
                 budget.check()
             break
     except RenderScratchLimitExceeded:
-        if not reaped:
+        if proc.returncode is None:
             _signal_group(proc, signal.SIGTERM)
             _wait_without_reaping(proc, 2)
         raise
     finally:
-        if not reaped:
+        if proc.returncode is None:
             _signal_group(proc, signal.SIGKILL)
-        proc.kill()
-        proc.wait()
+            proc.kill()
+        try:
+            proc.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            logger.error("Render child could not be reaped after SIGKILL (pid=%s, program=%s)", proc.pid, Path(cmd[0]).name)
         with suppress(subprocess.TimeoutExpired):
             proc.communicate(timeout=1)
         if proc.stdout is not None:
