@@ -115,6 +115,19 @@ remote LLM, image, TTS, and STT providers and downloading its first MP4. See the
 
 Pass each layer independently. A lower layer never implies a higher one.
 
+The automated `scripts/cutover_runtime_acceptance.sh` harness is separate from
+this operator procedure. Run it only in a fresh clone or `git worktree` with no
+`.env`, or move/rename the real `.env` first: it refuses an existing `.env`
+before touching it. CI's `docker` job sets `CUTOVER_ACCEPTANCE_DISPOSABLE=1`,
+meaning **this checkout is disposable: its `.env` will be replaced**. Never set
+that opt-in on a working deployment. The harness atomically creates and rewrites
+its own `.env`, removes it on exit, and tears down its Compose project volumes.
+Compose services use a relative `env_file: .env`; `--env-file` alone cannot
+isolate them. The root `.dockerignore` excludes `.env*` secrets (including
+interrupted `.env-storage-*` copies) at every depth, retaining `*.example` files.
+An uncatchable termination may leave disposable harness files; keep that checkout
+private and remove them before reuse. These checks do not replace deployment smoke.
+
 ### Liveness
 
 ```bash
