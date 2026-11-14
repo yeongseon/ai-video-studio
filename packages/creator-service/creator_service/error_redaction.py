@@ -15,7 +15,8 @@ _WINDOWS_PATH = re.compile(r"[A-Za-z]:\\[\\\w.\- ]+")
 _URL = re.compile(r"\bhttps?://[^\s'\"]+")
 _CREDENTIAL_URI = re.compile(r"\b[A-Za-z][A-Za-z0-9+.-]*://[^\s/'\"<>]*@[^\s;'\"<>]+")
 _BEARER = re.compile(r"\bBearer[ \t]+[A-Za-z0-9._~+/-]+=*", re.IGNORECASE)
-_TOKEN_PREFIX = re.compile(r"\b(?:(?:sk|gsk|ghp|xoxb)[-_]|AKIA|AIza)[A-Za-z0-9_\-]{6,}")
+_TOKEN_BODY: Final = r"(?:(?:sk|gsk|ghp|xoxb)[-_]|hf_|r8_|AKIA|AIza)[A-Za-z0-9_\-]{6,}"
+_TOKEN_PREFIX = re.compile(r"\b" + _TOKEN_BODY)
 _LONG_HEX = re.compile(r"\b[0-9a-fA-F]{20,}\b")
 _REDACTED: Final = "<redacted>"
 _MAX_STRING: Final = 1024
@@ -40,8 +41,14 @@ _LOG_CREDENTIAL_URI = re.compile(
     r"(?<![A-Za-z0-9+.-])[A-Za-z0-9+.-]+://[^\s/'\"<>]*@[^\s;'\"<>]+"
 )
 _LOG_TOKEN_PREFIX = re.compile(
-    r"(?<![^\W_])(?:(?:sk|gsk|ghp|xoxb)[-_]|AKIA|AIza)[A-Za-z0-9_\-]{6,}"
+    r"(?<![^\W_])" + _TOKEN_BODY
 )
+_ASSIGNMENT = re.compile(
+    r"(?<![\w.-])(?:"
+    r"(?P<quote>['\"])(?P<quoted_name>[\w. -]++)(?P=quote)|(?P<name>[\w.-]++)"
+    r")[ \t]*+[=:][ \t]*+"
+)
+_UNQUOTED_VALUE = re.compile(r"[^\s,;&'\"\[\]{}()]+")
 _LOG_CREDENTIAL_PATTERNS: Final = (
     _LOG_CREDENTIAL_URI, _URL, _BEARER, _LOG_TOKEN_PREFIX, _LONG_HEX,
 )
@@ -73,6 +80,7 @@ def redact_error_message(text: str) -> str:
     redacted = _CREDENTIAL_URI.sub(_REDACTED, text)
     redacted = _URL.sub(_REDACTED, redacted)
     redacted = _BEARER.sub(_REDACTED, redacted)
+    redacted = _redact_named_values(redacted)
     redacted = _TOKEN_PREFIX.sub(_REDACTED, redacted)
     redacted = _WINDOWS_PATH.sub(_REDACTED, redacted)
     redacted = _WORKSPACE_PATH.sub(_REDACTED, redacted)
@@ -108,6 +116,7 @@ def redact_log_text(text: str, trusted_lines: frozenset[str] = frozenset()) -> s
                 safe = line
                 for pattern in (_LOG_CREDENTIAL_URI, _URL, _BEARER, _WINDOWS_PATH):
                     safe = pattern.sub(_REDACTED, safe)
+                safe = _redact_named_values(safe)
                 safe = _LOG_PATH.sub(_redact_log_path, safe)
                 safe = _LOG_TOKEN_PREFIX.sub(_REDACTED, safe)
                 safe = _LONG_HEX.sub(_REDACTED, safe)
@@ -133,7 +142,7 @@ def carries_credential(text: str) -> bool:
 
     Text too long to scan counts as carrying one, matching the log-line refusal.
     """
-    return len(text) > _MAX_LOG_LINE or any(
+    return len(text) > _MAX_LOG_LINE or _redact_named_values(text) != text or any(
         pattern.search(text)
         for pattern in _LOG_CREDENTIAL_PATTERNS
     )
@@ -151,6 +160,35 @@ def is_sensitive_log_key(name: str) -> bool:
         first in _LOG_KEY_PREFIXES and second == "key"
         for first, second in zip(segments, segments[1:])
     )
+
+
+def _redact_named_values(text: str) -> str:
+    """Scan assignments once; quoted values end at their matching quote or input end."""
+    parts: list[str] = []
+    cursor = 0
+    # Possessive name/spacing runs prevent retries within a failed identifier.
+    # Values are consumed only for sensitive names, preserving nested assignments
+    # inside ordinary message strings. The cursor skips already-redacted values.
+    for match in _ASSIGNMENT.finditer(text):
+        start = match.end()
+        if match.start() < cursor or not is_sensitive_log_key(match["name"] or match["quoted_name"]):
+            continue
+        if start == len(text):
+            continue
+        if text[start] in "'\"":
+            start += 1
+            end = text.find(text[start - 1], start)
+            if end < 0:
+                end = len(text)
+        else:
+            value = _UNQUOTED_VALUE.match(text, start)
+            if value is None:
+                continue
+            end = value.end()
+        parts.extend((text[cursor:start], _REDACTED))
+        cursor = end
+    parts.append(text[cursor:])
+    return "".join(parts)
 
 
 def sanitize_error_json(data: object, depth: int = 0) -> JsonValue:
