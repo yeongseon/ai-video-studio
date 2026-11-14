@@ -73,7 +73,7 @@ click-repl==0.3.0
     # via celery
 coverage==7.13.4
     # via pytest-cov
-cryptography==46.0.5
+cryptography==50.0.2
     # via azure-storage-blob
 cssselect2==0.9.0
     # via cairosvg
@@ -190,7 +190,7 @@ pydantic-core==2.41.5
     # via pydantic
 pyee==13.0.1
     # via playwright
-pygments==2.19.2
+pygments==2.21.0
     # via pytest
 pytest==8.4.2
     # via
@@ -220,7 +220,7 @@ redis==6.4.0
     #   -r apps/worker-orchestrator/requirements.txt
     #   creator-provider
     #   creator-service
-requests==2.32.5
+requests==2.34.2
     # via azure-core
 ruff==0.11.13
     # via
@@ -272,7 +272,7 @@ tzdata==2025.3
     # via kombu
 tzlocal==5.3.1
     # via celery
-urllib3==2.6.3
+urllib3==2.8.0
     # via
     #   botocore
     #   requests

@@ -51,6 +51,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - A failure of the local FFmpeg render in the legacy render path is classified by its type, not by searching its message text, so an unrelated local error whose text contains `429` or "rate limit" (for example a permission error on a scratch path of run 1429) is no longer retried as a provider rate limit (#1099).
 - Upgrade `mako` (used only by `alembic` to render migration templates) from 1.3.10 to 1.4.3 past three published `TemplateLookup` path traversal advisories, with a regression floor in `test_python_advisory_floors.py` (#1023 group 4).
 - Upgrade the OpenTelemetry packages together (API, SDK, OTLP exporter, protocol and semantic conventions: 1.40.0 to 1.45.2, 0.61b0 to 0.66b2) past two published trace-context parsing advisories, with a regression floor in `test_python_advisory_floors.py` (#1023 group 5).
+- Upgrade the CI and developer tool packages `cryptography` (46.0.5 to 50.0.2), `urllib3` (2.6.3 to 2.8.0), `requests` (2.32.5 to 2.34.2) and `pygments` (2.19.2 to 2.21.0) past 13 published advisories, with regression floors in `test_python_advisory_floors.py`; `pytest` stays on 8.4.2 until `pytest-asyncio` can move (#1115) (#1023 group 6).
 
 ## [0.4.0] - 2026-07-23
 
