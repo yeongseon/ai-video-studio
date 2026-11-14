@@ -119,6 +119,10 @@ def test_publishes_complete_env_atomically_and_cleans_up_when_disposable(
     result = _run(checkout, opt_in)
     # Then both publications use a new inode; only harness-owned temporary files disappear.
     assert result.returncode == 73, result.stderr
+    assert ("WARNING" in result.stderr) == existing
+    if existing:
+        assert str(checkout) in result.stderr
+        assert "replacing existing .env" in result.stderr
     assert (checkout / "observed-env").read_text() == (
         "API_KEY=synthetic-created\n\nARTIFACT_ROOT=/tmp/cutover-artifacts\n"
     )

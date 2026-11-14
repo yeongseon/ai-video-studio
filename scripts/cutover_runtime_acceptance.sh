@@ -138,6 +138,9 @@ cat .env.example > "$ENV_TEMP"
 printf '\nARTIFACT_ROOT=/tmp/cutover-artifacts\n' >> "$ENV_TEMP"
 ENV_PUBLISHING=1
 if [ "${CUTOVER_ACCEPTANCE_DISPOSABLE:-}" = 1 ]; then
+  if [ -e .env ] || [ -L .env ]; then
+    printf 'WARNING: CUTOVER_ACCEPTANCE_DISPOSABLE=1: replacing existing .env in checkout %s\n' "$ROOT" >&2
+  fi
   if mv -T "$ENV_TEMP" .env; then ENV_CREATED=1; else exit 1; fi
 else
   if ln -- "$ENV_TEMP" .env; then
