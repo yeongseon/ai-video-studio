@@ -33,7 +33,7 @@ ROOT = Path(__file__).resolve().parents[1]
     ],
 )
 def test_bind_is_rendered_when_explicitly_safe(
-    bind: str | None, confirmation: str | None, expected: str,
+    tmp_path: Path, bind: str | None, confirmation: str | None, expected: str,
 ) -> None:
     # Given only operator-provided exposure settings, not a developer .env.
     env = {key: value for key, value in os.environ.items() if not key.startswith("STUDIO_WEB_")}
@@ -43,7 +43,7 @@ def test_bind_is_rendered_when_explicitly_safe(
         env["STUDIO_WEB_LAN_OK"] = confirmation
     # When invoking the dependency-free validator boundary.
     result = subprocess.run(
-        [sys.executable, "scripts/validate_local_bind.py"], cwd=ROOT, env=env,
+        [sys.executable, str(ROOT / "scripts/validate_local_bind.py")], cwd=tmp_path, env=env,
         capture_output=True, text=True, timeout=10, check=False,
     )
     # Then only a safe Compose host literal is emitted.
@@ -59,13 +59,13 @@ def test_bind_is_rendered_when_explicitly_safe(
         "192.168.1.10", "fd00::10", "10.0.0.1", "172.17.0.1", "fe80::1",
     ],
 )
-def test_bind_is_rejected_when_invalid_or_unconfirmed(bind: str) -> None:
+def test_bind_is_rejected_when_invalid_or_unconfirmed(tmp_path: Path, bind: str) -> None:
     # Given an invalid literal or an unconfirmed wildcard.
     env = {key: value for key, value in os.environ.items() if not key.startswith("STUDIO_WEB_")}
     env["STUDIO_WEB_BIND"] = bind
     # When validating the operator input.
     result = subprocess.run(
-        [sys.executable, "scripts/validate_local_bind.py"], cwd=ROOT, env=env,
+        [sys.executable, str(ROOT / "scripts/validate_local_bind.py")], cwd=tmp_path, env=env,
         capture_output=True, text=True, timeout=10, check=False,
     )
     # Then fail closed with no binding available for Compose.
@@ -150,7 +150,7 @@ def test_validated_bind_is_what_compose_receives(
 
 @pytest.mark.parametrize("bind", ["8.8.8.8", "1.1.1.1", "2606:4700:4700::1111", "::ffff:8.8.8.8"])
 @pytest.mark.parametrize("confirmation", [None, "1"])
-def test_global_bind_is_always_refused(bind: str, confirmation: str | None) -> None:
+def test_global_bind_is_always_refused(tmp_path: Path, bind: str, confirmation: str | None) -> None:
     # Given a public address, even with explicit confirmation.
     env = {key: value for key, value in os.environ.items() if not key.startswith("STUDIO_WEB_")}
     env["STUDIO_WEB_BIND"] = bind
@@ -158,7 +158,7 @@ def test_global_bind_is_always_refused(bind: str, confirmation: str | None) -> N
         env["STUDIO_WEB_LAN_OK"] = confirmation
     # When invoking the validator.
     result = subprocess.run(
-        [sys.executable, "scripts/validate_local_bind.py"], cwd=ROOT, env=env,
+        [sys.executable, str(ROOT / "scripts/validate_local_bind.py")], cwd=tmp_path, env=env,
         capture_output=True, text=True, timeout=10, check=False,
     )
     # Then public ingress is refused without a Compose literal.
@@ -189,12 +189,12 @@ def test_make_command_line_binding(tmp_path: Path, target: str, assignments: str
 
 @pytest.mark.parametrize("bind", ["192.168.1.10", "fd00::10", "0.0.0.0", "::"])
 @pytest.mark.parametrize("confirmation", ["", "true", "yes", "01", " 1", "1 ", "0"])
-def test_confirmation_requires_exact_one(bind: str, confirmation: str) -> None:
+def test_confirmation_requires_exact_one(tmp_path: Path, bind: str, confirmation: str) -> None:
     # Given a non-loopback address and a noncanonical confirmation.
     env = {**os.environ, "STUDIO_WEB_BIND": bind, "STUDIO_WEB_LAN_OK": confirmation}
     # When invoking the validator.
     result = subprocess.run(
-        [sys.executable, "scripts/validate_local_bind.py"], cwd=ROOT, env=env,
+        [sys.executable, str(ROOT / "scripts/validate_local_bind.py")], cwd=tmp_path, env=env,
         capture_output=True, text=True, timeout=10, check=False,
     )
     # Then only the exact string 1 could have authorized it.
