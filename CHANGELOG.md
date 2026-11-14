@@ -48,6 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Worker-start scratch reclamation detects reused same-host owner pids by process start time after the grace, conservatively retaining unknown identities and preserving legacy age-only rules (#1070).
 - The shared FFmpeg runner decodes the child's output with replacement characters, so a render no longer fails with a `UnicodeDecodeError` when FFmpeg echoes input metadata that is not valid UTF-8, and a failing final drain no longer replaces the exception that is already propagating (#1103).
 - Legacy Timeline scratch names now carry the delivery pid so enforced Celery hard timeouts reclaim only that delivery's directory; older ownerless names remain age-only (#1060).
+- A failure of the local FFmpeg render in the legacy render path is classified by its type, not by searching its message text, so an unrelated local error whose text contains `429` or "rate limit" (for example a permission error on a scratch path of run 1429) is no longer retried as a provider rate limit (#1099).
 
 ## [0.4.0] - 2026-07-23
 

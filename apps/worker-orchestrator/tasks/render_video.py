@@ -85,6 +85,7 @@ async def _execute_render(ctx: TaskContext, render_profile: str) -> TaskResult:
             ctx.mark_provider_started()
             inputs.ffmpeg.render(render_input, output)
         except (TimeoutError, ConnectionError) as exc:
+            # Local FFmpeg has no rate limit; these only come from a stalled filesystem, which gets the bounded retry.
             raise ProviderTimeoutError(f"Provider timed out during video render for run {ctx.run_id}") from exc
         except SoftTimeLimitExceeded:
             raise
@@ -94,8 +95,6 @@ async def _execute_render(ctx: TaskContext, render_profile: str) -> TaskResult:
             raise ProviderError(f"Provider failed video render for run {ctx.run_id}") from exc
         except Exception as exc:
             logger.error("FFmpeg render exception for run %d: %s", ctx.run_id, type(exc).__name__)
-            if "429" in str(exc).lower() or "rate limit" in str(exc).lower():
-                raise RateLimitError(f"Provider rate limited video render for run {ctx.run_id}") from exc
             raise ProviderError(f"Provider failed video render for run {ctx.run_id}") from exc
     try:
         await record_provider_call(
