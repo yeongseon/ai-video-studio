@@ -143,3 +143,35 @@ def test_nested_iteration_error_is_skipped_with_one_warning_per_delivery(
             budget.check()
     assert budget._total == 10
     assert len(caplog.records) == 1
+
+
+@pytest.mark.parametrize("seam", ["removed", "parent-is-file", "swapped-for-file-at-open"])
+def test_vanished_root_counts_nothing_without_failing_or_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture, seam: str,
+) -> None:
+    # Given a registered root that is gone, unreachable through a file or replaced by a file when opened.
+    root = tmp_path / "root"
+    if seam == "parent-is-file":
+        (tmp_path / "file").write_bytes(b"x")
+        root = tmp_path / "file" / "root"
+    else:
+        root.mkdir()
+    budget = RenderScratchBudget(100, seam)
+    budget.register(root)
+    real_open = os.open
+
+    def swapped_open(path, flags, *args, **kwargs):
+        if path == root:
+            raise NotADirectoryError(errno.ENOTDIR, "injected swap")
+        return real_open(path, flags, *args, **kwargs)
+
+    if seam == "removed":
+        root.rmdir()
+    if seam == "swapped-for-file-at-open":
+        monkeypatch.setattr(os, "open", swapped_open)
+    # When polled, then the root is tolerated as empty, with no warning, and the walk completes.
+    with caplog.at_level(logging.WARNING):
+        budget.check()
+    assert budget._total == 0
+    assert budget._walk is None
+    assert caplog.records == []
