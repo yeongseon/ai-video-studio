@@ -11,8 +11,9 @@ def _integer(name: str, default: int, *, allow_zero: bool = False) -> int:
     raw = os.getenv(name)
     if raw is None:
         return default
+    stripped = raw.strip()
     try:
-        value = int(raw)
+        value = int(stripped) if stripped.isascii() and stripped.isdecimal() else -1
     except ValueError:
         value = -1
     if value > 0 or (allow_zero and value == 0):

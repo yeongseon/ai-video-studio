@@ -15,7 +15,7 @@ SETTINGS = [
 
 
 @pytest.mark.parametrize("suffix,field,default", SETTINGS)
-@pytest.mark.parametrize("raw", ["garbage", "-1", "1.5", ""])
+@pytest.mark.parametrize("raw", ["garbage", "-1", "1.5", "", "+12", "1_000", "１２", "١٢"])
 def test_invalid_setting_falls_back_independently(suffix, field, default, raw, monkeypatch, caplog) -> None:
     # Given one invalid setting alongside a valid non-default setting.
     startup = importlib.import_module("tasks.render_scratch_startup")
@@ -35,6 +35,33 @@ def test_invalid_setting_falls_back_independently(suffix, field, default, raw, m
     other = "max_entries" if field == "max_removals" else "max_removals"
     assert getattr(policies[0], other) == (888 if other == "max_entries" else 777)
     assert len([r for r in caplog.records if r.levelno == logging.WARNING and setting in r.message]) == 1
+
+
+@pytest.mark.parametrize("suffix,field,default", SETTINGS)
+def test_ascii_digits_ignore_surrounding_whitespace(suffix, field, default, monkeypatch, caplog) -> None:
+    # Given an ASCII decimal value surrounded by whitespace.
+    startup = importlib.import_module("tasks.render_scratch_startup")
+    sweeper = importlib.import_module("creator_service.render_scratch_sweeper")
+    setting = f"RENDER_SCRATCH_{suffix}"
+    monkeypatch.setenv(setting, " \t00123\n")
+    policies = []
+    monkeypatch.setattr(sweeper, "sweep_render_scratch", lambda root, policy: policies.append(policy))
+    # When startup parses the integer policy field.
+    startup.sweep_at_start()
+    # Then whitespace and leading zeroes preserve the decimal value without warnings.
+    assert getattr(policies[0], field) == 123
+    assert not [record for record in caplog.records if setting in record.message]
+
+
+def test_oversized_decimal_falls_back_without_large_parameter_ids(monkeypatch, caplog) -> None:
+    # Given digits exceeding Python's integer conversion limit, built inside the test.
+    startup = importlib.import_module("tasks.render_scratch_startup")
+    monkeypatch.setenv("RENDER_SCRATCH_SWEEP_MAX_ENTRIES", "9" * 5000)
+    # When the parser reaches its conversion boundary.
+    value = startup._integer("RENDER_SCRATCH_SWEEP_MAX_ENTRIES", 10000)
+    # Then the usual single warning and default apply.
+    assert value == 10000
+    assert len(caplog.records) == 1
 
 
 @pytest.mark.parametrize("suffix,field,default", SETTINGS)
