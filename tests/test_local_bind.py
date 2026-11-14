@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -100,9 +101,12 @@ def _run_make(
     docker.chmod(0o755)
     log = tmp_path / "docker-calls.log"
     log.write_text("", encoding="utf-8")
+    shutil.copyfile(ROOT / "Makefile", tmp_path / "Makefile")
+    (tmp_path / "scripts").mkdir()
+    shutil.copyfile(ROOT / "scripts/validate_local_bind.py", tmp_path / "scripts/validate_local_bind.py")
     env = {"PATH": f"{fake_bin}:/usr/bin:/bin", "FAKE_DOCKER_LOG": str(log), **settings}
     result = subprocess.run(
-        ["make", "-s", target], cwd=ROOT, env=env,
+        ["make", "-s", *target.split()], cwd=tmp_path, env=env,
         capture_output=True, text=True, timeout=30, check=False,
     )
     return result, log.read_text(encoding="utf-8")
@@ -184,6 +188,26 @@ def test_global_bind_is_always_refused(bind: str, confirmation: str | None) -> N
     assert result.returncode == 2
     assert "global" in result.stderr
     assert result.stdout == ""
+
+
+@pytest.mark.parametrize("target", ["docker-local-up", "docker-local-build"])
+@pytest.mark.parametrize(
+    ("assignments", "expected"),
+    [
+        ("STUDIO_WEB_BIND=192.168.1.10", None),
+        ("STUDIO_WEB_BIND=8.8.8.8 STUDIO_WEB_LAN_OK=1", None),
+        ("STUDIO_WEB_BIND=fd00::10 STUDIO_WEB_LAN_OK=1", "[fd00::10]"),
+        ("STUDIO_WEB_BIND=127.0.0.2", "127.0.0.2"),
+    ],
+    ids=["unconfirmed", "global", "confirmed-ipv6", "loopback"],
+)
+def test_make_command_line_binding(tmp_path: Path, target: str, assignments: str, expected: str | None) -> None:
+    # Given settings passed as Make command-line assignments rather than environment.
+    # When executing the real recipe against the recording Docker stand-in.
+    result, calls = _run_make(tmp_path, f"{target} {assignments}")
+    # Then the same guard policy and normalized output apply.
+    assert (result.returncode == 0) is (expected is not None), result.stderr
+    assert calls == (f"bind=[{expected}]\n" if expected is not None else "")
 
 
 @pytest.mark.parametrize("bind", ["192.168.1.10", "fd00::10", "0.0.0.0", "::"])
