@@ -88,13 +88,17 @@ def import_sites(node: ast.AST, lazy: bool = False) -> Iterator[ImportSite]:
 
 
 def missing_declarations(
-    sites: Iterator[ImportSite], required: set[str], optional: set[str]
+    sites: Iterator[ImportSite], required: set[str], optional: set[str], own: frozenset[str] = frozenset(),
 ) -> list[str]:
-    """Report each import against its own package, never the installed environment."""
+    """Report each import against its own package, never the installed environment.
+
+    Only the importing package's own top-level modules (``own``) are exempt: a sibling workspace package
+    is a distribution like any other and must be declared (#1092).
+    """
     missing: list[str] = []
     for site in sites:
         root = site.module.split(".")[0]
-        if root in sys.stdlib_module_names or root in FIRST_PARTY:
+        if root in sys.stdlib_module_names or root in own:
             continue
         declared = required | optional if site.lazy else required
         if site.distribution not in declared:
@@ -115,10 +119,11 @@ def test_workspace_imports_have_own_distribution_declarations(package: Path) -> 
         for extra in project.get("optional-dependencies", {}).values()
         for value in extra
     }
+    own = frozenset(source.name for source in package.iterdir() if source.name in FIRST_PARTY)
     sources = sorted(
         path
         for source in package.iterdir()
-        if source.name in FIRST_PARTY
+        if source.name in own
         for path in source.rglob("*.py")
         if "tests" not in path.relative_to(source).parts and not path.name.startswith("test_")
     )
@@ -128,13 +133,58 @@ def test_workspace_imports_have_own_distribution_declarations(package: Path) -> 
         f"{path.relative_to(ROOT)}:{diagnostic}"
         for path in sources
         for diagnostic in missing_declarations(
-            import_sites(ast.parse(path.read_bytes())), required, optional
+            import_sites(ast.parse(path.read_bytes())), required, optional, own
         )
     ]
 
     # Then transitive installs cannot conceal a missing direct distribution declaration.
     assert sources, f"No production modules found in {package}"
     assert not missing, "\n".join(missing)
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        "import creator_domain",
+        "from creator_domain.models import RenderPlan",
+        "def load():\n from creator_domain import exceptions",
+    ],
+    ids=["module", "from-import", "function-body"],
+)
+def test_a_sibling_workspace_package_must_be_declared_like_any_other_distribution(source: str) -> None:
+    # Given a module of creator-provider that imports the sibling package creator_domain without declaring it.
+    sites = import_sites(ast.parse(source))
+
+    # When checking the package's declarations, with only its own top-level module exempt.
+    missing = missing_declarations(sites, {"httpx"}, set(), frozenset({"creator_provider"}))
+
+    # Then the sibling is reported under its distribution name.
+    assert len(missing) == 1
+    assert "creator_domain" in missing[0]
+    assert "creator-domain missing from" in missing[0]
+
+
+def test_a_declared_sibling_workspace_package_is_accepted() -> None:
+    # Given the same import with creator-domain declared as a dependency.
+    sites = import_sites(ast.parse("from creator_domain.exceptions import ProviderError"))
+
+    # When checking the declarations.
+    missing = missing_declarations(sites, {"creator-domain"}, set(), frozenset({"creator_provider"}))
+
+    # Then nothing is missing.
+    assert missing == []
+
+
+@pytest.mark.parametrize("source", ["import creator_provider", "from creator_provider.registry import get_provider"], ids=["module", "from-import"])
+def test_a_package_may_import_its_own_modules_without_declaring_itself(source: str) -> None:
+    # Given a module importing its own package.
+    sites = import_sites(ast.parse(source))
+
+    # When that package is the importing one.
+    missing = missing_declarations(sites, set(), set(), frozenset({"creator_provider"}))
+
+    # Then no self-declaration is required.
+    assert missing == []
 
 
 @pytest.mark.parametrize(

@@ -586,6 +586,7 @@ source = { editable = "packages/creator-provider" }
 dependencies = [
     { name = "billiard" },
     { name = "cairosvg" },
+    { name = "creator-domain" },
     { name = "edge-tts" },
     { name = "httpx" },
     { name = "redis" },
@@ -624,6 +625,7 @@ requires-dist = [
     { name = "anthropic", marker = "extra == 'anthropic'", specifier = ">=0.30.0" },
     { name = "billiard", specifier = ">=4.2.0" },
     { name = "cairosvg", specifier = ">=2.7.0" },
+    { name = "creator-domain", editable = "packages/creator-domain" },
     { name = "edge-tts", specifier = ">=6.1.0" },
     { name = "elevenlabs", marker = "extra == 'all-external'", specifier = ">=1.0.0" },
     { name = "elevenlabs", marker = "extra == 'elevenlabs'", specifier = ">=1.0.0" },

@@ -18,6 +18,8 @@ from typing import Any, Protocol
 
 from creator_domain.models.visual_asset import VisualAsset
 
+from .exception_pickling import Reduced, field_values, rebuild_exception
+
 
 @dataclass(frozen=True, slots=True)
 class SceneAssetAcceptanceRejected(RuntimeError):
@@ -25,6 +27,9 @@ class SceneAssetAcceptanceRejected(RuntimeError):
 
     def __str__(self) -> str:
         return f"scene asset acceptance rejected for run {self.run_id}"
+
+    def __reduce__(self) -> Reduced:
+        return rebuild_exception, (type(self), field_values(self))
 
 # ---------------------------------------------------------------------------
 # Storage Protocol

@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import BinaryIO, Final, Protocol, cast
 
 from .confined_directory_deletion import unlink_beneath
+from .exception_pickling import Reduced, field_values, rebuild_exception
 from .object_storage_reads import (
     ObjectInfo as ObjectInfo,
     StorageObjectMissing as StorageObjectMissing,
@@ -66,6 +67,9 @@ class StorageDeletionError(RuntimeError):
     def __str__(self) -> str:
         fingerprint = hashlib.sha256(self.key.encode()).hexdigest()[:16]
         return f"object storage deletion failed; fingerprint={fingerprint}"
+
+    def __reduce__(self) -> Reduced:
+        return rebuild_exception, (type(self), field_values(self))
 
 
 @dataclass

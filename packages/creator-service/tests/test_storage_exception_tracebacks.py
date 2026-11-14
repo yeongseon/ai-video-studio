@@ -1,6 +1,7 @@
 """Storage exceptions must support the interpreter's mutable traceback protocol."""
 
 import pytest
+from creator_service.object_storage_reads import StorageReadError
 from creator_service.storage_policy import (
     FilesystemLowSpace,
     StorageBudgetExceeded,
@@ -37,6 +38,16 @@ def test_handled_storage_exception_allows_traceback_cleanup(
 def test_storage_exception_keeps_identity_hash_when_made_mutable(make) -> None:
     # Given two equal-looking instances of a mutable (non-frozen) exception dataclass.
     first, second = make(), make()
+    # When they are used as set members or dict keys, as exceptions commonly are.
+    members = {first, second}
+    # Then they stay hashable and compare by identity like any other exception.
+    assert len(members) == 2
+    assert first != second
+
+
+def test_storage_read_error_keeps_identity_hash() -> None:
+    # Given two equal-looking instances of the storage read failure.
+    first, second = StorageReadError(kind="timeout"), StorageReadError(kind="timeout")
     # When they are used as set members or dict keys, as exceptions commonly are.
     members = {first, second}
     # Then they stay hashable and compare by identity like any other exception.
