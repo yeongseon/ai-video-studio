@@ -361,12 +361,23 @@ Legacy segments (`.render_tmp_*`), segment-plan renders (`.render_plan_*`),
 Timeline materialized sources/narration (`timeline-*`), audio concat lists and
 SFX clips all allocate through `creator_service.render_scratch`. New directories
 are private (0700); configured names include hashed host and run/output-directory
-identity, PID and randomness. With the setting unset the three directory names
-and locations remain unchanged beside the output; the auxiliary audio concat
+identity, PID and randomness. With the setting unset the directories remain
+beside the output, with these names; the auxiliary audio concat
 file and SFX directory keep their existing system-temp placement. Successful
 and ordinary failed renders retain their existing cleanup behavior. Retained
 legacy `bgm.mp3`, mixed/normalized audio and styled subtitles are artifacts of
 the existing workflow, not transient scratch, and do not move.
+
+| Legacy directory kind | Name (`RENDER_SCRATCH_DIR` unset) | Location / mode |
+| --- | --- | --- |
+| Legacy render segments | `.render_tmp_<pid>_<8 hex>` | Output's parent / 0700 |
+| Segment-plan render | `.render_plan_<pid>_<8 hex>` | Output's parent / 0700 |
+| Timeline sources and narration | `timeline-<pid>_<8 hex>` | Output's parent / 0700 |
+
+Older `timeline-<8 chars>` directories remain recognised for age-only sweeping;
+new Timeline allocations carry their owner pid for hard-timeout attribution.
+**Rollback:** an older version does not recognise `timeline-<pid>_<8 hex>` as
+scratch, so entries created by this version are not reclaimed by it.
 
 The temporary `output.tmp.<pid>.<random>.mp4` **always stays beside the output**
 for atomic rename on the same filesystem. Published names, storage keys, codecs
@@ -423,16 +434,19 @@ The maximum-age floor of twice the render hard limit assumes enforced limits.
 Keep the configured age well above the longest legitimate render (default 3600
 seconds); do not set it near 1320 seconds on a solo pool.
 
-Pid-only names include legacy scratch directories AND the partial
+Pid-only names include legacy `.render_tmp_<pid>_<8 hex>`,
+`.render_plan_<pid>_<8 hex>` and `timeline-<pid>_<8 hex>` directories AND the partial
 `output.tmp.<pid>.<hex>.mp4` in EITHER layout, inside one run's render directory.
 Their timeout attribution uses the pid only. A sibling container retrying the same run with a colliding pid
 in the timeout-finalization-to-cleanup window could lose its scratch or partial
 output. This requires unlikely timing but is not excluded by pid-only names.
 
-Legacy unset-mode `timeline-<random>` has no owner information: the timeout hook
-**never removes it**. It waits for the next Worker start and the maximum-age
-rule. This intentionally leaves the unconditional "no scratch after hard timeout"
-acceptance wording only partially met. Combined-audio timeout cleanup is not
+New legacy Timeline scratch is attributed and removed by the hard-timeout
+callable just like the other legacy directories where Celery enforces hard time
+limits; the shipped solo render worker does not deliver those limits.
+Older `timeline-<8 chars>` entries have no owner information: the timeout hook
+**never removes them**. They wait for the next Worker start and the maximum-age
+rule. Combined-audio timeout cleanup is not
 wired here; its configured scratch can be reclaimed at Worker start, while its
 system-temp concat list and `sfx_` directory remain outside this cleanup scope.
 
@@ -479,7 +493,8 @@ the startup sweep if those lifetime bounds cannot be guaranteed.
 
 Other-host entries and legacy pid-only names (including partial MP4s) use **only
 the age rule**: a shared artifact volume may belong to another container with
-the same pid. Ownerless legacy Timeline scratch uses age only too. Thus a crash
+the same pid. Both new pid-bearing Timeline names and older ownerless
+`timeline-<8 chars>` entries use age only too. Thus a crash
 right before a restart is immediately reclaimable only for configured same-host
 scratch whose owner is gone **after the grace**. Fresh legacy or sibling-host
 leftovers wait for age and a subsequent restart. Pid reuse is conservatively
