@@ -35,23 +35,45 @@ def run_standin(root: Path, script: str) -> None:
     StandInRenderer(script).render(RenderInput([root / "input.png"], None, None, [1]), root / "output.mp4")
 
 
+def _children() -> set[int]:
+    return {int(raw) for raw in Path(f"/proc/self/task/{os.getpid()}/children").read_text().split()}
+
+
+def _process_state(pid: int) -> str | None:
+    try:
+        return Path(f"/proc/{pid}/stat").read_text().split(") ")[1][0]
+    except FileNotFoundError:
+        return None
+
+
+def _wait_for_zombie(pid: int, timeout: float = 3.0) -> str | None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        state = _process_state(pid)
+        if state in (None, "Z"):
+            return state
+        time.sleep(0.01)
+    return _process_state(pid)
+
+
 @pytest.fixture
 def subreaper():
-    if ctypes.CDLL(None, use_errno=True).prctl(36, 1, 0, 0, 0) != 0:
+    libc = ctypes.CDLL(None, use_errno=True)
+    if libc.prctl(36, 1, 0, 0, 0) != 0:
         pytest.fail(f"test subreaper setup failed: errno={ctypes.get_errno()}")
-    yield
-    children = Path(f"/proc/self/task/{os.getpid()}/children").read_text().split()
-    for raw in children:
-        pid = int(raw)
+    before = _children()
+    yield before
+    for pid in _children() - before:
         try:
             os.killpg(pid, signal.SIGKILL)
         except ProcessLookupError:
             os.kill(pid, signal.SIGKILL)
         os.waitpid(pid, 0)
+    libc.prctl(36, 0, 0, 0, 0)
 
 
 def test_limit_kills_term_ignoring_group_and_reaps_direct_child(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subreaper: None,
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, subreaper: set[int],
 ) -> None:
     # Given a real writer and grandchild, both ignoring TERM, with inherited pipes.
     monkeypatch.setenv("RENDER_SCRATCH_MAX_BYTES", "1024")
@@ -95,11 +117,10 @@ with open(sys.argv[1], 'wb', buffering=0) as stream:
         os.kill(grandchild, 0)
     except ProcessLookupError:
         pytest.fail("test subreaper must own the grandchild until it is reaped")
-    assert Path(f"/proc/{grandchild}/stat").read_text().split(") ")[1].startswith("Z")
+    assert _wait_for_zombie(grandchild) == "Z"
     _, status = os.waitpid(grandchild, 0)
     assert os.WIFSIGNALED(status) and os.WTERMSIG(status) == signal.SIGKILL
-    with pytest.raises(ChildProcessError):
-        os.waitpid(-1, os.WNOHANG)
+    assert _children() <= subreaper
     assert list((tmp_path / "render").iterdir()) == []
 
 
