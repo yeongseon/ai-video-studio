@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
-import hmac
 from typing import TYPE_CHECKING, NamedTuple
 
 if TYPE_CHECKING:
@@ -25,7 +24,7 @@ from shorts_api.auth_lookup import (
     resolve_api_key,
     resolve_workspace_id as _resolve_workspace_id,
 )
-from shorts_api.lifecycle import configured_admin_api_key
+from shorts_api.lifecycle import admin_key_matches, configured_admin_api_key
 
 _PUBLIC_PATHS = frozenset({"/healthz"})
 _current_user_ctx: contextvars.ContextVar["CurrentUser | None"] = contextvars.ContextVar(
@@ -116,7 +115,7 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
                     status_code=401,
                     content={"detail": "Admin access denied"},
                 )
-            if not hmac.compare_digest(admin_key, expected_admin_key):
+            if not admin_key_matches(admin_key, expected_admin_key):
                 return JSONResponse(
                     status_code=403,
                     content={"detail": "Admin access denied"},

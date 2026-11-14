@@ -18,14 +18,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - `ARTIFACT_RETENTION_DAYS` env var (default 90) + `sweep_expired_artifacts` beat task that marks expired artifacts for deletion (#587).
 - CI smoke: `celery inspect registered` verifies every beat task is registered on the worker (#585).
 - CI smoke: POST through nginx (port 5174) with the browser Origin header to catch CSRF regressions (#586).
+- Local runtime acceptance now requires one healthy Beat, preserves it across repeated supported startup, verifies reconciliation dispatch logs, and rejects a stopped scheduler (#990).
 
 ### Fixed
 
 - OpenTelemetry Console and OTLP exports now redact log bodies, derived chained exceptions and string extras before exporting, and redact span exception-event attributes and status descriptions; redaction failures fail closed without changing JSON stream logging or metrics (#1058).
 - The API server process under default Uvicorn import-string CLI startup now uses the shared redacting JSON stream formatter, including chained exceptions; `uvicorn.access` omits query strings and respects `--no-access-log` (#1035). This applies in every environment, not to `--reload` / `--workers` supervisor lines, custom `--log-config`, app-object startup after import, or OpenTelemetry exporters (see #1058; trace-context placement is tracked in #1059).
 - Disabled the shipped local admin key and reject publicly known admin-key examples at API startup in every environment; both admin gates and `/health` also refuse them if startup validation is bypassed. Studio nginx strips client `X-Admin-Key` on every API proxy location without changing creator-key handling (#1036). **Upgrade:** an install whose `.env` still has `local-admin-key-change-me` (or the old guide's literal `<a-strong-random-string>`) now fails at startup with a clear message; unset it to disable local admin access or generate a unique key with `openssl rand -hex 32` (production still requires at least 16 characters). Admin access must use the loopback API or an SSH tunnel, not Studio.
+- Non-ASCII `X-Admin-Key` headers now receive the same response as a wrong key without a 500 or traceback; both admin gates and `/health` share a constant-time byte comparison (#1057).
 - PostgreSQL project deletion returned 503 because its CHECK rejected the existing `deleting` barrier. Migration 051 admits it; schema downgrade preserves pending rows as `archived` (quiesce writers first). Real-PostgreSQL deletion/retry/cascade and enum-drift guards run in required CI (#947).
 - API key revocation silently bypassed — `_AsyncpgSessionAdapter` discarded the `revoked_at IS NULL` filter. Adapter removed; the resolver now runs the asyncpg query directly (#583).
+- Studio's Vite development proxy strips client `X-Admin-Key` on every proxied prefix without changing creator-key handling (#1056).
 - Local artifact downloads always returned 404 — the route read `file_path` (absolute) instead of `storage_key` (root-relative). Legacy rows now normalized via `os.path.relpath` (#584).
 - nginx CSRF check rejected default compose port — `$host` doesn't include the port, switched to `$http_host` (#586).
 
