@@ -27,7 +27,7 @@ CONFIGURED_SCRATCH_NAME: Final = re.compile(
     r"(?P<host>[0-9a-f]{12})_(?P<run>[0-9a-f]{12})_(?P<pid>[0-9]+)_[a-z0-9_]{8}\Z"
 )
 LEGACY_SCRATCH_NAME: Final = re.compile(
-    r"\A(?:\.render_tmp_|\.render_plan_)(?P<pid>[0-9]+)_[0-9a-f]{8}\Z"
+    r"\A(?:\.render_tmp_|\.render_plan_|timeline-)(?P<pid>[0-9]+)_[0-9a-f]{8}\Z"
 )
 LEGACY_TIMELINE_NAME: Final = re.compile(r"\Atimeline-[a-z0-9_]{8}\Z")
 PARTIAL_MP4_NAME: Final = re.compile(r"\Aoutput\.tmp\.(?P<pid>[0-9]+)\.[0-9a-f]{8}\.mp4\Z")
@@ -133,7 +133,7 @@ def _reject_overlap(root: Path, retained: Path) -> None:
 
 
 def create_render_scratch(output: Path, prefix: str) -> Path:
-    """Allocate one run/output-scoped directory (0700), preserving unset legacy names."""
+    """Allocate one private run/output-scoped directory with owner-pid attribution."""
     root = configured_scratch_root()
     parent = root if root is not None else output.parent
     try:
@@ -154,8 +154,6 @@ def create_render_scratch(output: Path, prefix: str) -> Path:
                 raise RenderScratchConfigurationError("allocated directory must be a real worker-owned 0700 directory")
             return register_scratch(directory)
         parent.mkdir(parents=True, exist_ok=True)
-        if prefix == "timeline-":
-            return register_scratch(Path(tempfile.mkdtemp(prefix=prefix, dir=parent)))
         directory = parent / f"{prefix}{os.getpid()}_{os.urandom(4).hex()}"
         directory.mkdir(mode=0o700)
         return register_scratch(directory)

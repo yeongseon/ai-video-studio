@@ -40,3 +40,21 @@ def test_partial_mp4_is_recognised() -> None:
     # Given FFmpeg's sibling staging name; when parsed; then exactly one pattern owns it.
     assert sum(bool(p.fullmatch("output.tmp.12.deadbeef.mp4"))
                for p in getattr(scratch, "SCRATCH_NAME_PATTERNS", ())) == 1
+
+
+@pytest.mark.parametrize("pid", ["1", "42", "4194304"])
+def test_timeline_owner_and_old_names_are_disjoint(pid: str) -> None:
+    # Given the shortest owner name and representative multi-digit owners.
+    name = f"timeline-{pid}_deadbeef"
+    old_name = "timeline-abcdefgh"
+    # When both legacy grammars and the complete recognition set parse these names.
+    owner = scratch.LEGACY_SCRATCH_NAME.fullmatch(name)
+    # Then the owner suffix is at least ten characters, beyond the old eight.
+    assert len(name.removeprefix("timeline-")) >= 10
+    assert len(old_name.removeprefix("timeline-")) == 8
+    assert owner is not None and owner["pid"] == pid
+    assert scratch.LEGACY_TIMELINE_NAME.fullmatch(name) is None
+    assert scratch.LEGACY_TIMELINE_NAME.fullmatch(old_name) is not None
+    assert scratch.LEGACY_SCRATCH_NAME.fullmatch(old_name) is None
+    for example in (name, old_name):
+        assert sum(bool(pattern.fullmatch(example)) for pattern in scratch.SCRATCH_NAME_PATTERNS) == 1
