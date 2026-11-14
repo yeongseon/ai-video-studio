@@ -143,10 +143,12 @@ if [ "${CUTOVER_ACCEPTANCE_DISPOSABLE:-}" = 1 ]; then
   fi
   if mv -T "$ENV_TEMP" .env; then ENV_CREATED=1; else exit 1; fi
 else
-  if ln -- "$ENV_TEMP" .env; then
+  if ln -T -- "$ENV_TEMP" .env; then
     ENV_CREATED=1
+  elif [ -e .env ] || [ -L .env ]; then
+    fail 'Refusing: .env appeared during publication. Run from a fresh clone or git worktree, or move/rename the real .env first. CUTOVER_ACCEPTANCE_DISPOSABLE=1 means this checkout is disposable: its .env will be replaced.'
   else
-    fail 'Refusing: .env appeared or publication failed. Run from a fresh clone or git worktree, or move/rename the real .env first. CUTOVER_ACCEPTANCE_DISPOSABLE=1 means this checkout is disposable: its .env will be replaced.'
+    fail 'Refusing: could not publish .env with a hard link (the checkout filesystem may not support hard links). Use a checkout on a local filesystem, or set CUTOVER_ACCEPTANCE_DISPOSABLE=1 only when this checkout is disposable: its .env will be replaced.'
   fi
 fi
 ENV_PUBLISHING=0

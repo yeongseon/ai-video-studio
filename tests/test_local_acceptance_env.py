@@ -128,7 +128,7 @@ def test_publishes_complete_env_atomically_and_cleans_up_when_disposable(
     )
     publication = (checkout / "publication").read_text().splitlines()
     assert publication[-1].endswith(" .env")
-    assert publication[-1].startswith("-T " if opt_in else "-- ")
+    assert publication[-1].startswith("-T " if opt_in else "-T -- ")
     assert ("existing" in publication) == existing
     assert (checkout / "initial-inode").read_text() != (checkout / "rewritten-inode").read_text()
     file_calls = (checkout / "file-calls").read_text() if (checkout / "file-calls").exists() else ""
@@ -159,6 +159,51 @@ def test_refuses_when_env_appears_during_publication(checkout: Path) -> None:
     assert list((checkout / "state").iterdir()) == []
     calls = (checkout / "calls").read_text() if (checkout / "calls").exists() else ""
     assert "compose up" not in calls
+
+
+@pytest.mark.parametrize("entry", ["file", "directory", "dir-symlink", "dangling-symlink"])
+def test_refuses_any_entry_kind_that_appears_during_publication(checkout: Path, entry: str) -> None:
+    # Given another writer creating an entry of any kind at `.env` inside the publication command.
+    racers = {
+        "file": "printf 'API_KEY=racing-synthetic\\n' > .env",
+        "directory": "mkdir .env",
+        "dir-symlink": "mkdir outside && /bin/ln -s outside .env",
+        "dangling-symlink": "/bin/ln -s missing-target .env",
+    }
+    (checkout / "bin" / "ln").write_text(f'#!/bin/sh\n{racers[entry]}\nexec /bin/ln "$@"\n')
+    # When the harness attempts to publish its complete environment.
+    result = _run(checkout)
+    # Then it refuses, the foreign entry survives untouched and nothing was linked into it.
+    dotenv = checkout / ".env"
+    assert result.returncode != 0
+    assert "refusing: .env appeared" in result.stderr.lower()
+    if entry == "file":
+        assert dotenv.read_text() == "API_KEY=racing-synthetic\n"
+    elif entry == "directory":
+        assert dotenv.is_dir() and not dotenv.is_symlink()
+        assert list(dotenv.iterdir()) == []
+    elif entry == "dir-symlink":
+        assert dotenv.is_symlink() and str(dotenv.readlink()) == "outside"
+        assert list((checkout / "outside").iterdir()) == []
+    else:
+        assert dotenv.is_symlink() and not (checkout / "missing-target").exists()
+    assert not (checkout / "calls").exists()
+    assert list(checkout.glob(".env-cutover-*")) == []
+    assert list((checkout / "state").iterdir()) == []
+
+
+def test_reports_publication_failure_without_claiming_a_racing_env(checkout: Path) -> None:
+    # Given a link failure that creates no `.env`, such as a filesystem without hard links.
+    (checkout / "bin" / "ln").write_text("#!/bin/sh\nexit 1\n")
+    # When the harness attempts the default publication.
+    result = _run(checkout)
+    # Then it names the failed publication instead of claiming that an environment appeared.
+    assert result.returncode != 0
+    assert "appeared" not in result.stderr.lower()
+    assert "hard link" in result.stderr.lower()
+    assert not (checkout / ".env").exists()
+    assert not (checkout / "calls").exists()
+    assert list(checkout.glob(".env-cutover-*")) == []
 
 
 @pytest.mark.parametrize("opt_in", ["", "1"])
