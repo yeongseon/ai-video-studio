@@ -81,6 +81,8 @@ def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str
 
     Uses start_new_session=True to isolate from Celery's signal handling,
     and os.killpg() on timeout to ensure all child processes are cleaned up.
+    The child's output is decoded with replacement characters: FFmpeg echoes input
+    metadata, which need not be valid UTF-8.
     """
     proc = subprocess.Popen(
         cmd,
@@ -88,6 +90,7 @@ def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
+        errors="replace",
         start_new_session=True,
     )
     budget = current_budget.get()
@@ -120,12 +123,16 @@ def _run_ffmpeg(cmd: list[str], timeout: int) -> subprocess.CompletedProcess[str
             proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             logger.error("Render child could not be reaped after SIGKILL (pid=%s, program=%s)", proc.pid, Path(cmd[0]).name)
-        with suppress(subprocess.TimeoutExpired):
-            proc.communicate(timeout=1)
-        if proc.stdout is not None:
-            proc.stdout.close()
-        if proc.stderr is not None:
-            proc.stderr.close()
+        try:
+            with suppress(subprocess.TimeoutExpired):
+                proc.communicate(timeout=1)
+        except Exception as error:
+            logger.warning("Render child output drain failed (%s)", type(error).__name__)
+        finally:
+            if proc.stdout is not None:
+                proc.stdout.close()
+            if proc.stderr is not None:
+                proc.stderr.close()
     return subprocess.CompletedProcess(
         args=cmd, returncode=proc.returncode, stdout=stdout, stderr=stderr
     )
