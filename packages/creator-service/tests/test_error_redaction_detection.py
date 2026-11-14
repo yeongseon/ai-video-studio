@@ -135,13 +135,25 @@ def test_frame_credential_check_uses_new_detection(text: str) -> None:
     assert result is True
 
 
-@pytest.mark.parametrize("text", [
-    "=" * 100_000, ":" * 100_000, "'\"" * 100_000,
-    "token" * 100_000, "a" * 1_048_576,
-    "token=" + "a" * 8000, "token='" + "a" * 8000,
-    "token" * 400 + ":", "'" * 2000, "=" * 2000, ":" * 2000,
-    ("token=x\n" * 100_000),
-])
+# Short ids keep megabyte-sized inputs out of test node ids: verbose CI output otherwise
+# prints each input as one enormous log line and the runner stalls for minutes on it.
+PATHOLOGICAL_INPUTS = {
+    "equals-100k": "=" * 100_000,
+    "colons-100k": ":" * 100_000,
+    "quotes-200k": "'\"" * 100_000,
+    "token-500k": "token" * 100_000,
+    "a-1MiB": "a" * 1_048_576,
+    "token-assign-8k": "token=" + "a" * 8000,
+    "token-quote-8k": "token='" + "a" * 8000,
+    "token-colon-2k": "token" * 400 + ":",
+    "quote-2k": "'" * 2000,
+    "equals-2k": "=" * 2000,
+    "colon-2k": ":" * 2000,
+    "token-lines-100k": "token=x\n" * 100_000,
+}
+
+
+@pytest.mark.parametrize("text", PATHOLOGICAL_INPUTS.values(), ids=PATHOLOGICAL_INPUTS.keys())
 def test_pathological_input_is_bounded(redact: Callable[[str], str], text: str) -> None:
     # Given
     start = perf_counter()

@@ -40,11 +40,13 @@ def test_scanner_finishes_when_adversarial_input_bypasses_public_caps(fragment: 
 
 
 @pytest.mark.parametrize("redact, text, expected", [
-    (redaction.redact_error_message, "a=" * 4096, "a=" * 512),
-    (redaction.redact_log_text, "a=" * 1023, "a=" * 512),
-    (redaction.redact_log_text, "\n".join(["a=" * 1023] * 400),
-     "\n".join(["a=" * 512] * 63 + ["<output truncated>"])),
-    (redaction.carries_credential, "a=" * 1024, False),
+    pytest.param(redaction.redact_error_message, "a=" * 4096, "a=" * 512, id="error-8k"),
+    pytest.param(redaction.redact_log_text, "a=" * 1023, "a=" * 512, id="log-one-line"),
+    pytest.param(
+        redaction.redact_log_text, "\n".join(["a=" * 1023] * 400),
+        "\n".join(["a=" * 512] * 63 + ["<output truncated>"]), id="log-400-lines",
+    ),
+    pytest.param(redaction.carries_credential, "a=" * 1024, False, id="credential-check"),
 ])
 def test_public_scan_finishes_when_equals_dense_input_is_under_cap(redact, text: str, expected) -> None:
     # Given / When
