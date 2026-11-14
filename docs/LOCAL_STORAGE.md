@@ -279,8 +279,9 @@ fresh clone or `git worktree`, or move/rename the real `.env` first.
 its `.env` will be replaced**; CI sets it in its fresh checkout. Never set it on a
 migrated or production checkout. Replacing an existing `.env` emits a loud WARNING
 to stderr naming the checkout directory (no warning for an absent `.env`). Without
-the opt-in, the harness publishes its private temporary file with `ln --`, refusing
-atomically if `.env` appeared after the guard; only the opt-in uses `mv -T`.
+the opt-in, the harness publishes its private temporary file with `ln -T --`, refusing
+atomically if any entry (file, directory or symlink) appeared at `.env` after the
+guard, and it needs a filesystem that supports hard links; only the opt-in uses `mv -T`.
 Its own later API-key rewrite uses `os.replace`. Cleanup after EXIT/INT/TERM removes
 the temporary name and only a successfully published harness `.env`; it never backs
 up or restores an operator's `.env`. Git and Docker ignore `.env-cutover-*` leftovers,

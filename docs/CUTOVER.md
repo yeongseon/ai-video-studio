@@ -122,8 +122,10 @@ before touching it. CI's `docker` job sets `CUTOVER_ACCEPTANCE_DISPOSABLE=1`,
 meaning **this checkout is disposable: its `.env` will be replaced**. Never set
 that opt-in on a working deployment. Replacement prints a loud WARNING to stderr
 naming the checkout directory; no warning is printed if `.env` was absent.
-Without the opt-in, `ln --` publishes the complete private temporary file without
-overwriting: an `.env` appearing after the guard causes atomic refusal. Only the
+Without the opt-in, `ln -T --` publishes the complete private temporary file without
+overwriting: an entry of any kind (file, directory or symlink) appearing at `.env`
+after the guard causes atomic refusal, and the hard link needs a checkout filesystem
+that supports hard links. Only the
 explicit opt-in uses `mv -T`. The later API-key rewrite uses `os.replace` on the
 harness's own file. INT/TERM handling records publication success before exiting;
 cleanup removes the temporary name in either case and `.env` only after successful
