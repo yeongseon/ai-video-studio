@@ -15,6 +15,13 @@ psql_scalar() {
   docker compose exec -T postgres sh -c \
     'psql -q -U "$POSTGRES_USER" -d "$POSTGRES_DB" -v ON_ERROR_STOP=1 -Atc "$1"' _ "$1"
 }
+beat_is_healthy() {
+  local containers
+  containers="$(docker compose ps -a -q beat)" || return 1
+  [ -n "$containers" ] && [ "$(printf '%s\n' "$containers" | wc -l)" = 1 ] || return 1
+  docker inspect --format '{{.State.Running}}:{{.State.Health.Status}}' "$containers" \
+    | grep -Fx 'true:healthy'
+}
 assert_dlq_write() {
   local service="$1"
   shift
@@ -164,6 +171,18 @@ PY
 docker compose up -d api worker beat studio-web
 timeout 90 bash -c 'until curl -sf http://127.0.0.1:8000/healthz >/dev/null; do sleep 2; done'
 timeout 90 bash -c 'until curl -sf http://127.0.0.1:5174/ >/dev/null; do sleep 2; done'
+DEADLINE=$((SECONDS + 150))
+until beat_is_healthy; do
+  if [ "$SECONDS" -ge "$DEADLINE" ]; then
+    docker compose logs beat
+    fail "expected exactly one running healthy Beat within 150 seconds"
+  fi
+  sleep 3
+done
+for attempt in 1 2; do
+  make docker-local-up
+  beat_is_healthy || fail "local up ${attempt} did not preserve one healthy Beat"
+done
 
 docker compose stop redis
 docker compose rm -f redis
@@ -212,8 +231,14 @@ if [ "$SECONDS" -ge "$DEADLINE" ]; then
 fi
 RUN_STATE="$(psql_scalar "SELECT status||':'||current_stage FROM creator_runs WHERE id=${RUN_ID}")"
 [ "$RUN_STATE" = "failed:FAILED" ] || fail "Beat housekeeping produced unexpected run state: $RUN_STATE"
-docker compose logs beat | grep -q 'reconcile-stale-dispatches' \
+docker compose logs beat | grep -F 'Scheduler: Sending due task reconcile-stale-dispatches (reconcile_stale_dispatches)' \
   || fail "Beat log has no reconcile-stale-dispatches dispatch evidence"
+beat_is_healthy || fail "Beat lost singleton health during reconciliation"
+docker compose stop -t 10 beat
+if beat_is_healthy; then
+  fail "stopped Beat silently passed the singleton health acceptance"
+fi
+printf 'Beat missing-scheduler signal verified after stop.\n'
 
 ORIGIN='Origin: http://localhost:5174'
 MUTATION_CODE="$(code -H "$ORIGIN" -H 'Content-Type: application/json' \
