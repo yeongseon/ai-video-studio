@@ -138,12 +138,28 @@ Structured logging is configured in `creator_service/logging_config.py`:
   `hf_`, `r8_`, `AKIA`, `AIza`, each with at least six body characters from ASCII
   letters, digits, `_` and `-`). Sensitive `name=value` and `name:value` assignments,
   including quoted JSON/dict keys, use the same key predicate as log extras; only
-  their values are replaced with `<redacted>`. Unquoted values end at whitespace,
-  comma, semicolon, ampersand, quotes or brackets (`[]{}()`); quoted values end at
-  the first matching literal quote (or input end if unterminated). Backslash escapes
-  are not decoded. `token_count`, `key_id` and `max_tokens` remain readable;
+   their values are replaced with `<redacted>`. Unquoted values end at whitespace,
+   comma, semicolon, ampersand, quotes or brackets (`[]{}()`); quoted values end at
+   the first unescaped matching quote (or input end if unterminated). A backslash
+   skips the following character without decoding it. Python string prefixes
+   (`b`, `r`, `u`, case-insensitive, up to two characters) are accepted on quoted
+   names and values; a value prefix is included in the redacted span. Unquoted
+   values of names ending in `authorization` hide the rest of that line, including
+   Basic, Token and AWS4 signature schemes. `token_count`, `key_id` and `max_tokens` remain readable;
   `password_policy` is sensitive under that predicate. Detection is heuristic,
-  not a guarantee for arbitrary opaque credentials or tokens split across lines.
+   not a guarantee for arbitrary opaque credentials or tokens split across lines.
+   Sensitive names in prose, SQL and traceback source lines also fail closed:
+   `Invalid token: expired`, `claim_token = $3` and `token = settings.api_token`
+   lose their apparent values. For non-secret data use non-sensitive field names
+   such as `key_fingerprint` (admin attribution) or `object_name` (storage), and
+   verify them with `is_sensitive_log_key`; do not weaken the predicate.
+   Unquoted passphrases containing spaces (for example `password=correct horse
+   battery staple`) hide only the first word. Nested container values such as
+   `{"password": ["a","b"]}` are not parsed by the free-text scanner. Never
+   log these secrets; prefer credential-labelled structured fields, whose entire
+   values are hidden by the JSON formatter. Ordinary quoted delimiters are
+   preserved; prefixed values and any contiguous unquoted suffix are hidden
+   together to keep repeated redaction stable.
 - Supervisor lines from `--reload` / `--workers` are not covered: those processes
   never import the application and may retain plain-text logging.
 - Custom `--log-config` handlers are not preserved or covered. Passing an already
