@@ -42,6 +42,9 @@ exec /bin/cp "$@"
 printf '%s\\n' "$*" >> publication
 exec /bin/mv "$@"
 ''',
+        "ln": '''printf '%s\\n' "$*" >> publication
+exec /bin/ln "$@"
+''',
         "python3": f'exec "{sys.executable}" "$@"\n',
         "timeout": "exit 0\n",
         "curl": "exit 91\n",
@@ -104,14 +107,16 @@ def test_refuses_when_env_is_an_existing_filesystem_entry(checkout: Path, entry:
         assert dotenv.read_bytes() == SENTINEL
 
 
-@pytest.mark.parametrize("existing", [False, True])
-def test_publishes_complete_env_atomically_and_cleans_up_when_disposable(checkout: Path, existing: bool) -> None:
+@pytest.mark.parametrize(("existing", "opt_in"), [(False, ""), (False, "1"), (True, "1")])
+def test_publishes_complete_env_atomically_and_cleans_up_when_disposable(
+    checkout: Path, existing: bool, opt_in: str,
+) -> None:
     # Given a disposable checkout, with optional explicitly replaceable configuration.
     if existing:
         (checkout / ".env").write_bytes(SENTINEL)
     (checkout / "unrelated").write_text("keep", encoding="utf-8")
     # When fake Docker stops the harness immediately after the real API-key rewrite.
-    result = _run(checkout, "1")
+    result = _run(checkout, opt_in)
     # Then both publications use a new inode; only harness-owned temporary files disappear.
     assert result.returncode == 73, result.stderr
     assert (checkout / "observed-env").read_text() == (
@@ -119,6 +124,7 @@ def test_publishes_complete_env_atomically_and_cleans_up_when_disposable(checkou
     )
     publication = (checkout / "publication").read_text().splitlines()
     assert publication[-1].endswith(" .env")
+    assert publication[-1].startswith("-T " if opt_in else "-- ")
     assert ("existing" in publication) == existing
     assert (checkout / "initial-inode").read_text() != (checkout / "rewritten-inode").read_text()
     file_calls = (checkout / "file-calls").read_text() if (checkout / "file-calls").exists() else ""
@@ -127,6 +133,52 @@ def test_publishes_complete_env_atomically_and_cleans_up_when_disposable(checkou
     assert sorted(path.name for path in checkout.glob(".env*")) == [".env.example"]
     assert list((checkout / "state").iterdir()) == []
     assert (checkout / "unrelated").read_text() == "keep"
+
+
+def test_refuses_when_env_appears_during_publication(checkout: Path) -> None:
+    # Given another writer arriving after the guard, at either publication command.
+    for command in ("ln", "mv"):
+        (checkout / "bin" / command).write_text(
+            f"#!/bin/sh\nprintf 'API_KEY=racing-synthetic\\n' > .env\n"
+            f"stat -c %i .env > racing-inode\nexec /bin/{command} \"$@\"\n",
+        )
+    # When the harness attempts to publish its complete environment.
+    result = _run(checkout)
+    # Then the competing environment survives and no Compose operation runs.
+    assert result.returncode != 0
+    assert (checkout / ".env").read_text() == "API_KEY=racing-synthetic\n"
+    assert str((checkout / ".env").stat().st_ino) == (checkout / "racing-inode").read_text().strip()
+    assert "refusing: .env appeared" in result.stderr.lower()
+    assert all(term in result.stderr for term in ("fresh clone", "git worktree", "move/rename"))
+    assert not (checkout / "calls").exists()
+    assert list(checkout.glob(".env-cutover-*")) == []
+    assert list((checkout / "state").iterdir()) == []
+    calls = (checkout / "calls").read_text() if (checkout / "calls").exists() else ""
+    assert "compose up" not in calls
+
+
+@pytest.mark.parametrize("opt_in", ["", "1"])
+@pytest.mark.parametrize("signal", ["INT", "TERM"])
+@pytest.mark.parametrize("published", [False, True])
+def test_cleans_owned_files_when_publication_is_interrupted(
+    checkout: Path, opt_in: str, signal: str, published: bool,
+) -> None:
+    # Given a signal arriving inside the external publication operation.
+    command = "mv" if opt_in else "ln"
+    operation = f'/bin/{command} "$@"\n' if published else ""
+    (checkout / "bin" / command).write_text(
+        f'#!/bin/sh\n{operation}kill -{signal} "$PPID"\n'
+        f'exit {0 if published else 1}\n',
+    )
+    # When Bash receives the signal before recording command completion.
+    result = _run(checkout, opt_in)
+    # Then interruption fails and neither a published env nor a temp secret remains.
+    assert result.returncode != 0
+    assert not (checkout / ".env").exists()
+    assert list(checkout.glob(".env-cutover-*")) == []
+    assert list((checkout / "state").iterdir()) == []
+    calls = (checkout / "calls").read_text() if (checkout / "calls").exists() else ""
+    assert "compose up" not in calls
 
 
 def test_ci_declares_disposable_checkout_when_running_acceptance() -> None:

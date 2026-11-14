@@ -13,6 +13,8 @@ export COMPOSE_PROJECT_NAME="cutover-${GITHUB_RUN_ID:-local}-${GITHUB_RUN_ATTEMP
 STATE_DIR="$(mktemp -d "${TMPDIR:-/tmp}/cutover-acceptance.XXXXXX")"
 ENV_TEMP=""
 ENV_CREATED=0
+ENV_PUBLISHING=0
+ENV_INTERRUPTED=0
 
 fail() { printf 'ACCEPTANCE FAIL: %s\n' "$*" >&2; exit 1; }
 code() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
@@ -128,12 +130,25 @@ cleanup() {
   rm -rf "$STATE_DIR"
 }
 trap cleanup EXIT
+trap 'if [ "$ENV_PUBLISHING" = 1 ]; then ENV_INTERRUPTED=1; else exit 130; fi' INT
+trap 'if [ "$ENV_PUBLISHING" = 1 ]; then ENV_INTERRUPTED=1; else exit 143; fi' TERM
 
 ENV_TEMP="$(mktemp ./.env-cutover-XXXXXX)"
 cat .env.example > "$ENV_TEMP"
 printf '\nARTIFACT_ROOT=/tmp/cutover-artifacts\n' >> "$ENV_TEMP"
-mv -T "$ENV_TEMP" .env
-ENV_CREATED=1
+ENV_PUBLISHING=1
+if [ "${CUTOVER_ACCEPTANCE_DISPOSABLE:-}" = 1 ]; then
+  if mv -T "$ENV_TEMP" .env; then ENV_CREATED=1; else exit 1; fi
+else
+  if ln -- "$ENV_TEMP" .env; then
+    ENV_CREATED=1
+  else
+    fail 'Refusing: .env appeared or publication failed. Run from a fresh clone or git worktree, or move/rename the real .env first. CUTOVER_ACCEPTANCE_DISPOSABLE=1 means this checkout is disposable: its .env will be replaced.'
+  fi
+fi
+ENV_PUBLISHING=0
+[ "$ENV_INTERRUPTED" = 0 ] || exit 1
+rm -f "$ENV_TEMP"
 docker compose up -d postgres redis
 docker compose run --rm api alembic upgrade 037
 LEGACY_USER_ID="$(psql_scalar "INSERT INTO users (email,auth_provider,auth_subject) VALUES ('legacy-upgrade@example.com','api_key','legacy-upgrade') RETURNING id")"
