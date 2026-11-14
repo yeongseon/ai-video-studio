@@ -149,19 +149,35 @@ def test_entry_bound_prefers_sorted_names(tmp_path: Path) -> None:
     assert later.exists()
 
 
-def test_non_numeric_runs_follow_numeric_runs(tmp_path: Path) -> None:
+def test_non_numeric_runs_are_excluded(tmp_path: Path) -> None:
     # Given a nonnumeric directory created before numeric run 10.
     legacy = tmp_path / "aaa/render/.render_tmp_42_deadbeef"
     recent = tmp_path / "10/render/.render_tmp_42_deadbeef"
     legacy.mkdir(parents=True)
     recent.mkdir(parents=True)
-    # When only one run can be opened; then the numeric run is preferred.
-    result = sweep_render_scratch(tmp_path, SweepPolicy(max_run_directories=1), SweepRuntime(
+    # When the opening budget allows both; then only the numeric run is inspected.
+    result = sweep_render_scratch(tmp_path, SweepPolicy(), SweepRuntime(
         now=lambda: recent.stat().st_ctime + 7200,
     ))
     assert result.removed == 1
     assert legacy.exists()
     assert not recent.exists()
+
+
+@pytest.mark.parametrize("run_name", ["workspaces", "run\nforged", "１２", "1" * 21])
+def test_invalid_run_names_preserve_stale_scratch(tmp_path: Path, run_name: str, caplog) -> None:
+    # Given an over-age recognised entry outside the numeric run-id contract.
+    entry = tmp_path / run_name / "render/.render_tmp_42_deadbeef"
+    entry.mkdir(parents=True)
+    # When startup discovers artifact runs.
+    with caplog.at_level("INFO"):
+        result = sweep_render_scratch(tmp_path, SweepPolicy(), SweepRuntime(
+            now=lambda: entry.stat().st_ctime + 7200,
+        ))
+    # Then neither deletion nor a removal log may treat the name as a run id.
+    assert entry.is_dir()
+    assert result.examined == result.removed == 0
+    assert not [record for record in caplog.records if hasattr(record, "run_id")]
 
 
 def test_partial_mp4_symlink_survives(tmp_path: Path) -> None:

@@ -169,12 +169,9 @@ def sweep_render_scratch(
                         break
                     names.append(entry.name)
             numeric = [name for name in names if name.isascii() and name.isdecimal() and len(name) <= 20]
-            other = sorted(set(names).difference(numeric))
             if len(numeric) > policy.max_run_directories:
                 bound("artifact:max_run_directories")
-            if len(other) > 100:
-                bound("artifact:root_entries")
-            names = heapq.nlargest(policy.max_run_directories, numeric, key=lambda name: (int(name), name)) + other[:100]
+            names = heapq.nlargest(policy.max_run_directories, numeric, key=lambda name: (int(name), name))
             for name in names:
                 if bounded():
                     break
