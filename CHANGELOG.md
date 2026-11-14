@@ -23,6 +23,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
 ### Fixed
 
+- `StorageReadError` is hashable by identity like the other storage exceptions (`eq=False` on its dataclass), so two read failures with the same `kind` are distinct set members instead of raising `unhashable type` (#1122).
 - OpenTelemetry Console and OTLP exports now redact log bodies, derived chained exceptions and string extras before exporting, and redact span exception-event attributes and status descriptions; redaction failures fail closed without changing JSON stream logging or metrics (#1058).
 - The API server process under default Uvicorn import-string CLI startup now uses the shared redacting JSON stream formatter, including chained exceptions; `uvicorn.access` omits query strings and respects `--no-access-log` (#1035). This applies in every environment, not to `--reload` / `--workers` supervisor lines, custom `--log-config`, app-object startup after import, or OpenTelemetry exporters (see #1058; trace-context placement is tracked in #1059).
 - Shared API, DLQ and JSON-log error redaction now detects sensitive name/value assignments (including Python string prefixes, escaped quotes and authorization schemes) and HuggingFace/Replicate token prefixes; admin audit attribution uses `key_fingerprint` instead of `key`, and unsigned Azure storage warnings use `object_name` instead of `key` so non-secret identifiers stay readable (#1005).
@@ -54,7 +55,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 - Upgrade the CI and developer tool packages `cryptography` (46.0.5 to 50.0.2), `urllib3` (2.6.3 to 2.8.0), `requests` (2.32.5 to 2.34.2) and `pygments` (2.19.2 to 2.21.0) past 13 published advisories, with regression floors in `test_python_advisory_floors.py`; `pytest` stays on 8.4.2 until `pytest-asyncio` can move (#1115) (#1023 group 6).
 - The three ffprobe probes (media upload metadata, segment source duration and audio duration) decode their output with replacement characters, so a file that cannot be probed ends as its intended error (`MediaUploadRejected`, `SegmentSourceError` or the duration `RuntimeError`) instead of an unclassified `UnicodeDecodeError` when ffprobe echoes a file name that is not valid UTF-8 on stderr (#1106).
 - The remaining dataclass exceptions of the service package (`StorageDeletionError`, `SceneAssetAcceptanceRejected` and `StorageReadError`) rebuild from their fields when unpickled, so an instance created with keyword arguments survives a process boundary instead of being replaced by a bare `RuntimeError` or losing its `kind`; the helper now lives in `creator_service/exception_pickling.py`, and a scan test requires a rebuild and a round-trip case for every dataclass exception added to the package (#1100).
-- `StorageReadError` is hashable by identity like the other storage exceptions (`eq=False` on its dataclass), so two read failures with the same `kind` are distinct set members instead of raising `unhashable type` (#1122).
 
 ## [0.4.0] - 2026-07-23
 
