@@ -12,7 +12,7 @@ dev:
 # Targeted iteration only: lint-python, test-python, lint-web, test-web, build-web.
 # Ordered CI-required families; each Python family gets its own pytest process.
 TEST_SUITES := api worker creator-domain creator-provider creator-service studio
-PYTHON_INSTALL := python3 -m pip install -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt
+PYTHON_INSTALL := python3 -m pip install -c constraints.txt -r apps/api/requirements.txt -r apps/api/requirements-dev.txt -r apps/worker-orchestrator/requirements.txt -r apps/worker-orchestrator/requirements-dev.txt -e packages/creator-domain -e packages/creator-service -e packages/creator-provider
 WEB_INSTALL := npm --prefix apps/studio-web ci
 
 .PHONY: lint test build check lint-python test-python lint-web test-web build-web \
